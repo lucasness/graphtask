@@ -33,17 +33,18 @@ const STATUS_LABELS = {
 };
 const DEFAULT_NODE_COLOR = '#282726';
 const DEFAULT_EDGE_COLOR = '#878580';
+const COLOR_PALETTE_COLUMNS = 5;
 const COLOR_PALETTE = [
-  { name: 'Charcoal', value: '#282726' },
-  { name: 'Stone', value: '#403E3C' },
-  { name: 'Redwood', value: '#4D342F' },
-  { name: 'Copper', value: '#5A3A20' },
-  { name: 'Ochre', value: '#594814' },
-  { name: 'Olive', value: '#3D4525' },
-  { name: 'Teal', value: '#1F4A46' },
-  { name: 'Blue', value: '#253F55' },
-  { name: 'Violet', value: '#38345D' },
-  { name: 'Plum', value: '#512D43' },
+  { name: 'Base', value: '#282726' },
+  { name: 'Red', value: '#D14D41' },
+  { name: 'Orange', value: '#DA702C' },
+  { name: 'Yellow', value: '#D0A215' },
+  { name: 'Green', value: '#879A39' },
+  { name: 'Cyan', value: '#3AA99F' },
+  { name: 'Blue', value: '#4385BE' },
+  { name: 'Purple', value: '#8B7EC8' },
+  { name: 'Magenta', value: '#CE5D97' },
+  { name: 'Muted', value: '#878580' },
 ];
 const EDGE_CURVE_LIMIT = 500;
 
@@ -475,6 +476,22 @@ function setActiveColorSwatch(index, focus = false) {
   });
 }
 
+function moveActiveColorSwatch(rowDelta, colDelta) {
+  const rows = Math.ceil(COLOR_PALETTE.length / COLOR_PALETTE_COLUMNS);
+  const currentRow = Math.floor(colorPaletteState.activeIndex / COLOR_PALETTE_COLUMNS);
+  const currentCol = colorPaletteState.activeIndex % COLOR_PALETTE_COLUMNS;
+  let nextRow = (currentRow + rowDelta + rows) % rows;
+  let nextCol = (currentCol + colDelta + COLOR_PALETTE_COLUMNS) % COLOR_PALETTE_COLUMNS;
+  let nextIndex = nextRow * COLOR_PALETTE_COLUMNS + nextCol;
+
+  while (nextIndex >= COLOR_PALETTE.length) {
+    nextRow = (nextRow + (rowDelta >= 0 ? 1 : -1) + rows) % rows;
+    nextIndex = nextRow * COLOR_PALETTE_COLUMNS + nextCol;
+  }
+
+  setActiveColorSwatch(nextIndex, true);
+}
+
 function positionColorPalette(anchor) {
   const palette = document.getElementById('color-palette');
   if (!palette) return;
@@ -520,14 +537,24 @@ function closeColorPalette() {
 
 function handleColorPaletteKey(e) {
   if (!colorPaletteState.open) return false;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+  if (e.key === 'ArrowRight') {
     e.preventDefault();
-    setActiveColorSwatch(colorPaletteState.activeIndex + 1, true);
+    moveActiveColorSwatch(0, 1);
     return true;
   }
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+  if (e.key === 'ArrowLeft') {
     e.preventDefault();
-    setActiveColorSwatch(colorPaletteState.activeIndex - 1, true);
+    moveActiveColorSwatch(0, -1);
+    return true;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    moveActiveColorSwatch(1, 0);
+    return true;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    moveActiveColorSwatch(-1, 0);
     return true;
   }
   if (e.key === 'Home') {
