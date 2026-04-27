@@ -330,14 +330,14 @@ function selectionSummaryHtml(showSave = false) {
 }
 
 function directionIconSvg(direction) {
-  const common = 'width="16" height="16" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"';
+  const common = 'width="16" height="16" viewBox="0 0 256 256" fill="currentColor"';
   if (direction === 'backward') {
-    return `<svg ${common} aria-hidden="true"><path d="M216 128H40"/><path d="M112 56 40 128l72 72"/></svg>`;
+    return `<svg ${common} aria-hidden="true"><path d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z"/></svg>`;
   }
   if (direction === 'related') {
-    return `<svg ${common} aria-hidden="true"><path d="M40 128h176"/><path d="M112 56 40 128l72 72"/><path d="m144 56 72 72-72 72"/></svg>`;
+    return `<svg ${common} aria-hidden="true"><path d="M237.66,133.66l-32,32a8,8,0,0,1-11.32-11.32L212.69,136H43.31l18.35,18.34a8,8,0,0,1-11.32,11.32l-32-32a8,8,0,0,1,0-11.32l32-32a8,8,0,0,1,11.32,11.32L43.31,120H212.69l-18.35-18.34a8,8,0,0,1,11.32-11.32l32,32A8,8,0,0,1,237.66,133.66Z"/></svg>`;
   }
-  return `<svg ${common} aria-hidden="true"><path d="M40 128h176"/><path d="m144 56 72 72-72 72"/></svg>`;
+  return `<svg ${common} aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></svg>`;
 }
 
 function getSelectedEdgeDirection() {
@@ -1271,6 +1271,7 @@ function cycleSelectedEdgeType() {
   }
   if (!edgeTypeEditing) {
     const type = edge.data('edgeType');
+    edge.addClass('edge-type-editing');
     edgeTypeEditing = {
       edge,
       edgeId: edge.id(),
@@ -1292,6 +1293,7 @@ function applyEdgeTypeVisual() {
   if (!edgeTypeEditing) return;
   const { edge, currentDirection } = edgeTypeEditing;
   edge.removeClass('dir-backward');
+  edge.addClass('edge-type-editing');
   if (currentDirection === 'related') {
     edge.data('edgeType', 'related');
   } else if (currentDirection === 'backward') {
@@ -1307,7 +1309,7 @@ async function commitEdgeTypeEdit() {
   const state = edgeTypeEditing;
   edgeTypeEditing = null;
 
-  const { edgeId, originalType, originalSourceTaskId, originalTargetTaskId, currentDirection } = state;
+  const { edge, edgeId, originalType, originalSourceTaskId, originalTargetTaskId, currentDirection } = state;
   const isRelated = currentDirection === 'related';
   const isBackward = currentDirection === 'backward';
   const newType = isRelated ? 'related' : 'dependency';
@@ -1316,10 +1318,16 @@ async function commitEdgeTypeEdit() {
 
   // Nothing actually changed
   if (!isBackward && newType === originalType) {
+    if (edge && !edge.removed()) {
+      edge.removeClass('edge-type-editing');
+      edge.removeClass('dir-backward');
+      edge.data('edgeType', originalType);
+    }
     updateToolbar();
     return;
   }
 
+  if (edge && !edge.removed()) edge.removeClass('edge-type-editing');
   const rawId = String(edgeId).replace(/^e/, '');
   try {
     const res = await fetch(`/api/edges/${rawId}`, {
@@ -1346,6 +1354,7 @@ function cancelEdgeTypeEdit() {
   if (!edgeTypeEditing) return;
   const { edge, originalType } = edgeTypeEditing;
   if (edge && !edge.removed()) {
+    edge.removeClass('edge-type-editing');
     edge.removeClass('dir-backward');
     edge.data('edgeType', originalType);
   }
@@ -1956,6 +1965,13 @@ document.addEventListener('DOMContentLoaded', () => {
           'underlay-opacity': 0.22,
           'underlay-padding': 5,
           'z-index': 9,
+        },
+      },
+      {
+        selector: 'edge.edge-type-editing',
+        style: {
+          'line-style': 'dashed',
+          'line-dash-pattern': [8, 6],
         },
       },
       {
