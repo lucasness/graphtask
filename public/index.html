@@ -137,7 +137,11 @@
       <div class="tb-divider"></div>
       <span class="tb-direction" id="tb-edge-creating-preview"></span>
       <div class="tb-divider"></div>
-      <span class="tb-direction-controls"><kbd>E</kbd> cycle direction</span>
+      <span class="tb-direction-controls" id="tb-edge-creating-controls">
+        <span id="tb-edge-creating-direction-icon" class="tb-direction-icon" aria-hidden="true"></span>
+        <span>Direction</span>
+        <kbd>E</kbd>
+      </span>
       <div class="tb-divider"></div>
       <span class="tb-hint">click another node to connect · <kbd>esc</kbd> cancel</span>
     </div>
@@ -150,7 +154,11 @@
         <span>Color</span>
         <kbd>B</kbd>
       </button>
-      <span class="tb-direction-controls" id="tb-edge-controls"><kbd>E</kbd> cycle direction</span>
+      <button id="btn-direction-edge" class="tool-btn" title="Change direction">
+        <span id="tb-edge-direction-icon" class="tb-direction-icon" aria-hidden="true"></span>
+        <span>Direction</span>
+        <kbd>E</kbd>
+      </button>
       <div class="tb-divider"></div>
       <button id="btn-delete-edge" class="tool-btn" title="Delete">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,4 13,4"/><path d="M5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4"/></svg>

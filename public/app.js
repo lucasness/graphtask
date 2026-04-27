@@ -329,6 +329,33 @@ function selectionSummaryHtml(showSave = false) {
   `;
 }
 
+function directionIconSvg(direction) {
+  const common = 'width="16" height="16" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"';
+  if (direction === 'backward') {
+    return `<svg ${common} aria-hidden="true"><path d="M216 128H40"/><path d="M112 56 40 128l72 72"/></svg>`;
+  }
+  if (direction === 'related') {
+    return `<svg ${common} aria-hidden="true"><path d="M40 128h176"/><path d="M112 56 40 128l72 72"/><path d="m144 56 72 72-72 72"/></svg>`;
+  }
+  return `<svg ${common} aria-hidden="true"><path d="M40 128h176"/><path d="m144 56 72 72-72 72"/></svg>`;
+}
+
+function getSelectedEdgeDirection() {
+  const selectedEdges = cy.edges('.selected').filter((edge) => !edge.id().startsWith('__'));
+  if (selectedEdges.length !== 1) return 'forward';
+  const edge = selectedEdges[0];
+  if (edgeTypeEditing && edgeTypeEditing.edgeId === edge.id()) {
+    return edgeTypeEditing.currentDirection;
+  }
+  return edge.data('edgeType') === 'related' ? 'related' : 'forward';
+}
+
+function directionLabel(direction) {
+  if (direction === 'backward') return 'Backward dependency';
+  if (direction === 'related') return 'Related';
+  return 'Forward dependency';
+}
+
 function isStatusEditSelected() {
   const nodes = cy.nodes('.selected');
   return !!statusEditing && nodes.length === 1 && statusEditing.nodeId === nodes[0].id();
@@ -366,12 +393,15 @@ function updateToolbar() {
     document.getElementById('tb-mixed-count').innerHTML = selectionSummaryHtml(false);
   } else if (mode === 'edge') {
     const dirEl = document.getElementById('tb-edge-direction');
-    const ctrlEl = document.getElementById('tb-edge-controls');
+    const btnDirection = document.getElementById('btn-direction-edge');
+    const iconEl = document.getElementById('tb-edge-direction-icon');
     const editingThis = isEdgeEditSelected();
+    const direction = getSelectedEdgeDirection();
     dirEl.innerHTML = selectionSummaryHtml(editingThis);
-    ctrlEl.innerHTML = editingThis
-      ? '<kbd>E</kbd> cycle · <kbd>Esc</kbd> cancel'
-      : '<kbd>E</kbd> cycle direction';
+    iconEl.innerHTML = directionIconSvg(direction);
+    btnDirection.title = editingThis
+      ? `${directionLabel(direction)}. Enter to confirm. Esc to cancel.`
+      : `${directionLabel(direction)}. Press E to change.`;
   } else if (mode === 'edge-creating') {
     const { direction } = edgeCreation;
     const sources = edgeCreation.sources || [edgeCreation.source].filter(Boolean);
@@ -386,6 +416,7 @@ function updateToolbar() {
     document.getElementById('tb-edge-creating-count').innerHTML = selectionSummaryHtml(false);
     document.getElementById('tb-edge-creating-preview').textContent =
       previewText;
+    document.getElementById('tb-edge-creating-direction-icon').innerHTML = directionIconSvg(direction);
   }
 }
 
@@ -2319,6 +2350,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-color-edge').addEventListener('click', (e) => openColorPalette(e.currentTarget));
   document.getElementById('btn-color-selection').addEventListener('click', (e) => openColorPalette(e.currentTarget));
   document.getElementById('btn-connect').addEventListener('click', startEdgeCreation);
+  document.getElementById('btn-direction-edge').addEventListener('click', cycleSelectedEdgeType);
   document.getElementById('btn-zoom-fit').addEventListener('click', () => {
     cy.fit(undefined, 50);
   });

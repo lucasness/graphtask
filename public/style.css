@@ -297,6 +297,23 @@ button {
   white-space: nowrap;
 }
 .tb-direction { color: var(--tx-2); font-variant-numeric: tabular-nums; }
+.tb-direction-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tb-direction-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+  flex-shrink: 0;
+}
+.tb-direction-icon svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
 .tb-selection-summary {
   display: inline-flex;
   align-items: center;
@@ -380,7 +397,7 @@ kbd {
   min-height: 16px;
 }
 .tool-btn kbd { margin-left: 2px; }
-.tb-direction-controls kbd { margin-right: 2px; }
+.tb-direction-controls kbd { margin-left: 2px; }
 
 /* Inline node title input overlay — sits inside the cytoscape node */
 #node-title-overlay {
