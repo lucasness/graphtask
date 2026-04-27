@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>graphtask</title>
+  <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
+  <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/theme/toastui-editor-dark.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="cy"></div>
+
+  <div id="panel" class="panel hidden">
+    <div id="panel-resize-handle"></div>
+    <div class="panel-header">
+      <h2 id="panel-title">New Task</h2>
+      <span id="save-status" class="save-status" aria-live="polite"></span>
+      <button id="panel-close">&times;</button>
+    </div>
+    <form id="task-form">
+      <label>Title
+        <input type="text" id="field-title" maxlength="50" placeholder="Task title" required>
+      </label>
+      <label>Status
+        <select id="field-status">
+          <option value="todo">Todo</option>
+          <option value="in_progress">In progress</option>
+          <option value="done">Done</option>
+        </select>
+      </label>
+      <div class="body-section">
+        <div class="body-section-header">
+          <span class="body-label">Body</span>
+          <div class="mode-toggle" role="tablist">
+            <button type="button" id="mode-rich" class="mode-btn active" role="tab" aria-selected="true">Rich</button>
+            <button type="button" id="mode-raw" class="mode-btn" role="tab" aria-selected="false">Markdown</button>
+          </div>
+        </div>
+        <div id="rich-editor"></div>
+        <textarea id="raw-editor" class="hidden" placeholder="# Heading
+
+- bullet
+- bullet
+
+1. numbered
+2. numbered"></textarea>
+      </div>
+      <div class="panel-actions">
+        <button type="button" id="btn-delete" class="danger hidden">Delete</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="edge-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Create Edge</h3>
+      <p id="edge-modal-desc"></p>
+      <div class="modal-actions">
+        <button id="edge-dependency">Dependency</button>
+        <button id="edge-related">Related</button>
+        <button id="edge-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Confirm delete</h3>
+      <p id="delete-modal-desc"></p>
+      <div class="modal-actions">
+        <button id="delete-cancel">Cancel</button>
+        <button id="delete-confirm" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bottom-bar">
+    <div id="tb-neutral" class="tb-slot">
+      <button id="btn-new-node" class="tool-btn" title="New node">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 6v4M6 8h4"/></svg>
+        <span>New</span>
+        <kbd>G</kbd>
+      </button>
+      <div class="tb-divider"></div>
+      <button id="btn-zoom-fit" class="tool-btn" title="Zoom to Fit">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1"/><polyline points="6,2 6,6 2,6"/><polyline points="10,14 10,10 14,10"/></svg>
+        <span>Fit</span>
+        <kbd>F</kbd>
+      </button>
+    </div>
+
+    <div id="tb-mixed" class="tb-slot hidden">
+      <span class="tb-count" id="tb-mixed-count"></span>
+      <div class="tb-divider"></div>
+      <button id="btn-color-selection" class="tool-btn" title="Change background color">
+        <svg width="16" height="16" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M128 24a104 104 0 0 0 0 208h10a22 22 0 0 0 0-44h-6a18 18 0 0 1 0-36h22a64 64 0 0 0 0-128z"/><circle cx="80" cy="96" r="10" fill="currentColor" stroke="none"/><circle cx="112" cy="64" r="10" fill="currentColor" stroke="none"/><circle cx="152" cy="68" r="10" fill="currentColor" stroke="none"/><circle cx="76" cy="136" r="10" fill="currentColor" stroke="none"/></svg>
+        <span>Color</span>
+        <kbd>B</kbd>
+      </button>
+      <div class="tb-divider"></div>
+      <button id="btn-delete-selection" class="tool-btn" title="Delete selection">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,4 13,4"/><path d="M5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4"/></svg>
+        <span>Delete</span>
+        <kbd>⌫</kbd>
+      </button>
+    </div>
+
+    <div id="tb-node" class="tb-slot hidden">
+      <span class="tb-count" id="tb-node-count"></span>
+      <div class="tb-divider"></div>
+      <button id="btn-status" class="tool-btn" title="Change status">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><polyline points="5.5,8 7.2,9.7 10.5,6.3"/></svg>
+        <span id="tb-node-status-label">Status</span>
+        <kbd>S</kbd>
+      </button>
+      <button id="btn-color-node" class="tool-btn" title="Change background color">
+        <svg width="16" height="16" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M128 24a104 104 0 0 0 0 208h10a22 22 0 0 0 0-44h-6a18 18 0 0 1 0-36h22a64 64 0 0 0 0-128z"/><circle cx="80" cy="96" r="10" fill="currentColor" stroke="none"/><circle cx="112" cy="64" r="10" fill="currentColor" stroke="none"/><circle cx="152" cy="68" r="10" fill="currentColor" stroke="none"/><circle cx="76" cy="136" r="10" fill="currentColor" stroke="none"/></svg>
+        <span>Color</span>
+        <kbd>B</kbd>
+      </button>
+      <button id="btn-connect" class="tool-btn" title="Connect to another node">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="3.5" cy="8" r="2"/><circle cx="12.5" cy="8" r="2"/><path d="M5.5 8h5"/><path d="M9 6.5 10.5 8 9 9.5"/></svg>
+        <span>Connect</span>
+        <kbd>E</kbd>
+      </button>
+      <div class="tb-divider"></div>
+      <button id="btn-delete-node" class="tool-btn" title="Delete">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,4 13,4"/><path d="M5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4"/></svg>
+        <span>Delete</span>
+        <kbd>⌫</kbd>
+      </button>
+    </div>
+
+    <div id="tb-edge-creating" class="tb-slot hidden">
+      <span class="tb-count" id="tb-edge-creating-count"></span>
+      <div class="tb-divider"></div>
+      <span class="tb-direction" id="tb-edge-creating-preview"></span>
+      <div class="tb-divider"></div>
+      <span class="tb-direction-controls"><kbd>E</kbd> cycle direction</span>
+      <div class="tb-divider"></div>
+      <span class="tb-hint">click another node to connect · <kbd>esc</kbd> cancel</span>
+    </div>
+
+    <div id="tb-edge" class="tb-slot hidden">
+      <span class="tb-direction" id="tb-edge-direction"></span>
+      <div class="tb-divider"></div>
+      <button id="btn-color-edge" class="tool-btn" title="Change background color">
+        <svg width="16" height="16" viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M128 24a104 104 0 0 0 0 208h10a22 22 0 0 0 0-44h-6a18 18 0 0 1 0-36h22a64 64 0 0 0 0-128z"/><circle cx="80" cy="96" r="10" fill="currentColor" stroke="none"/><circle cx="112" cy="64" r="10" fill="currentColor" stroke="none"/><circle cx="152" cy="68" r="10" fill="currentColor" stroke="none"/><circle cx="76" cy="136" r="10" fill="currentColor" stroke="none"/></svg>
+        <span>Color</span>
+        <kbd>B</kbd>
+      </button>
+      <span class="tb-direction-controls" id="tb-edge-controls"><kbd>E</kbd> cycle direction</span>
+      <div class="tb-divider"></div>
+      <button id="btn-delete-edge" class="tool-btn" title="Delete">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,4 13,4"/><path d="M5 4v9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V4"/><path d="M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4"/></svg>
+        <span>Delete</span>
+        <kbd>⌫</kbd>
+      </button>
+    </div>
+  </div>
+
+  <div id="node-title-overlay" class="hidden" contenteditable="true" spellcheck="false" data-placeholder="Untitled"></div>
+  <div id="edge-curve-handle" class="hidden" title="Drag to curve edge"></div>
+  <div id="color-palette" class="color-palette hidden" role="listbox" aria-label="Background color"></div>
+
+  <div id="cmd-box" class="cmd-box hidden"></div>
+
+  <div id="empty-state" class="hidden">
+    <p>Click anywhere to create your first task</p>
+  </div>
+
+  <div id="hotkey-hint" class="hidden">
+    <span id="hotkey-hint-text"></span>
+  </div>
+
+  <script src="https://unpkg.com/cytoscape@3/dist/cytoscape.min.js"></script>
+  <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
