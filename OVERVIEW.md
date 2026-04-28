@@ -1,18 +1,18 @@
 # graphtask
 
 A graph-based task manager. Tasks are nodes; relationships between them are
-edges. The app is a single-page Cytoscape.js canvas with a right-side task
-inspector and a contextual bottom toolbar.
+edges. Each user keeps multiple separate **graphs** — pick one from the left
+sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
 
 ---
 
 ## Stack
 
-- Backend: Express 5 on Node, PostgreSQL with pgRouting, `pg`, and `yaml`.
+- Backend: Express 5 on Node 22, PostgreSQL with pgRouting, `pg`, and `yaml`.
 - Frontend: Vanilla JS, Cytoscape.js, TOAST UI Editor, and CSS using a Flexoki
-  dark palette.
+  dark palette. No build step.
 - Tests: Vitest and supertest.
-- Package manager: npm for the existing project.
+- Package manager: npm.
 
 ---
 
@@ -20,119 +20,181 @@ inspector and a contextual bottom toolbar.
 
 ```text
 src/
-  server.js          starts Express on PORT
+  server.js          starts Express on PORT, binds to 127.0.0.1
   app.js             builds the Express app and mounts routers
-  db.js              shared pg pool
+  db.js              shared pg pool + withTx helper; resolves DATABASE_URL
+                     from env, falling back to PG_BOOTSTRAP_URL+DATABASE_NAME
   markdown.js        frontmatter parse/serialize, validation, defaults
   routes/
-    tasks.js         CRUD on /api/tasks
-    edges.js         CRUD and PATCH on /api/edges
-    graph.js         graph queries mounted under /api/tasks
-    graphApi.js      /api/graph and shortest-path payloads
+    _validate.js     requireIntegerParam middleware
+    graphs.js        CRUD on /api/graphs
+    tasks.js         task CRUD + leaves/subtasks/ancestors, all graph-scoped
+    edges.js         edge CRUD with transactional cycle detection
+    graphView.js     /api/graphs/:gid/graph and shortest-path payloads
 db/
-  schema.sql         tasks, edges, edge_type enum
+  schema.sql         graphs, tasks, edges, edge_type enum, updated_at trigger,
+                     short-id generator function
 public/
-  index.html         static markup and toolbar structure
-  app.js             frontend graph behavior
-  style.css          app shell, toolbar, palette, modal styles
-tests/               Vitest specs for API, DB, tasks, edges, graph queries
+  index.html         static markup: sidebar, canvas, inspector, toolbar, modals
+  app.js             frontend graph behavior + multi-graph sidebar
+  style.css          app shell, sidebar, toolbar, palette, modal styles
+tests/               Vitest specs: graphs, tasks, edges, graph queries, db, api
+Dockerfile           Postgres 17 + pgRouting + Node 22 image
+docker-entrypoint.sh initdb, loopback-only pg_hba, schema load, node start
 ```
 
 ---
 
 ## Setup
 
+The app runs on Node 22+ and a local Postgres with the `pgrouting` extension.
+
 ```sh
 npm install
+
+# Create the dev database and load schema. The schema.sql is idempotent
+# (uses IF NOT EXISTS) but type changes do require a manual reset.
 createdb graphtask
 psql graphtask -f db/schema.sql
+
 DATABASE_URL=postgresql://localhost/graphtask npm start
 npm test
 ```
 
-The tests require the PostgreSQL `pgrouting` extension to be available.
+Alternatively, if `DATABASE_URL` is not set, the app falls back to
+`PG_BOOTSTRAP_URL` + `DATABASE_NAME` from `.env` (loaded via Node's
+`--env-file`). This is the path used in the wafer/deploy setup.
 
 ---
 
 ## Data Model
 
 ```sql
+graphs(
+  id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
+  name TEXT NOT NULL,                        -- 1..80 chars
+  description TEXT,                          -- nullable, ≤ 500 chars
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+
 tasks(
   id SERIAL PRIMARY KEY,
-  content TEXT NOT NULL,       -- canonical markdown: frontmatter + body
-  meta JSONB NOT NULL,         -- structured copy of frontmatter
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,                     -- canonical markdown
+  meta JSONB NOT NULL,                       -- structured copy of frontmatter
   created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ
 )
 
 edges(
   id SERIAL PRIMARY KEY,
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
   source_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
   target_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  type edge_type,              -- dependency | related
-  meta JSONB NOT NULL,         -- rendering metadata
-  created_at TIMESTAMPTZ,
+  type edge_type,                            -- dependency | related
+  meta JSONB NOT NULL,
   UNIQUE(source_id, target_id),
   CHECK(source_id <> target_id)
 )
 ```
 
-- Task `content` is canonical. The server parses frontmatter, validates it, and
-  stores a synchronized structured copy in `tasks.meta`.
-- Task metadata includes `title`, `status`, optional `description`, optional
-  `color`, and optional saved graph coordinates `x`/`y`.
-- Edge metadata includes optional `curve` and optional `color`.
-- `dependency` edges are directed; `related` edges are visually bidirectional.
-- Dependency cycle detection runs on edge create and update. `related` edges can
-  form arbitrary loops.
-- `edges.meta.curve` is the signed Cytoscape unbundled Bezier offset.
-- `edges.meta.color` is a validated 6-digit hex value used for line and arrow
-  color.
+- `graphs.id` is an opaque 8-char string (`a-z` + `2-9`, omitting `0/1/i/l/o`)
+  generated by `generate_short_graph_id()` in plpgsql. The route retries on
+  the negligible chance of a unique-violation collision. Avoids the URL
+  leaking creation count the way `SERIAL` would.
+- `graphs.updated_at` is bumped by an AFTER trigger on tasks/edges INSERT/
+  UPDATE/DELETE. Sidebar timestamps reflect last activity in a graph.
+- Task `content` is canonical: the server parses frontmatter, validates it,
+  and stores a synchronized structured copy in `tasks.meta`.
+- Task metadata: `title`, `status`, optional `description`, optional `color`,
+  optional saved graph coordinates `x`/`y`.
+- Edge metadata: optional `curve` (signed Cytoscape unbundled-Bezier offset)
+  and optional `color` (validated 6-digit hex).
+- `dependency` edges are directed and acyclic; `related` edges can form loops.
+- Cycle detection (POST + PATCH) runs inside a single transaction with
+  `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers can't
+  both pass the check.
 
 ---
 
 ## API
 
+All task/edge/graph-view routes are scoped to a graph via `:gid`.
+
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/tasks` | List tasks |
-| POST | `/api/tasks` | Body: `{content}` markdown blob |
-| GET | `/api/tasks/:id` | Fetch one task |
-| PATCH | `/api/tasks/:id` | Body: `{content}` |
-| DELETE | `/api/tasks/:id` | Cascades to edges |
-| GET | `/api/tasks/leaves` | Nodes with no incoming dependency edges |
-| GET | `/api/tasks/:id/subtasks` | Walk incoming dependency edges to prerequisites |
-| GET | `/api/tasks/:id/ancestors` | Walk outgoing dependency edges to dependents |
-| GET | `/api/edges` | List edges |
-| POST | `/api/edges` | Body: `{source_id, target_id, type, meta?}` |
-| PATCH | `/api/edges/:id` | Partial edge update; supports endpoints, type, meta |
-| DELETE | `/api/edges/:id` | Delete edge |
-| GET | `/api/graph` | Combined `{nodes, links}` canvas payload |
-| GET | `/api/graph/shortest-path` | pgRouting shortest-path query |
+| GET | `/api/graphs` | List graphs, ordered by `updated_at DESC` |
+| POST | `/api/graphs` | Body: `{name, description?}` |
+| GET | `/api/graphs/:id` | Fetch one graph |
+| PATCH | `/api/graphs/:id` | Body: any of `{name, description}`; bumps `updated_at` |
+| DELETE | `/api/graphs/:id` | Cascades to tasks and edges |
+| GET | `/api/graphs/:gid/tasks` | List tasks in graph |
+| POST | `/api/graphs/:gid/tasks` | Body: `{content}` markdown blob |
+| GET | `/api/graphs/:gid/tasks/:id` | Fetch one task |
+| PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
+| DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
+| GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
+| GET | `/api/graphs/:gid/tasks/:id/subtasks` | Walk incoming dependency edges |
+| GET | `/api/graphs/:gid/tasks/:id/ancestors` | Walk outgoing dependency edges |
+| GET | `/api/graphs/:gid/edges` | List edges in graph |
+| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, type, meta?}` |
+| PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, type, meta |
+| DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
+| GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
+| GET | `/api/graphs/:gid/graph/shortest-path` | pgRouting shortest path |
 
-`markdown.applyDefaults` coerces YAML-parsed title and description values to
-strings before validation, so scalar YAML values do not break task saves.
+`requireIntegerParam('id')` middleware on numeric `:id` segments returns 400
+on non-integer values (otherwise Postgres would raise a 500). `:gid` is an
+opaque short string; a bad one falls through to a 404.
+
+`markdown.applyDefaults` coerces YAML-parsed title and description to strings
+before validation, so scalar YAML values do not break task saves.
 
 ---
 
 ## Frontend Model
 
-The frontend has three main regions:
+The frontend has four main regions:
 
-- Canvas: `#cy` fills the viewport. Cytoscape paints nodes and edges. Styling is
-  driven by element data (`status`, `color`, `edgeType`, `curve`) and transient
-  classes (`selected`, `editing`, `leaf`, `dir-backward`, `edge-type-editing`,
-  `edge-hover-target`, `preview`, `phantom`).
-- Side panel: `#panel` is a resizable right-side inspector for node title,
-  status, and markdown body. Opening it recenters the selected node in the
-  visible canvas area.
-- Bottom toolbar: `#bottom-bar` is contextual and changes by selection mode.
+- **Sidebar**: `#sidebar` lists graphs with name + relative updated time.
+  `+` creates a new graph; `⋯` opens the edit modal (rename, description,
+  delete). The active graph card is highlighted.
+- **Canvas**: `#cy` fills the area to the right of the sidebar. Cytoscape
+  paints nodes and edges. Styling is driven by element data (`status`,
+  `color`, `edgeType`, `curve`) and transient classes (`selected`, `editing`,
+  `leaf`, `dir-backward`, `edge-type-editing`, `edge-hover-target`,
+  `preview`, `phantom`).
+- **Side panel**: `#panel` is a resizable right-side inspector for node
+  title, status, and markdown body. Opening it recenters the selected node
+  in the visible canvas area (sidebar-aware via `cy.width()`).
+- **Bottom toolbar**: `#bottom-bar` is contextual and changes by selection
+  mode. Centered within the canvas area.
+
+### Active-graph routing
+
+- URL: `/g/:gid` reflects the active graph; bookmarkable.
+- Boot resolution order: URL → `localStorage` last-active → first available
+  graph → none.
+- `popstate` keeps the canvas in sync with browser back/forward.
+- All API calls go through an `apiBase()` helper that prefixes
+  `/api/graphs/:activeGraphId`, so a route's URL never accidentally targets
+  the wrong graph.
+
+### Lazy graph creation
+
+When no graph is active, the canvas placeholder reads "Click here for a new
+task". Clicking the canvas (or pressing `G`, or the `+` toolbar button)
+lazily creates an `Untitled` graph and immediately starts the new-task flow
+at the click position. If the user backs out without committing the first
+task, a deferred check (`maybeCleanupLazyGraph`) deletes the empty graph and
+resets the URL to `/`.
 
 ### Selection Modes
 
 `getSelectionMode()` returns:
 
-- `neutral`: nothing selected. Toolbar shows New (`G`) and Fit (`F`).
+- `neutral`: nothing selected. Toolbar shows New (`G`), Fit (`F`), Settings.
 - `node`: one or more nodes selected. Toolbar shows Status (`S`), Color (`B`),
   Connect (`E`), and Delete.
 - `edge`: one or more edges selected. Toolbar shows Color (`B`), Direction
@@ -140,10 +202,10 @@ The frontend has three main regions:
   arrow, or horizontal bidirectional arrow for the current state.
 - `mixed`: nodes and edges selected together. Toolbar shows Color (`B`) and
   Delete.
-- `edge-creating`: edge creation is in progress. Toolbar shows a preview summary
+- `edge-creating`: edge creation in progress. Toolbar shows a preview summary
   and Direction (`E`) for the in-progress edge type.
 
-`updateToolbar()` is called after selection/mode changes and after `fetchGraph()`
+`updateToolbar()` runs after selection/mode changes and after `fetchGraph()`
 because refetching rebuilds Cytoscape elements and clears transient classes.
 
 ---
@@ -153,41 +215,46 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 ### Nodes
 
 - Clicking empty canvas creates a pending Cytoscape node with id `__pending__`.
-- Pending nodes are visible immediately but are not persisted until Enter creates
-  a task.
+- Pending nodes are visible immediately but are not persisted until the title
+  is committed (Enter or Cmd/Ctrl+Enter).
 - Existing task fields autosave with a short debounce.
-- Status cycling is optimistic: `S` changes the visible status; Enter saves and
-  Esc restores.
-- Inline title editing uses an HTML contenteditable overlay positioned over the
-  Cytoscape node. It scales with zoom and resizes the Cytoscape node frame.
+- Status cycling is optimistic: `S` changes the visible status; Enter saves
+  and Esc restores.
+- Inline title editing uses an HTML contenteditable overlay positioned over
+  the Cytoscape node. It scales with zoom and resizes the Cytoscape node.
 
 ### Edges
 
-- Pressing `E` with node(s) selected starts edge creation. A hidden phantom node
-  follows the cursor and preview edges connect from the selected sources.
-- During edge creation, `E` cycles `forward -> related -> backward -> forward`.
-- Clicking a target node commits created edges. Clicking empty canvas starts a
-  pending target node and keeps preview edges until that node is saved.
-- Pressing `E` with one edge selected starts an optimistic direction/type edit.
-  The edge turns dashed while the edit is pending, matching the "press Enter to
-  save" pattern used elsewhere.
-- Enter saves an edge direction/type edit. Esc restores the original type.
-- Backward dependency edits are represented visually with `dir-backward` until
-  save, then the server PATCH swaps source/target.
+- Pressing `E` with node(s) selected starts edge creation. A hidden phantom
+  node follows the cursor and preview edges connect from the selected sources.
+- During edge creation, `E` cycles `forward → related → backward → forward`.
+- Clicking a target node commits created edges. Clicking empty canvas starts
+  a pending target node and keeps preview edges until that node is saved.
+- Pressing `E` with one edge selected starts an optimistic direction/type
+  edit. The edge turns dashed while the edit is pending; Enter saves, Esc
+  restores.
+- Backward dependency edits are represented visually with `dir-backward`
+  until save, then the server PATCH swaps source/target.
 - Hover an edge to reveal the curve handle. Dragging it updates
   `edges.meta.curve` on release.
+- Dependency cycle detection wraps the cycle-check + INSERT/UPDATE in a
+  single Postgres transaction with a SHARE ROW EXCLUSIVE lock on `edges`,
+  so concurrent edge writers can't slip a cycle past the check.
 
 ### Color Palette
 
-- `B` opens a color palette for selected nodes, selected edges, or mixed
-  selections.
+- `B` opens the palette for selected nodes, edges, or mixed selections.
 - Palette values come from the Flexoki dark theme used by the app.
 - Swatches show the actual color that will be applied to node fill or edge
   line/arrow color.
-- Arrow keys navigate the palette as a two-dimensional 5-column grid. Enter or
-  mouse click applies and saves the color.
-- Color changes affect background/edge color, not the selection highlight or
-  status-edit highlight.
+- Arrow keys navigate as a 2D 5-column grid. Enter or click applies and saves.
+- Color changes affect background/edge color, not the selection highlight.
+
+### Graph metadata
+
+- `⋯` on a sidebar card opens `#graph-modal` with name + description fields
+  and Save / Delete buttons. Esc or backdrop click cancels. Delete reuses the
+  shared `confirmDelete` modal.
 
 ---
 
@@ -211,16 +278,25 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 
 ## Notable Decisions
 
-- No node overlap: `resolveNodeOverlap()` pushes nodes apart by at least 12 world
-  units and persists moved node coordinates.
-- Predictable refresh: many mutations use optimistic UI followed by
+- **Multi-graph as nested resources.** Routes are `/api/graphs/:gid/...`
+  rather than carrying a graph_id query param everywhere. All cross-graph
+  reads/writes are blocked at the route layer, not just the database.
+- **Short opaque graph IDs.** Generated by a small plpgsql function used as
+  the column DEFAULT. Avoids leaking creation count via auto-increment.
+- **Transactional cycle detection.** `BEGIN` + `LOCK TABLE edges IN SHARE
+  ROW EXCLUSIVE MODE` + recursive-CTE cycle check + INSERT/UPDATE in one
+  unit. Concurrent dependency-edge writes can't both pass the check.
+- **Lazy graphs.** First-click creates a graph; backing out cleans it up.
+  Trains the user on the click-to-create UX with no setup ceremony.
+- **No node overlap.** `resolveNodeOverlap()` pushes nodes apart by ≥12 world
+  units and persists moved coordinates.
+- **Predictable refresh.** Many mutations use optimistic UI followed by
   `fetchGraph()` after server success or failure.
-- Explicit save signals: discrete edits such as new node creation, status edit,
-  and edge direction edit require Enter. Pending edge direction edits turn
-  dashed to make that requirement visible.
-- Flexoki dark UI: app chrome and the color palette share the same color system.
-- Single static frontend: `public/app.js` intentionally avoids a build step. If
-  it grows much further, splitting by behavior area would be the next cleanup.
+- **Explicit save signals.** New node creation, status edit, edge direction
+  edit all require Enter. Pending edits turn dashed to make that visible.
+- **Single static frontend.** `public/app.js` intentionally avoids a build
+  step. If it grows much further, splitting by behavior area is the next
+  cleanup.
 
 ---
 
@@ -228,19 +304,26 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 
 | Want to... | Look at |
 |---|---|
-| Change node/edge visuals | `public/app.js` Cytoscape `style` array |
-| Change toolbar markup | `public/index.html` `#bottom-bar` |
+| Change graph CRUD or sidebar | `src/routes/graphs.js`, sidebar block in `public/app.js` |
+| Change node/edge visuals | Cytoscape `style` array in `public/app.js` |
+| Change toolbar markup | `#bottom-bar` in `public/index.html` |
 | Change toolbar state | `updateToolbar()` in `public/app.js` |
 | Add a keyboard shortcut | Global keydown handler in `public/app.js` |
 | Change task metadata | `src/markdown.js`, `src/routes/tasks.js`, `db/schema.sql` |
 | Change edge metadata | `src/routes/edges.js` and edge style/persistence in `public/app.js` |
-| Debug transient frontend state | Module-scope state in `public/app.js`: `pendingNode`, `edgeCreation`, `edgeTypeEditing`, `statusEditing`, `colorPaletteState` |
+| Change graph schema or trigger | `db/schema.sql` |
+| Debug transient frontend state | Module-scope state in `public/app.js`: `activeGraphId`, `pendingNode`, `edgeCreation`, `edgeTypeEditing`, `statusEditing`, `colorPaletteState`, `_lazyCreatedGraphId` |
 
 ---
 
 ## Current Caveats
 
-- Multi-node edge creation is fan-out. If the target is also selected, that
+- Multi-node edge creation is fan-out. If the target is also selected, the
   self-edge is skipped.
+- Lazy graph cleanup is local to the active session — closing the tab during
+  a pending node leaves an empty `Untitled` graph in the sidebar; it can be
+  deleted manually via the `⋯` modal.
+- Schema changes that alter column types still need a manual `DROP TABLE`
+  on existing databases; `IF NOT EXISTS` won't pick up type diffs.
 - The frontend is intentionally not modularized yet.
 - OpenGraph preview metadata is not configured for the deployed app.
