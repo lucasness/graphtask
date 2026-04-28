@@ -2,11 +2,19 @@ import request from 'supertest';
 import { getTestPool, TEST_URL } from './setup.js';
 
 let app;
+let pool;
+let gid;
 
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_URL;
   const mod = await import('../src/app.js');
   app = mod.default;
+  pool = getTestPool();
+});
+
+beforeEach(async () => {
+  const r = await pool.query("INSERT INTO graphs (name) VALUES ('t') RETURNING id");
+  gid = r.rows[0].id;
 });
 
 function md(title, opts = {}) {
@@ -20,21 +28,24 @@ function md(title, opts = {}) {
   return `---\n${lines.join('\n')}\n---\n${body}`;
 }
 
+const tasksUrl = () => `/api/graphs/${gid}/tasks`;
+
 describe('Task CRUD', () => {
-  describe('POST /api/tasks', () => {
+  describe('POST /api/graphs/:gid/tasks', () => {
     it('should create a task with title only', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('My task') });
       expect(res.status).toBe(201);
       expect(res.body.meta.title).toBe('My task');
       expect(res.body.meta.status).toBe('todo');
       expect(res.body.id).toBeDefined();
+      expect(res.body.graph_id).toBe(gid);
     });
 
     it('should create a task with all fields', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('Full', { description: 'desc', status: 'in_progress' }) });
       expect(res.status).toBe(201);
       expect(res.body.meta.title).toBe('Full');
@@ -44,7 +55,7 @@ describe('Task CRUD', () => {
 
     it('should preserve custom fields in meta', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('Custom', { priority: 'high', assignee: 'alice' }) });
       expect(res.status).toBe(201);
       expect(res.body.meta.priority).toBe('high');
@@ -54,7 +65,7 @@ describe('Task CRUD', () => {
     it('should preserve markdown body', async () => {
       const content = md('With body', { body: '\n## Notes\n\nSome details here\n' });
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content });
       expect(res.status).toBe(201);
       expect(res.body.content).toContain('## Notes');
@@ -62,112 +73,137 @@ describe('Task CRUD', () => {
     });
 
     it('should reject a task without content', async () => {
-      const res = await request(app)
-        .post('/api/tasks')
-        .send({});
+      const res = await request(app).post(tasksUrl()).send({});
       expect(res.status).toBe(400);
     });
 
     it('should reject a task without title', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: '---\nstatus: todo\n---\n' });
       expect(res.status).toBe(400);
     });
 
     it('should reject a task with invalid status', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('Bad', { status: 'invalid' }) });
       expect(res.status).toBe(400);
     });
 
     it('should reject a task with title > 50 chars', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('x'.repeat(51)) });
       expect(res.status).toBe(400);
     });
 
     it('should reject a task with description > 150 chars', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: md('Bad', { description: 'x'.repeat(151) }) });
       expect(res.status).toBe(400);
     });
 
     it('should default status to todo', async () => {
       const res = await request(app)
-        .post('/api/tasks')
+        .post(tasksUrl())
         .send({ content: '---\ntitle: Minimal\n---\n' });
       expect(res.status).toBe(201);
       expect(res.body.meta.status).toBe('todo');
     });
+
+    it('should return 404 when graph does not exist', async () => {
+      const res = await request(app)
+        .post('/api/graphs/9999/tasks')
+        .send({ content: md('Orphan') });
+      expect(res.status).toBe(404);
+    });
   });
 
-  describe('GET /api/tasks', () => {
+  describe('GET /api/graphs/:gid/tasks', () => {
     it('should return empty array when no tasks', async () => {
-      const res = await request(app).get('/api/tasks');
+      const res = await request(app).get(tasksUrl());
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
 
-    it('should return all tasks', async () => {
-      const pool = getTestPool();
+    it('should return all tasks in this graph only', async () => {
+      const otherGid = (
+        await pool.query("INSERT INTO graphs (name) VALUES ('other') RETURNING id")
+      ).rows[0].id;
       for (const t of ['A', 'B', 'C']) {
         await pool.query(
-          `INSERT INTO tasks (content, meta) VALUES ($1, $2)`,
-          [md(t), JSON.stringify({ title: t, status: 'todo' })]
+          `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3)`,
+          [gid, md(t), JSON.stringify({ title: t, status: 'todo' })]
         );
       }
-      const res = await request(app).get('/api/tasks');
+      // Task in another graph should not show up
+      await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3)`,
+        [otherGid, md('Other'), JSON.stringify({ title: 'Other', status: 'todo' })]
+      );
+      const res = await request(app).get(tasksUrl());
       expect(res.status).toBe(200);
       expect(res.body).toHaveLength(3);
     });
   });
 
-  describe('GET /api/tasks/:id', () => {
+  describe('GET /api/graphs/:gid/tasks/:id', () => {
     it('should return a single task by id', async () => {
-      await request(app).post('/api/tasks').send({ content: md('Find me') });
-      const res = await request(app).get('/api/tasks/1');
+      const create = await request(app)
+        .post(tasksUrl())
+        .send({ content: md('Find me') });
+      const res = await request(app).get(`${tasksUrl()}/${create.body.id}`);
       expect(res.status).toBe(200);
       expect(res.body.meta.title).toBe('Find me');
     });
 
     it('should return 404 for non-existent id', async () => {
-      const res = await request(app).get('/api/tasks/9999');
+      const res = await request(app).get(`${tasksUrl()}/9999`);
+      expect(res.status).toBe(404);
+    });
+
+    it('should return 404 when task belongs to another graph (isolation)', async () => {
+      const otherGid = (
+        await pool.query("INSERT INTO graphs (name) VALUES ('other') RETURNING id")
+      ).rows[0].id;
+      const r = await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3) RETURNING id`,
+        [otherGid, md('Other'), JSON.stringify({ title: 'Other', status: 'todo' })]
+      );
+      const res = await request(app).get(`${tasksUrl()}/${r.rows[0].id}`);
       expect(res.status).toBe(404);
     });
   });
 
-  describe('PATCH /api/tasks/:id', () => {
+  describe('PATCH /api/graphs/:gid/tasks/:id', () => {
     it('should update a task via new content', async () => {
-      await request(app).post('/api/tasks').send({ content: md('Old') });
+      const create = await request(app).post(tasksUrl()).send({ content: md('Old') });
       const res = await request(app)
-        .patch('/api/tasks/1')
+        .patch(`${tasksUrl()}/${create.body.id}`)
         .send({ content: md('Updated') });
       expect(res.status).toBe(200);
       expect(res.body.meta.title).toBe('Updated');
     });
 
     it('should update status', async () => {
-      await request(app).post('/api/tasks').send({ content: md('Task') });
+      const create = await request(app).post(tasksUrl()).send({ content: md('Task') });
       const res = await request(app)
-        .patch('/api/tasks/1')
+        .patch(`${tasksUrl()}/${create.body.id}`)
         .send({ content: md('Task', { status: 'done' }) });
       expect(res.status).toBe(200);
       expect(res.body.meta.status).toBe('done');
     });
 
     it('should set updated_at on update', async () => {
-      const pool = getTestPool();
-      await pool.query(
-        `INSERT INTO tasks (content, meta, created_at)
-         VALUES ($1, $2, NOW() - interval '1 hour')`,
-        [md('Task'), JSON.stringify({ title: 'Task', status: 'todo' })]
+      const r = await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta, created_at)
+         VALUES ($1, $2, $3, NOW() - interval '1 hour') RETURNING id`,
+        [gid, md('Task'), JSON.stringify({ title: 'Task', status: 'todo' })]
       );
       const res = await request(app)
-        .patch('/api/tasks/1')
+        .patch(`${tasksUrl()}/${r.rows[0].id}`)
         .send({ content: md('Changed') });
       expect(res.status).toBe(200);
       const created = new Date(res.body.created_at);
@@ -177,24 +213,50 @@ describe('Task CRUD', () => {
 
     it('should return 404 for non-existent id', async () => {
       const res = await request(app)
-        .patch('/api/tasks/9999')
+        .patch(`${tasksUrl()}/9999`)
         .send({ content: md('Nope') });
       expect(res.status).toBe(404);
     });
   });
 
-  describe('DELETE /api/tasks/:id', () => {
+  describe('DELETE /api/graphs/:gid/tasks/:id', () => {
     it('should delete a task', async () => {
-      await request(app).post('/api/tasks').send({ content: md('Delete me') });
-      const del = await request(app).delete('/api/tasks/1');
+      const create = await request(app).post(tasksUrl()).send({ content: md('Delete me') });
+      const del = await request(app).delete(`${tasksUrl()}/${create.body.id}`);
       expect(del.status).toBe(200);
-      const get = await request(app).get('/api/tasks/1');
+      const get = await request(app).get(`${tasksUrl()}/${create.body.id}`);
       expect(get.status).toBe(404);
     });
 
     it('should return 404 for non-existent id', async () => {
-      const res = await request(app).delete('/api/tasks/9999');
+      const res = await request(app).delete(`${tasksUrl()}/9999`);
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('invalid :id', () => {
+    it('GET returns 400 for non-integer id', async () => {
+      const res = await request(app).get(`${tasksUrl()}/abc`);
+      expect(res.status).toBe(400);
+    });
+
+    it('PATCH returns 400 for non-integer id', async () => {
+      const res = await request(app)
+        .patch(`${tasksUrl()}/abc`)
+        .send({ content: md('X') });
+      expect(res.status).toBe(400);
+    });
+
+    it('DELETE returns 400 for non-integer id', async () => {
+      const res = await request(app).delete(`${tasksUrl()}/abc`);
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for an unknown :gid', async () => {
+      const res = await request(app).get('/api/graphs/zzzzzzzz/tasks');
+      // GET /tasks for a nonexistent graph just returns an empty list — no graph exists, no tasks for it.
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([]);
     });
   });
 });

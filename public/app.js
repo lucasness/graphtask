@@ -1,6 +1,18 @@
 let cy;
 let editingTaskId = null;
 let richEditor = null;
+
+// --- Active graph (multi-graph support) ---
+let activeGraphId = null;
+const ACTIVE_GRAPH_STORAGE_KEY = 'graphtask:lastGraphId';
+
+function apiBase() {
+  if (activeGraphId == null) {
+    throw new Error('no active graph');
+  }
+  return `/api/graphs/${activeGraphId}`;
+}
+
 let editorMode = 'rich'; // 'rich' | 'raw'
 let lastSavedContent = '';
 let saveTimer = null;
@@ -196,7 +208,7 @@ function addGraphEdge(edge) {
 }
 
 async function fetchGraph() {
-  const res = await fetch('/api/graph');
+  const res = await fetch(`${apiBase()}/graph`);
   const data = await res.json();
 
   const elements = [];
@@ -273,7 +285,7 @@ async function fetchGraph() {
 }
 
 async function updateLeafHighlights() {
-  const res = await fetch('/api/tasks/leaves');
+  const res = await fetch(`${apiBase()}/tasks/leaves`);
   const leaves = await res.json();
   const leafIds = new Set(leaves.map((t) => String(t.id)));
 
@@ -288,7 +300,13 @@ async function updateLeafHighlights() {
 
 function updateEmptyState() {
   const el = document.getElementById('empty-state');
-  if (cy.nodes().length === 0) {
+  const p = el.querySelector('p');
+  const noGraph = activeGraphId == null;
+  const noNodes = cy && cy.nodes().length === 0;
+  if (noGraph || noNodes) {
+    p.textContent = noGraph
+      ? 'Click here for a new task'
+      : 'Click anywhere to create your first task';
     el.classList.remove('hidden');
   } else {
     el.classList.add('hidden');
@@ -420,11 +438,85 @@ function updateToolbar() {
   }
 }
 
+// --- App settings (Cmd+K) ---
+const SETTINGS_KEY = 'graphtask:settings';
+const FONTS = [
+  { id: 'inter', name: 'Inter', stack: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { id: 'garamond', name: 'EB Garamond', stack: '"EB Garamond", Garamond, "Times New Roman", serif' },
+  { id: 'roboto', name: 'Roboto', stack: '"Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+];
+const DEFAULT_SETTINGS = Object.freeze({
+  font: 'inter',
+  fontColor: '#CECDC3', // matches --tx
+  bgColor: '#100F0F',   // matches --bg
+});
+let appSettings = { ...DEFAULT_SETTINGS };
+
+function getFontStack(id) {
+  return (FONTS.find((f) => f.id === id) || FONTS[0]).stack;
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      appSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    }
+  } catch (err) {
+    appSettings = { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(appSettings));
+  } catch (err) { /* storage unavailable; settings won't persist */ }
+}
+
+function applySettings() {
+  const fontStack = getFontStack(appSettings.font);
+  document.documentElement.style.setProperty('--app-font', fontStack);
+  document.documentElement.style.setProperty('--app-font-color', appSettings.fontColor);
+  const cyEl = document.getElementById('cy');
+  if (cyEl) cyEl.style.background = appSettings.bgColor;
+  if (cy) {
+    cy.style().selector('node').style({
+      'font-family': fontStack,
+      'color': appSettings.fontColor,
+    }).update();
+  }
+}
+
+function setSettingFont(id) {
+  if (!FONTS.find((f) => f.id === id)) return;
+  appSettings.font = id;
+  applySettings();
+  saveSettings();
+}
+function setSettingFontColor(value) {
+  appSettings.fontColor = value;
+  applySettings();
+  saveSettings();
+}
+function setSettingBgColor(value) {
+  appSettings.bgColor = value;
+  applySettings();
+  saveSettings();
+}
+
 // --- Selection color palette ---
 let colorPaletteState = {
   open: false,
   activeIndex: 0,
+  target: 'selection', // 'selection' | 'settings-bg' | 'settings-font-color'
 };
+
+function findPaletteIndexForColor(value) {
+  const target = normalizeColor(value);
+  const idx = COLOR_PALETTE.findIndex((c) => normalizeColor(c.value) === target);
+  return idx >= 0 ? idx : 0;
+}
 
 function normalizeColor(value) {
   return String(value || '').trim().toUpperCase();
@@ -533,8 +625,18 @@ function positionColorPalette(anchor) {
 
   if (anchorRect) {
     left = anchorRect.left + (anchorRect.width / 2) - (paletteRect.width / 2);
-    top = anchorRect.top - paletteRect.height - 10;
-    if (top < 8) top = anchorRect.bottom + 10;
+    // Settings palette pops down from the Cmd+K search bar (which sits high on
+    // screen); selection palette pops up from a toolbar button at the bottom.
+    const preferBelow = colorPaletteState.target !== 'selection';
+    if (preferBelow) {
+      top = anchorRect.bottom + 10;
+      if (top + paletteRect.height > window.innerHeight - 8) {
+        top = anchorRect.top - paletteRect.height - 10;
+      }
+    } else {
+      top = anchorRect.top - paletteRect.height - 10;
+      if (top < 8) top = anchorRect.bottom + 10;
+    }
   }
 
   left = Math.min(window.innerWidth - paletteRect.width - 8, Math.max(8, left));
@@ -543,8 +645,11 @@ function positionColorPalette(anchor) {
   palette.style.top = `${top}px`;
 }
 
-function openColorPalette(anchor = getColorPaletteAnchor()) {
-  if (edgeCreation || !hasColorableSelection()) return false;
+function openColorPalette(anchor, target = 'selection') {
+  if (target === 'selection') {
+    if (edgeCreation || !hasColorableSelection()) return false;
+    if (anchor === undefined) anchor = getColorPaletteAnchor();
+  }
   if (edgeTypeEditing) cancelEdgeTypeEdit();
   if (statusEditing) cancelStatusEdit();
 
@@ -553,8 +658,13 @@ function openColorPalette(anchor = getColorPaletteAnchor()) {
   if (!palette) return false;
 
   colorPaletteState.open = true;
+  colorPaletteState.target = target;
   palette.classList.remove('hidden');
-  setActiveColorSwatch(getSelectionColorIndex());
+  let initialIndex;
+  if (target === 'settings-bg') initialIndex = findPaletteIndexForColor(appSettings.bgColor);
+  else if (target === 'settings-font-color') initialIndex = findPaletteIndexForColor(appSettings.fontColor);
+  else initialIndex = getSelectionColorIndex();
+  setActiveColorSwatch(initialIndex);
   positionColorPalette(anchor);
   setActiveColorSwatch(colorPaletteState.activeIndex, true);
   return true;
@@ -564,6 +674,7 @@ function closeColorPalette() {
   const palette = document.getElementById('color-palette');
   if (palette) palette.classList.add('hidden');
   colorPaletteState.open = false;
+  colorPaletteState.target = 'selection';
 }
 
 function handleColorPaletteKey(e) {
@@ -637,7 +748,7 @@ async function persistNodeColor(node, color) {
     const statusVal = document.getElementById('field-status').value;
     content = buildContent({ ...panelLoadedMeta, title: titleVal, status: statusVal, color }, readEditorBody());
   } else {
-    const taskRes = await fetch(`/api/tasks/${taskId}`);
+    const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
     if (!taskRes.ok) throw new Error('load failed');
     const task = await taskRes.json();
     const parsed = parseFrontmatter(task.content);
@@ -695,8 +806,202 @@ async function applySelectionColor(color) {
 function commitColorPalette(index) {
   const color = COLOR_PALETTE[index];
   if (!color) return;
+  const target = colorPaletteState.target;
   closeColorPalette();
-  applySelectionColor(color.value);
+  if (target === 'settings-bg') setSettingBgColor(color.value);
+  else if (target === 'settings-font-color') setSettingFontColor(color.value);
+  else applySelectionColor(color.value);
+}
+
+// --- Settings overlay (Cmd+K) ---
+let settingsState = {
+  open: false,
+  mode: 'menu', // 'menu' | 'font'
+  activeIndex: 0,
+};
+
+function settingsAnchorFromCmdBar() {
+  // Capture the search bar's current rect so the palette can anchor to where
+  // the cmd+K bar was, even after we close the settings overlay (which would
+  // otherwise hide the element and zero out its rect).
+  const search = document.getElementById('settings-search');
+  if (!search) return null;
+  const rect = search.getBoundingClientRect();
+  return { getBoundingClientRect: () => rect };
+}
+
+function getSettingsItems() {
+  if (settingsState.mode === 'font') {
+    return [
+      ...FONTS.map((f) => ({
+        label: f.name,
+        kbd: null,
+        active: appSettings.font === f.id,
+        previewStack: f.stack,
+        onSelect: () => { setSettingFont(f.id); closeSettings(); },
+      })),
+      {
+        label: 'Text color',
+        kbd: 'C',
+        colorDot: appSettings.fontColor,
+        onSelect: () => {
+          const anchor = settingsAnchorFromCmdBar();
+          closeSettings();
+          openColorPalette(anchor, 'settings-font-color');
+        },
+      },
+    ];
+  }
+  return [
+    {
+      label: 'Font',
+      kbd: 'F',
+      previewStack: getFontStack(appSettings.font),
+      onSelect: () => { settingsState.mode = 'font'; settingsState.activeIndex = 0; clearSettingsSearch(); renderSettings(); },
+    },
+    {
+      label: 'Background',
+      kbd: 'B',
+      colorDot: appSettings.bgColor,
+      onSelect: () => {
+        const anchor = settingsAnchorFromCmdBar();
+        closeSettings();
+        openColorPalette(anchor, 'settings-bg');
+      },
+    },
+  ];
+}
+
+function getFilteredSettingsItems() {
+  const search = document.getElementById('settings-search');
+  const q = (search ? search.value : '').trim().toLowerCase();
+  const items = getSettingsItems();
+  if (!q) return items;
+  return items.filter((it) => it.label.toLowerCase().includes(q));
+}
+
+function clearSettingsSearch() {
+  const search = document.getElementById('settings-search');
+  if (search) search.value = '';
+}
+
+function renderSettings() {
+  const list = document.getElementById('settings-results');
+  if (!list) return;
+  list.innerHTML = '';
+  const items = getFilteredSettingsItems();
+  if (items.length === 0) {
+    settingsState.activeIndex = 0;
+    return;
+  }
+  if (settingsState.activeIndex >= items.length) settingsState.activeIndex = items.length - 1;
+  if (settingsState.activeIndex < 0) settingsState.activeIndex = 0;
+  items.forEach((it, idx) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'settings-item' + (idx === settingsState.activeIndex ? ' active' : '');
+    if (it.previewStack) row.style.fontFamily = it.previewStack;
+    const label = document.createElement('span');
+    label.textContent = it.label + (it.active ? ' ✓' : '');
+    row.appendChild(label);
+    const right = document.createElement('span');
+    right.style.display = 'inline-flex';
+    right.style.alignItems = 'center';
+    right.style.gap = '8px';
+    if (it.colorDot) {
+      const dot = document.createElement('span');
+      dot.className = 'settings-color-dot';
+      dot.style.background = it.colorDot;
+      right.appendChild(dot);
+    }
+    if (it.kbd) {
+      const kbd = document.createElement('kbd');
+      kbd.textContent = it.kbd;
+      right.appendChild(kbd);
+    }
+    row.appendChild(right);
+    row.addEventListener('click', () => it.onSelect());
+    list.appendChild(row);
+  });
+}
+
+function openSettings() {
+  if (settingsState.open) return;
+  closeColorPalette();
+  settingsState.open = true;
+  settingsState.mode = 'menu';
+  settingsState.activeIndex = 0;
+  document.getElementById('settings-overlay').classList.remove('hidden');
+  clearSettingsSearch();
+  renderSettings();
+  // Default to hotkey mode: blur whatever was focused (panel input, gear
+  // button, etc.) so document-level keydown captures hotkeys cleanly. The
+  // search input stays unfocused until the user clicks it or presses '/'.
+  if (document.activeElement && typeof document.activeElement.blur === 'function') {
+    document.activeElement.blur();
+  }
+}
+
+function closeSettings() {
+  if (!settingsState.open) return;
+  settingsState.open = false;
+  document.getElementById('settings-overlay').classList.add('hidden');
+}
+
+function handleSettingsKey(e) {
+  if (!settingsState.open) return false;
+  const search = document.getElementById('settings-search');
+  // Search mode = the input itself is focused. In that mode hotkey letters
+  // type into the box (so the user can search for "Font") instead of jumping.
+  const isSearching = e.target === search;
+  const items = getFilteredSettingsItems();
+
+  // Esc always closes the whole overlay, regardless of submode or focus —
+  // matches how Esc behaves everywhere else in the app.
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeSettings();
+    return true;
+  }
+  // '/' toggles search mode in either direction so the user is never trapped
+  // inside the input.
+  if (e.key === '/') {
+    e.preventDefault();
+    if (isSearching) {
+      search.blur();
+      clearSettingsSearch();
+      settingsState.activeIndex = 0;
+      renderSettings();
+    } else {
+      search.focus();
+    }
+    return true;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (items.length > 0) {
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      settingsState.activeIndex = (settingsState.activeIndex + delta + items.length) % items.length;
+      renderSettings();
+    }
+    return true;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (items[settingsState.activeIndex]) items[settingsState.activeIndex].onSelect();
+    return true;
+  }
+  // Hotkey jump (F/B/C) only when not in search mode.
+  if (!isSearching && e.key.length === 1) {
+    const k = e.key.toLowerCase();
+    const match = items.find((it) => it.kbd && it.kbd.toLowerCase() === k);
+    if (match) {
+      e.preventDefault();
+      match.onSelect();
+      return true;
+    }
+  }
+  return false;
 }
 
 // --- Panel ---
@@ -752,8 +1057,11 @@ function centerNodeInVisibleArea(node) {
   const panelWidth = panel.classList.contains('hidden')
     ? 0
     : panel.getBoundingClientRect().width;
-  const targetX = (window.innerWidth - panelWidth) / 2;
-  const targetY = window.innerHeight / 2;
+  // Use cy.width()/height() (cy container) rather than window.innerWidth so
+  // the sidebar's width is excluded — node.renderedPosition() is also in
+  // cy-container coords.
+  const targetX = (cy.width() - panelWidth) / 2;
+  const targetY = cy.height() / 2;
   const pos = node.renderedPosition();
   const dx = targetX - pos.x;
   const dy = targetY - pos.y;
@@ -782,19 +1090,16 @@ function showPanel(task) {
   editingTaskId = task ? task.data('taskId') : null;
   const panel = document.getElementById('panel');
   const title = document.getElementById('panel-title');
-  const btnDelete = document.getElementById('btn-delete');
   const status = document.getElementById('save-status');
   if (status) { status.textContent = ''; status.dataset.kind = ''; status.classList.remove('saved-fade'); }
 
   if (task) {
     title.textContent = 'Edit Task';
-    btnDelete.classList.remove('hidden');
-    fetch(`/api/tasks/${editingTaskId}`)
+    fetch(`${apiBase()}/tasks/${editingTaskId}`)
       .then((r) => r.json())
       .then((full) => { loadIntoEditor(full.content); });
   } else {
     title.textContent = 'New Task';
-    btnDelete.classList.add('hidden');
     loadIntoEditor('---\ntitle: \nstatus: todo\n---\n');
     if (status) { status.textContent = 'Add a title to create'; status.dataset.kind = 'hint'; }
   }
@@ -857,6 +1162,7 @@ function showTitleOverlay() {
   input.textContent = node.data('title') || '';
   input.classList.remove('hidden');
   node.addClass('editing');
+  node.addClass('inline-title-edit');
   syncNodeToOverlay();
   positionTitleOverlay();
   // Defer focus so layout settles
@@ -871,6 +1177,7 @@ function hideTitleOverlay() {
   input.classList.add('hidden');
   cy.nodes('.editing').forEach((n) => {
     n.removeClass('editing');
+    n.removeClass('inline-title-edit');
     n.removeStyle('width');
     n.removeStyle('height');
   });
@@ -965,7 +1272,7 @@ async function startEditingNode(node) {
   // Always refetch so panelLoadedMeta and the body editor have current content
   // (autosave reconstructs the full markdown on every keystroke).
   try {
-    const res = await fetch(`/api/tasks/${editingTaskId}`);
+    const res = await fetch(`${apiBase()}/tasks/${editingTaskId}`);
     const full = await res.json();
     loadIntoEditor(full.content);
   } catch (err) {
@@ -977,7 +1284,10 @@ async function startEditingNode(node) {
   updateToolbar();
 }
 
-function createNodeAt(pos, options = {}) {
+async function createNodeAt(pos, options = {}) {
+  // First click on a fresh install lazily creates a graph so the user
+  // can start sketching tasks immediately.
+  await ensureActiveGraph();
   cancelPendingNode();
   pendingViewportBeforeCreate = captureViewport();
   // Clear any prior selection so the new node is the only one selected
@@ -1006,7 +1316,6 @@ function createNodeAt(pos, options = {}) {
   panelLoadedMeta = {};
   const panel = document.getElementById('panel');
   document.getElementById('panel-title').textContent = 'New Task';
-  document.getElementById('btn-delete').classList.add('hidden');
   const status = document.getElementById('save-status');
   if (status) {
     status.textContent = 'Add a title to create';
@@ -1330,7 +1639,7 @@ async function commitEdgeTypeEdit() {
   if (edge && !edge.removed()) edge.removeClass('edge-type-editing');
   const rawId = String(edgeId).replace(/^e/, '');
   try {
-    const res = await fetch(`/api/edges/${rawId}`, {
+    const res = await fetch(`${apiBase()}/edges/${rawId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source_id: newSourceId, target_id: newTargetId, type: newType }),
@@ -1438,7 +1747,7 @@ async function commitStatusEdit() {
       const meta = { ...panelLoadedMeta, title: titleVal, status: currentStatus };
       content = buildContent(meta, readEditorBody());
     } else {
-      const taskRes = await fetch(`/api/tasks/${taskId}`);
+      const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
       if (!taskRes.ok) throw new Error('fetch failed');
       const task = await taskRes.json();
       const parsed = parseFrontmatter(task.content);
@@ -1491,8 +1800,10 @@ function createNodeAtCenter() {
   const panelWidth = panel.classList.contains('hidden')
     ? 0
     : panel.getBoundingClientRect().width;
-  const screenX = (window.innerWidth - panelWidth) / 2;
-  const screenY = window.innerHeight / 2;
+  // cy.width()/height() are the cy container's size (already excludes the
+  // sidebar); pan() is in cy-container coords, so screenX/Y must be too.
+  const screenX = (cy.width() - panelWidth) / 2;
+  const screenY = cy.height() / 2;
   const z = cy.zoom();
   const pan = cy.pan();
   createNodeAt({ x: (screenX - pan.x) / z, y: (screenY - pan.y) / z });
@@ -1500,7 +1811,7 @@ function createNodeAtCenter() {
 
 // --- API calls ---
 async function createTask(content) {
-  return fetch('/api/tasks', {
+  return fetch(`${apiBase()}/tasks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -1508,7 +1819,7 @@ async function createTask(content) {
 }
 
 async function updateTask(id, content) {
-  return fetch(`/api/tasks/${id}`, {
+  return fetch(`${apiBase()}/tasks/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -1531,7 +1842,7 @@ async function persistNodePosition(node) {
   }
 
   try {
-    const taskRes = await fetch(`/api/tasks/${taskId}`);
+    const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
     if (!taskRes.ok) throw new Error('load failed');
     const task = await taskRes.json();
     const parsed = parseFrontmatter(task.content);
@@ -1549,11 +1860,11 @@ async function persistNodePosition(node) {
 }
 
 async function deleteTask(id) {
-  await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+  await fetch(`${apiBase()}/tasks/${id}`, { method: 'DELETE' });
 }
 
 async function createEdge(source_id, target_id, type) {
-  return fetch('/api/edges', {
+  return fetch(`${apiBase()}/edges`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_id, target_id, type }),
@@ -1562,7 +1873,7 @@ async function createEdge(source_id, target_id, type) {
 
 async function updateEdgeMeta(edge, metaPatch) {
   const rawId = String(edge.id()).replace(/^e/, '');
-  return fetch(`/api/edges/${rawId}`, {
+  return fetch(`${apiBase()}/edges/${rawId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ meta: metaPatch }),
@@ -1791,7 +2102,7 @@ async function persistEdgeCurve(edge) {
 }
 
 async function deleteEdgeById(edgeId) {
-  await fetch(`/api/edges/${edgeId}`, { method: 'DELETE' });
+  await fetch(`${apiBase()}/edges/${edgeId}`, { method: 'DELETE' });
 }
 
 function confirmDelete(message) {
@@ -1850,8 +2161,296 @@ async function deleteSelected() {
   await fetchGraph();
 }
 
+// --- Sidebar / multi-graph ---
+
+const sidebar = {
+  graphs: [],
+};
+
+function relativeTime(iso) {
+  const t = new Date(iso).getTime();
+  const diff = Date.now() - t;
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
+}
+
+async function fetchGraphsList() {
+  const res = await fetch('/api/graphs');
+  if (!res.ok) throw new Error('failed to load graphs');
+  sidebar.graphs = await res.json();
+  renderSidebar();
+}
+
+function renderSidebar() {
+  const list = document.getElementById('sidebar-list');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const g of sidebar.graphs) {
+    const item = document.createElement('div');
+    item.className = 'sb-item' + (g.id === activeGraphId ? ' active' : '');
+    item.dataset.graphId = String(g.id);
+    if (g.description) item.title = g.description;
+
+    const name = document.createElement('div');
+    name.className = 'sb-name';
+    name.textContent = g.name;
+    item.appendChild(name);
+
+    const meta = document.createElement('div');
+    meta.className = 'sb-meta';
+    meta.textContent = relativeTime(g.updated_at);
+    item.appendChild(meta);
+
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'sb-menu-btn';
+    menuBtn.textContent = '⋯';
+    menuBtn.title = 'Graph options';
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openGraphEditModal(g);
+    });
+    item.appendChild(menuBtn);
+
+    item.addEventListener('click', () => {
+      if (g.id !== activeGraphId) switchActiveGraph(g.id, { pushState: true });
+    });
+
+    list.appendChild(item);
+  }
+  updateEmptyStates();
+}
+
+function updateEmptyStates() {
+  const sidebarEmpty = document.getElementById('sidebar-empty');
+  const noGraphs = sidebar.graphs.length === 0;
+  if (sidebarEmpty) sidebarEmpty.classList.toggle('hidden', !noGraphs);
+  // Refresh the canvas-level empty-state hint so its copy matches
+  // whether or not a graph is active.
+  if (typeof updateEmptyState === 'function') updateEmptyState();
+}
+
+// Single edit modal — Save commits name + description; Delete confirms then removes.
+let _graphModalClose = null;
+function openGraphEditModal(graph) {
+  // If the modal was already open (e.g. clicking ⋯ on another graph), tear
+  // down the previous instance's listeners before binding new ones.
+  if (_graphModalClose) _graphModalClose();
+
+  const modal = document.getElementById('graph-modal');
+  const nameInput = document.getElementById('graph-modal-name');
+  const descInput = document.getElementById('graph-modal-desc');
+  const saveBtn = document.getElementById('graph-modal-save');
+  const deleteBtn = document.getElementById('graph-modal-delete');
+
+  nameInput.value = graph.name;
+  descInput.value = graph.description || '';
+
+  function close() {
+    _graphModalClose = null;
+    modal.classList.add('hidden');
+    saveBtn.removeEventListener('click', onSave);
+    deleteBtn.removeEventListener('click', onDelete);
+    modal.removeEventListener('click', onBackdrop);
+    document.removeEventListener('keydown', onKey, true);
+  }
+  async function onSave() {
+    const nextName = nameInput.value.trim();
+    const nextDescRaw = descInput.value;
+    if (!nextName) {
+      nameInput.focus();
+      return;
+    }
+    const body = {};
+    if (nextName !== graph.name) body.name = nextName;
+    const trimmedDesc = nextDescRaw.trim();
+    const newDesc = trimmedDesc === '' ? null : nextDescRaw;
+    if (newDesc !== (graph.description ?? null)) body.description = newDesc;
+    if (Object.keys(body).length === 0) { close(); return; }
+    try {
+      const res = await fetch(`/api/graphs/${graph.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        alert(e.error || 'Save failed');
+        return;
+      }
+      close();
+      await fetchGraphsList();
+    } catch {
+      alert('Save failed');
+    }
+  }
+  async function onDelete() {
+    const ok = await confirmDelete(
+      `Delete "${graph.name}"? This removes all its tasks and edges.`
+    );
+    if (!ok) return;
+    await fetch(`/api/graphs/${graph.id}`, { method: 'DELETE' });
+    close();
+    if (graph.id === activeGraphId) {
+      activeGraphId = null;
+      try { localStorage.removeItem(ACTIVE_GRAPH_STORAGE_KEY); } catch {}
+      history.replaceState({}, '', '/');
+      if (cy) cy.elements().remove();
+    }
+    await fetchGraphsList();
+    if (!activeGraphId && sidebar.graphs.length > 0) {
+      await switchActiveGraph(sidebar.graphs[0].id, { pushState: true });
+    } else {
+      updateEmptyStates();
+    }
+  }
+  function onBackdrop(e) { if (e.target === modal) close(); }
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === 'Enter' && e.target === nameInput) {
+      e.preventDefault();
+      onSave();
+    }
+  }
+
+  saveBtn.addEventListener('click', onSave);
+  deleteBtn.addEventListener('click', onDelete);
+  modal.addEventListener('click', onBackdrop);
+  document.addEventListener('keydown', onKey, true);
+  _graphModalClose = close;
+  modal.classList.remove('hidden');
+  nameInput.focus();
+  nameInput.select();
+}
+
+// Lazy-create a graph the first time the user does anything that needs one.
+// Race-guarded so two fast clicks don't create two graphs.
+let _ensureGraphPromise = null;
+// id of a graph that was lazy-created in this session and hasn't yet had a
+// task committed in it. If the user backs out before committing, we delete it
+// so they don't accumulate empty "Untitled" graphs.
+let _lazyCreatedGraphId = null;
+
+function ensureActiveGraph() {
+  if (activeGraphId != null) return Promise.resolve();
+  if (_ensureGraphPromise) return _ensureGraphPromise;
+  _ensureGraphPromise = (async () => {
+    const res = await fetch('/api/graphs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Untitled' }),
+    });
+    if (!res.ok) throw new Error('failed to create graph');
+    const created = await res.json();
+    _lazyCreatedGraphId = created.id;
+    await fetchGraphsList();
+    await switchActiveGraph(created.id, { pushState: true });
+  })().finally(() => { _ensureGraphPromise = null; });
+  return _ensureGraphPromise;
+}
+
+// If the user lazy-created a graph and then backed out without committing
+// any task, delete it. Deferred via setTimeout(0) so an in-flight createNodeAt
+// can re-add a ghost before the check runs.
+let _lazyCleanupTimer = null;
+function maybeCleanupLazyGraph() {
+  if (_lazyCreatedGraphId == null) return;
+  if (_lazyCreatedGraphId !== activeGraphId) return;
+  if (_lazyCleanupTimer) clearTimeout(_lazyCleanupTimer);
+  _lazyCleanupTimer = setTimeout(async () => {
+    _lazyCleanupTimer = null;
+    if (_lazyCreatedGraphId == null) return;
+    if (_lazyCreatedGraphId !== activeGraphId) return;
+    if (cy && cy.nodes().length > 0) return; // a node is back in play
+    const gid = _lazyCreatedGraphId;
+    _lazyCreatedGraphId = null;
+    try { await fetch(`/api/graphs/${gid}`, { method: 'DELETE' }); } catch {}
+    activeGraphId = null;
+    try { localStorage.removeItem(ACTIVE_GRAPH_STORAGE_KEY); } catch {}
+    history.replaceState({}, '', '/');
+    await fetchGraphsList();
+    updateEmptyStates();
+  }, 0);
+}
+
+async function createGraphFromUI() {
+  const name = prompt('Graph name:');
+  if (!name) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  const res = await fetch('/api/graphs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: trimmed }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    alert(body.error || 'Failed to create graph');
+    return;
+  }
+  const created = await res.json();
+  await fetchGraphsList();
+  switchActiveGraph(created.id, { pushState: true });
+}
+
+async function switchActiveGraph(id, { pushState = false } = {}) {
+  activeGraphId = id;
+  try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
+  if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
+  renderSidebar();
+  if (cy) cy.elements().remove();
+  await fetchGraph();
+  if (typeof updateToolbar === 'function') updateToolbar();
+}
+
+function parseGraphIdFromPath() {
+  const m = location.pathname.match(/^\/g\/([a-z0-9]+)\/?$/);
+  return m ? m[1] : null;
+}
+
+async function bootSidebar() {
+  await fetchGraphsList();
+  // Resolve which graph to open: URL → localStorage → first available → none
+  let target = parseGraphIdFromPath();
+  if (target && !sidebar.graphs.some((g) => g.id === target)) target = null;
+  if (target == null) {
+    let stored = null;
+    try { stored = localStorage.getItem(ACTIVE_GRAPH_STORAGE_KEY); } catch {}
+    if (stored && sidebar.graphs.some((g) => g.id === stored)) target = stored;
+  }
+  if (target == null && sidebar.graphs.length > 0) target = sidebar.graphs[0].id;
+
+  if (target == null) {
+    activeGraphId = null;
+    updateEmptyStates();
+  } else {
+    await switchActiveGraph(target, { pushState: parseGraphIdFromPath() !== target });
+  }
+}
+
+window.addEventListener('popstate', () => {
+  const id = parseGraphIdFromPath();
+  if (id != null && sidebar.graphs.some((g) => g.id === id)) {
+    if (id !== activeGraphId) switchActiveGraph(id, { pushState: false });
+  } else if (id == null && activeGraphId != null) {
+    activeGraphId = null;
+    if (cy) cy.elements().remove();
+    renderSidebar();
+    updateEmptyStates();
+  }
+});
+
 // --- Initialize ---
 document.addEventListener('DOMContentLoaded', () => {
+  loadSettings();
   cy = cytoscape({
     container: document.getElementById('cy'),
     style: [
@@ -1866,8 +2465,8 @@ document.addEventListener('DOMContentLoaded', () => {
           'text-valign': 'center',
           'text-halign': 'center',
           'font-size': '13px',
-          'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-          'color': '#CECDC3',
+          'font-family': getFontStack(appSettings.font),
+          'color': appSettings.fontColor,
           'text-wrap': 'wrap',
           'text-max-width': '140px',
           'width': 'label',
@@ -1925,6 +2524,14 @@ document.addEventListener('DOMContentLoaded', () => {
           'border-color': '#4385BE',
           'border-style': 'dashed',
           'border-width': 2.5,
+        },
+      },
+      {
+        // Hide the cytoscape label only while the HTML title overlay is
+        // rendering on top of the node, to avoid double-rendering. Panel-only
+        // edits keep the label visible.
+        selector: 'node.inline-title-edit',
+        style: {
           'text-opacity': 0,
         },
       },
@@ -2264,6 +2871,14 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.tagName === 'TEXTAREA' ||
       e.target.tagName === 'SELECT' ||
       e.target.isContentEditable;
+    // Cmd+K toggles the settings overlay from anywhere, including inside fields.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      if (settingsState.open) closeSettings();
+      else openSettings();
+      return;
+    }
+    if (handleSettingsKey(e)) return;
     if (handleColorPaletteKey(e)) return;
     // Esc always works (closes overlay/panel/clears selection/cancels edge)
     if (e.key === 'Escape') {
@@ -2516,6 +3131,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       const saved = await res.json();
       if (wasNew && saved && saved.id) {
+        // Lazy graph just got real content — don't auto-clean it.
+        if (_lazyCreatedGraphId === activeGraphId) _lazyCreatedGraphId = null;
         editingTaskId = saved.id;
         const edgeIntent = pendingEdgesForNewNode;
         removePendingEdgePreviews(edgeIntent);
@@ -2534,7 +3151,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (real && !real.empty()) {
           if (pos) real.position(pos);
           real.addClass('selected');
-          if (overlayVisible) real.addClass('editing');
+          if (overlayVisible) {
+            real.addClass('editing');
+            real.addClass('inline-title-edit');
+          }
           pendingNode = real; // keep tracking so the overlay stays anchored
         }
         await createPendingEdgesForSavedNode(saved.id, edgeIntent);
@@ -2660,6 +3280,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('raw-editor').addEventListener('input', scheduleSave);
   richEditor.on('change', scheduleSave);
 
+  // Keep the empty-state placeholder in sync with whether anything (pending
+  // node included) is on the canvas, and trigger lazy-graph cleanup when the
+  // canvas drops back to zero nodes.
+  cy.on('add remove', 'node', () => updateEmptyState());
+  cy.on('remove', 'node', () => maybeCleanupLazyGraph());
+
   // Reposition the inline overlay when the canvas moves or the active node moves
   cy.on('pan zoom resize', () => {
     syncNodeToOverlay();
@@ -2680,15 +3306,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('panel-close').addEventListener('click', hidePanel);
 
-  document.getElementById('btn-delete').addEventListener('click', async () => {
-    if (editingTaskId && confirm('Delete this task?')) {
-      await deleteTask(editingTaskId);
-      hidePanel();
-      clearSelection();
-      await fetchGraph();
-    }
+  // --- Settings overlay (Cmd+K) wiring ---
+  document.getElementById('btn-settings').addEventListener('click', openSettings);
+  document.getElementById('settings-search').addEventListener('input', () => {
+    settingsState.activeIndex = 0;
+    renderSettings();
   });
+  document.getElementById('settings-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'settings-overlay') closeSettings();
+  });
+  applySettings();
 
-  // Initial render
-  fetchGraph().then(() => updateToolbar());
+  // Sidebar wiring
+  const newBtn = document.getElementById('sidebar-new-btn');
+  if (newBtn) newBtn.addEventListener('click', createGraphFromUI);
+
+  // Boot sidebar — fetches graphs, resolves active graph, loads its data.
+  // Replaces the old single-graph fetchGraph() bootstrap.
+  bootSidebar().then(() => {
+    if (activeGraphId != null) updateToolbar();
+  });
 });

@@ -21,7 +21,6 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV PGDATA=/var/lib/postgresql/data
-ENV POSTGRES_HOST_AUTH_METHOD=trust
 
 EXPOSE 3000
 

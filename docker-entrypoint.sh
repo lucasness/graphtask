@@ -6,11 +6,13 @@ PGDATA="${PGDATA:-/var/lib/postgresql/data}"
 # Initialize Postgres if needed
 if [ ! -s "$PGDATA/PG_VERSION" ]; then
   su postgres -c "initdb -D $PGDATA"
-  echo "host all all 0.0.0.0/0 trust" >> "$PGDATA/pg_hba.conf"
+  # Loopback only — Node app and Postgres share this container
+  echo "host all all 127.0.0.1/32 trust" >> "$PGDATA/pg_hba.conf"
+  echo "host all all ::1/128       trust" >> "$PGDATA/pg_hba.conf"
 fi
 
-# Start Postgres in background
-su postgres -c "pg_ctl -D $PGDATA -l /var/log/postgresql.log start -w"
+# Start Postgres in background, listening only on loopback
+su postgres -c "pg_ctl -D $PGDATA -l /var/log/postgresql.log -o \"-c listen_addresses='127.0.0.1'\" start -w"
 
 # Create database and load schema
 su postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='graphtask'\" | grep -q 1" \

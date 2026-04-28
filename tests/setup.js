@@ -32,7 +32,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query('TRUNCATE tasks, edges RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE graphs, tasks, edges RESTART IDENTITY CASCADE');
 });
 
 afterAll(async () => {

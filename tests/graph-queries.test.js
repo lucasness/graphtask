@@ -3,6 +3,7 @@ import { getTestPool, TEST_URL } from './setup.js';
 
 let app;
 let pool;
+let gid;
 
 beforeAll(async () => {
   process.env.DATABASE_URL = TEST_URL;
@@ -17,87 +18,105 @@ function taskRow(title) {
   return [content, meta];
 }
 
-// Build test graph (arrows = execution order, source is prerequisite of target):
+// Graph (arrows = execution order, source is prerequisite of target):
 // A → B → D
 // A → C → D
 // D -- E (related)
+// Inserted via TRUNCATE+RESTART so task ids are 1..5 deterministically.
 beforeEach(async () => {
+  const g = await pool.query("INSERT INTO graphs (name) VALUES ('t') RETURNING id");
+  gid = g.rows[0].id;
   for (const t of ['A', 'B', 'C', 'D', 'E']) {
     const [c, m] = taskRow(t);
-    await pool.query(`INSERT INTO tasks (content, meta) VALUES ($1, $2)`, [c, m]);
+    await pool.query(
+      `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3)`,
+      [gid, c, m]
+    );
   }
-  await pool.query(`
-    INSERT INTO edges (source_id, target_id, type) VALUES
-      (1, 2, 'dependency'),
-      (1, 3, 'dependency'),
-      (2, 4, 'dependency'),
-      (3, 4, 'dependency'),
-      (4, 5, 'related')
-  `);
+  await pool.query(
+    `INSERT INTO edges (graph_id, source_id, target_id, type) VALUES
+      ($1, 1, 2, 'dependency'),
+      ($1, 1, 3, 'dependency'),
+      ($1, 2, 4, 'dependency'),
+      ($1, 3, 4, 'dependency'),
+      ($1, 4, 5, 'related')`,
+    [gid]
+  );
 });
 
+const tasksUrl = () => `/api/graphs/${gid}/tasks`;
+const graphUrl = () => `/api/graphs/${gid}/graph`;
+
 describe('Graph queries', () => {
-  describe('GET /api/tasks/:id/subtasks (prerequisites)', () => {
+  describe('GET /api/graphs/:gid/tasks/:id/subtasks (prerequisites)', () => {
     it('should return all prerequisites of task D', async () => {
-      const res = await request(app).get('/api/tasks/4/subtasks');
+      const res = await request(app).get(`${tasksUrl()}/4/subtasks`);
       expect(res.status).toBe(200);
       const ids = res.body.map((t) => t.id).sort();
       expect(ids).toEqual([1, 2, 3]); // A, B, C
     });
 
     it('should return empty for a root node with no prerequisites', async () => {
-      const res = await request(app).get('/api/tasks/1/subtasks');
+      const res = await request(app).get(`${tasksUrl()}/1/subtasks`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
 
     it('should return 404 for non-existent task', async () => {
-      const res = await request(app).get('/api/tasks/9999/subtasks');
+      const res = await request(app).get(`${tasksUrl()}/9999/subtasks`);
       expect(res.status).toBe(404);
+    });
+
+    it('should return 400 for non-integer id', async () => {
+      const res = await request(app).get(`${tasksUrl()}/abc/subtasks`);
+      expect(res.status).toBe(400);
     });
   });
 
-  describe('GET /api/tasks/:id/ancestors (dependents)', () => {
+  describe('GET /api/graphs/:gid/tasks/:id/ancestors (dependents)', () => {
     it('should return all dependents of task A', async () => {
-      const res = await request(app).get('/api/tasks/1/ancestors');
+      const res = await request(app).get(`${tasksUrl()}/1/ancestors`);
       expect(res.status).toBe(200);
       const ids = res.body.map((t) => t.id).sort();
       expect(ids).toEqual([2, 3, 4]); // B, C, D
     });
 
     it('should return empty for an end-goal node', async () => {
-      const res = await request(app).get('/api/tasks/4/ancestors');
+      const res = await request(app).get(`${tasksUrl()}/4/ancestors`);
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
 
     it('should return 404 for non-existent task', async () => {
-      const res = await request(app).get('/api/tasks/9999/ancestors');
+      const res = await request(app).get(`${tasksUrl()}/9999/ancestors`);
       expect(res.status).toBe(404);
+    });
+
+    it('should return 400 for non-integer id', async () => {
+      const res = await request(app).get(`${tasksUrl()}/abc/ancestors`);
+      expect(res.status).toBe(400);
     });
   });
 
-  describe('GET /api/tasks/leaves', () => {
-    it('should return tasks with no incoming dependency edges (can start immediately)', async () => {
-      const res = await request(app).get('/api/tasks/leaves');
+  describe('GET /api/graphs/:gid/tasks/leaves', () => {
+    it('should return tasks with no incoming dependency edges', async () => {
+      const res = await request(app).get(`${tasksUrl()}/leaves`);
       expect(res.status).toBe(200);
       const ids = res.body.map((t) => t.id).sort();
-      // A has no prerequisites, E has no dependency edges at all
       expect(ids).toEqual([1, 5]);
     });
 
     it('should return all tasks when no dependency edges exist', async () => {
       await pool.query('DELETE FROM edges');
-      const res = await request(app).get('/api/tasks/leaves');
+      const res = await request(app).get(`${tasksUrl()}/leaves`);
       expect(res.status).toBe(200);
       expect(res.body).toHaveLength(5);
     });
   });
 
-  describe('GET /api/graph/shortest-path', () => {
+  describe('GET /api/graphs/:gid/graph/shortest-path', () => {
     it('should find shortest path between two tasks', async () => {
-      // All edges cost 1, both A->B->D and A->C->D are length 2
-      const res = await request(app).get('/api/graph/shortest-path?from=1&to=4');
+      const res = await request(app).get(`${graphUrl()}/shortest-path?from=1&to=4`);
       expect(res.status).toBe(200);
       expect(res.body.path).toHaveLength(3);
       expect(res.body.path[0]).toBe(1);
@@ -107,26 +126,54 @@ describe('Graph queries', () => {
 
     it('should return empty path for disconnected tasks', async () => {
       const [c, m] = taskRow('F');
-      await pool.query(`INSERT INTO tasks (content, meta) VALUES ($1, $2)`, [c, m]);
-      const res = await request(app).get('/api/graph/shortest-path?from=1&to=6');
+      await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3)`,
+        [gid, c, m]
+      );
+      const res = await request(app).get(`${graphUrl()}/shortest-path?from=1&to=6`);
       expect(res.status).toBe(200);
       expect(res.body.path).toEqual([]);
     });
 
     it('should return 400 if from or to is missing', async () => {
-      const res = await request(app).get('/api/graph/shortest-path?from=1');
+      const res = await request(app).get(`${graphUrl()}/shortest-path?from=1`);
       expect(res.status).toBe(400);
     });
 
     it('should return 400 if from or to is not a valid integer', async () => {
-      const res = await request(app).get('/api/graph/shortest-path?from=abc&to=def');
+      const res = await request(app).get(`${graphUrl()}/shortest-path?from=abc&to=def`);
       expect(res.status).toBe(400);
+    });
+
+    it('should not cross graphs', async () => {
+      const otherGid = (
+        await pool.query("INSERT INTO graphs (name) VALUES ('other') RETURNING id")
+      ).rows[0].id;
+      const [c, m] = taskRow('Z');
+      const z1 = await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3) RETURNING id`,
+        [otherGid, c, m]
+      );
+      const z2 = await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3) RETURNING id`,
+        [otherGid, c, m]
+      );
+      await pool.query(
+        `INSERT INTO edges (graph_id, source_id, target_id, type) VALUES ($1, $2, $3, 'dependency')`,
+        [otherGid, z1.rows[0].id, z2.rows[0].id]
+      );
+      // Try to find path between two tasks in 'other' graph using `gid` URL: should not find them.
+      const res = await request(app).get(
+        `${graphUrl()}/shortest-path?from=${z1.rows[0].id}&to=${z2.rows[0].id}`
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.path).toEqual([]);
     });
   });
 
-  describe('GET /api/graph', () => {
-    it('should return full graph data with nodes and links', async () => {
-      const res = await request(app).get('/api/graph');
+  describe('GET /api/graphs/:gid/graph', () => {
+    it('should return graph data with nodes and links', async () => {
+      const res = await request(app).get(graphUrl());
       expect(res.status).toBe(200);
       expect(res.body.nodes).toHaveLength(5);
       expect(res.body.links).toHaveLength(5);
@@ -138,9 +185,22 @@ describe('Graph queries', () => {
       expect(link.meta).toEqual({});
     });
 
+    it('should not include nodes/links from other graphs', async () => {
+      const otherGid = (
+        await pool.query("INSERT INTO graphs (name) VALUES ('other') RETURNING id")
+      ).rows[0].id;
+      const [c, m] = taskRow('Z');
+      await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3)`,
+        [otherGid, c, m]
+      );
+      const res = await request(app).get(graphUrl());
+      expect(res.body.nodes).toHaveLength(5);
+    });
+
     it('should return empty graph when no data', async () => {
       await pool.query('TRUNCATE tasks, edges RESTART IDENTITY CASCADE');
-      const res = await request(app).get('/api/graph');
+      const res = await request(app).get(graphUrl());
       expect(res.status).toBe(200);
       expect(res.body.nodes).toEqual([]);
       expect(res.body.links).toEqual([]);
