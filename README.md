@@ -6,6 +6,57 @@ sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
 
 ---
 
+## Getting started
+
+### Requirements
+
+- **Node 22+** (uses `node --env-file`)
+- **PostgreSQL 17+** with the [`pgrouting`](https://pgrouting.org) extension
+  available (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`)
+
+### Install + run
+
+```sh
+git clone https://github.com/<your-username>/graphtask.git
+cd graphtask
+npm install
+
+# Create a database and load the schema (idempotent).
+createdb graphtask
+psql graphtask -f db/schema.sql
+
+# Start the server.
+DATABASE_URL=postgresql://localhost/graphtask npm start
+# → http://localhost:3000
+```
+
+If you'd rather keep config in a file, drop a `.env` next to `package.json`:
+
+```env
+DATABASE_URL=postgresql://localhost/graphtask
+PORT=3000
+```
+
+`npm start` reads it via `node --env-file=.env`.
+
+### Tests
+
+```sh
+npm test
+```
+
+Tests spin up and tear down a `graphtask_test` database; the `pgrouting`
+extension must be available on your local Postgres for them to pass.
+
+### Docker
+
+A `Dockerfile` and `docker-entrypoint.sh` are included that bundle Postgres
++ pgRouting + Node into a single container. `docker build -t graphtask .`
+then `docker run -p 3000:3000 graphtask`. Data lives in the container
+filesystem unless you mount a volume at `/var/lib/postgresql/data`.
+
+---
+
 ## Stack
 
 - Backend: Express 5 on Node 22, PostgreSQL with pgRouting, `pg`, and `yaml`.
@@ -42,28 +93,6 @@ tests/               Vitest specs: graphs, tasks, edges, graph queries, db, api
 Dockerfile           Postgres 17 + pgRouting + Node 22 image
 docker-entrypoint.sh initdb, loopback-only pg_hba, schema load, node start
 ```
-
----
-
-## Setup
-
-The app runs on Node 22+ and a local Postgres with the `pgrouting` extension.
-
-```sh
-npm install
-
-# Create the dev database and load schema. The schema.sql is idempotent
-# (uses IF NOT EXISTS) but type changes do require a manual reset.
-createdb graphtask
-psql graphtask -f db/schema.sql
-
-DATABASE_URL=postgresql://localhost/graphtask npm start
-npm test
-```
-
-Alternatively, if `DATABASE_URL` is not set, the app falls back to
-`PG_BOOTSTRAP_URL` + `DATABASE_NAME` from `.env` (loaded via Node's
-`--env-file`). This is the path used in the wafer/deploy setup.
 
 ---
 
