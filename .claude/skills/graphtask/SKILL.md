@@ -1,7 +1,7 @@
 ---
 name: graphtask
-description: Convert a plan into a graphtask graph and track progress as you work — CRUD on tasks/edges, dependency traversal, status updates from todo through review (never done; that's a human gate).
-when_to_use: When the user says "turn this plan into a graph", "track this in graphtask", "draw a dependency graph", or when you want to record your own progress on a multi-step task while the user watches it live.
+description: Materialize any multi-step plan as a graphtask graph, then drive execution from the graph. The graph IS your execution scaffold — not a side tracker. Tasks move todo → in_progress → review (never done; that's a human gate). Includes status-aware traversal, transactional bulk edges, and live canvas updates the user can watch.
+when_to_use: Use IMMEDIATELY after exiting Plan mode, after the user approves a plan, or any time you're about to execute multi-step work — turn the plan into a graph FIRST, then walk the graph task-by-task. Also fires on explicit triggers: "turn this plan into a graph", "track this in graphtask", "what should I work on next?", "what's blocking X?".
 allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *)
 ---
 
@@ -13,14 +13,23 @@ There's no auth. Each graph's id is a random 16-char string and is bearer-token 
 
 ## When this skill applies
 
-Activate when the user wants to track multi-step work in a graph or asks something about an existing graph. Concrete triggers and what to do:
+**Primary use case: executing a plan.** Whenever you have a multi-step plan — whether you just exited Plan mode, the user approved a plan, or you're about to do work that has more than one logical step — *use this skill before writing any implementation code*. The graph is your execution scaffold. The flow:
 
-- *"Turn this plan into a graph"* / *"Track this in graphtask"* — run sections 1 + 2: resolve the graph, materialize the **whole plan** as tasks + dependency edges in one batch *before* starting any of it. The user wants the structure visible first.
-- *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize. Don't recompute readiness yourself; the server does it.
-- *"What can I work on next?"* — `GET /tasks/ready`. If empty, look for `review`-status tasks and run `/unblocks` on each (section 4) to find the ones whose finalization would unblock work.
+1. Resolve the active graph (section 1).
+2. Materialize the **entire plan** as tasks + dependency edges in one batch (section 2). The user now sees the structure on the canvas.
+3. Walk the graph task-by-task (section 4): pick the first ready task, check its blockers (section 3), mark `in_progress`, do the actual work, mark `review` when finished, move on.
+4. After every task is in `review`, stop and tell the user it's ready for them to confirm.
+
+This sequence is the pattern. Don't dive into implementation, then "remember" to make a graph after — the user wants to watch the structure appear *before* the work starts, then watch each task light up as you progress.
+
+**Other triggers (subordinate to the primary pattern):**
+
+- *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize.
+- *"What can I work on next?"* — `GET /tasks/ready`. If empty, look for `review` tasks whose `/unblocks` is non-empty (section 4).
+- *"Track this in graphtask"* / *"Turn this plan into a graph"* — same as the primary flow, just user-initiated.
 - *"Mark X done"* / *"Finish X"* — you move it to `review`, never `done`. See section 3.
 
-Skip if the work is one-step (a tweak, a quick question, fixing a typo). Graph overhead isn't worth it for those.
+**Skip if the work is one-step** — a typo fix, a quick question, a one-line tweak. Graph overhead isn't worth it.
 
 ## 1. Resolve the active graph
 
