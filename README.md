@@ -6,12 +6,31 @@ sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
 
 ---
 
-## Quickstart
+## Getting Started
 
-The only requirement on your machine is **Docker Desktop** (or the Docker
-engine). Everything else — Node, Postgres, the pgRouting extension — runs
-inside a single container, so you don't have to match versions or install
+Pick the path that matches how you want to run graphtask.
+
+### 1. Use the hosted version
+
+> _Hosted instance coming soon — link will go here._
+
+No setup, no install. Open the link, start sketching graphs.
+
+### 2. Run locally with Docker
+
+The simplest local path. Everything — Node, Postgres, the pgRouting extension —
+runs inside a single container, so you don't have to match versions or install
 anything language-specific.
+
+**Prerequisites**
+
+- **Docker Desktop** (or the Docker engine).
+
+**Environment variables**
+
+- `HOST_PORT` _(optional, default `3000`)_ — host port to publish the app on.
+
+**Setup**
 
 ```sh
 git clone https://github.com/lucasness/graphtask.git
@@ -28,7 +47,7 @@ Your graphs are stored in a Docker named volume (`pgdata`), so they survive
 `docker compose down` / `up` cycles. Wipe everything with
 `docker compose down -v`.
 
-### Common things
+**Common commands**
 
 ```sh
 docker compose up -d        # run in the background
@@ -38,23 +57,50 @@ docker compose down -v      # stop, wipe data
 HOST_PORT=3001 docker compose up   # serve on a different host port
 ```
 
-### Running without Docker
+### 3. Run locally without Docker
 
-If you'd rather run natively (e.g. for development):
+For development, or if you'd rather not use Docker. You install Node and
+Postgres yourself and point the app at your local database.
 
-- **Node 22+** (uses `node --env-file`)
-- **PostgreSQL 17+** with [`pgrouting`](https://pgrouting.org) installed
-  (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`)
+**Prerequisites**
+
+- **Node 22+** — the start script uses `node --env-file`, a Node 22 flag.
+- **PostgreSQL 17+** with the [`pgrouting`](https://pgrouting.org) extension
+  installed (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`).
+  Required for the shortest-path API and for the test suite.
+
+**Environment variables** (resolved in `src/db.js` / `src/server.js`, loaded
+from `.env` by `npm start`)
+
+- `DATABASE_URL` — full Postgres connection string. Takes precedence over the
+  pair below.
+- `PG_BOOTSTRAP_URL` + `DATABASE_NAME` — alternative: the URL's path is
+  replaced with `/<DATABASE_NAME>` at runtime.
+- If neither is set, falls back to `postgresql://postgres@localhost/graphtask`.
+- `PORT` _(optional, default `3000`)_ — port the Express server binds to on
+  `127.0.0.1`.
+
+**Setup**
 
 ```sh
+git clone https://github.com/lucasness/graphtask.git
+cd graphtask
 npm install
 createdb graphtask
 psql graphtask -f db/schema.sql
+
+# npm start runs `node --env-file=.env`, which errors if .env is missing.
+# Create one (empty is fine) and/or set vars inline:
+touch .env
 DATABASE_URL=postgresql://localhost/graphtask npm start
 ```
 
-Run the tests with `npm test`. They spin up and tear down a `graphtask_test`
-database; `pgrouting` must be available on your local Postgres.
+Open <http://localhost:3000>.
+
+**Tests**
+
+`npm test` spins up and tears down a `graphtask_test` database on your local
+Postgres; `pgrouting` must be installed there.
 
 ---
 
