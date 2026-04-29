@@ -385,6 +385,97 @@ playbook.
 
 ---
 
+## Working with the agent skill — tips and patterns
+
+Once the skill is installed (see Getting Started for the install
+one-liner), here's how to actually get value out of it.
+
+**Open the graph URL in a tab while you work.** The agent's edits land
+on the canvas within ~150 ms via SSE. The camera pans to whatever the
+agent just touched, the side panel opens to show the new content, and
+the node briefly flashes in a color matching the action:
+
+- **blue dashed border** — new task created
+- **orange / yellow / green underlay** — task moved to `in_progress` /
+  `review` / `done` respectively
+- **purple underlay** — body edited without changing status
+
+Watching the agent work this way is most of the value — the graph IS
+the visible artifact of the agent's progress.
+
+**Give the agent a concrete multi-step plan.** Vague prompts like
+*"help me with auth"* don't produce useful graphs. Multi-step prompts
+work much better:
+
+> *"I need to refactor the auth middleware: audit current session-token
+> usage, swap to httpOnly cookies, update the auth tests, then deploy
+> behind a feature flag."*
+
+The agent should materialize this as 4–5 tasks with dependency edges
+**before** writing any code, so you see the structure first, then watch
+each task light up as it works through them.
+
+**The "review" handshake.** The agent never sets `done` itself. When it
+thinks a task is finished, it moves to `review` (yellow). You confirm
+in one of two ways:
+
+1. **Approve** — click the task in the UI, change status to `done`. The
+   agent's downstream tasks become eligible (use `/tasks/ready` to see
+   what's now ready).
+2. **Push back** — reply with feedback ("the cookie wrapper needs to
+   handle SameSite=None"). The agent should re-read the task body and
+   update it with the new requirement, then re-do the work.
+
+Don't set `done` without skimming the body — that's the whole point of
+the gate.
+
+**Recovering when the agent gets stuck or wanders.** Useful prompts:
+
+- *"What's blocking task X?"* — agent calls `/blockers`, summarizes.
+- *"What can you work on next?"* — agent calls `/ready`.
+- *"Which review tasks would unblock something if I confirmed them?"* —
+  agent loops over review tasks calling `/unblocks` (documented pattern
+  in the skill body).
+- *"Update the graph to reflect what you just learned about X"* —
+  agent reads relevant task bodies and patches them with new findings.
+
+**If the agent isn't using the skill automatically.** The skill is
+designed to fire after Plan mode and on multi-step prompts, but
+description-matching is heuristic. Force it explicitly with phrases
+like *"track this in graphtask"*, *"turn this into a graphtask graph"*,
+or *"use the graphtask skill"*.
+
+**One graph per project (usually).** The agent persists the active graph
+id in `.graphtask/graph-id` in the project root. That file is
+bearer-token equivalent and goes in `.gitignore` (the skill's setup
+step adds it for you). To work on a different project's graph, run the
+agent from a different directory.
+
+**Sharing and revoking access.** Each graph's URL is its only access
+control. To collaborate, share `https://graphtask.dev.wafer.works/g/<id>`
+(or your hosted URL). To revoke a leaked link, open the graph's `⋮`
+settings → Sharing → Rotate. The old URL 404s; tasks/edges follow to
+the new id automatically.
+
+**Tidy a sprawling graph.** If the canvas is getting unwieldy after
+lots of edits, press `T` (or click the Tidy toolbar button) to re-run
+the layout compactly and refit. Overrides any custom node placements,
+so use it when you'd rather start with a clean arrangement than
+preserve manual positions.
+
+**Don't micromanage the structure.** Let the agent create tasks and
+edges. If you don't like the structure, edit it in the UI — the agent
+is told to re-read task content before patching, so it'll notice. Don't
+dictate every task title; trust the breakdown.
+
+**When NOT to use the skill.** Single-step changes (a typo fix, a
+quick question, a one-line tweak) don't benefit from graph overhead.
+The skill itself tells the agent to skip graph creation for these. If
+the agent creates a one-task graph for something trivial, push back:
+*"skip the graph for this."*
+
+---
+
 ## Frontend Model
 
 The frontend has four main regions:
