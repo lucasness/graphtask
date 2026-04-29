@@ -12,12 +12,37 @@ Pick the path that matches how you want to run graphtask.
 
 ### 1. Use the hosted version
 
-**<https://graphtask.dev.wafer.works>**
+**<https://graphtask.dev.wafer.works>** — no setup, no install.
 
-No setup, no install. Open the link, start sketching graphs. Each graph
-gets a 16-char random id (`/g/<id>`) that acts as the access token —
-share the URL to collaborate, rotate the id from the graph settings to
-revoke.
+Open the link, click `+` to create a graph, start sketching tasks. Each
+graph gets a 16-char random id (`/g/<id>`) that acts as the access
+token — share the URL to collaborate, rotate the id from the graph
+settings (`⋮` → Rotate) to revoke.
+
+**Use it with a Claude Code agent**
+
+```sh
+# 1. Install the skill (one-time; available in every project on your machine)
+mkdir -p ~/.claude/skills/graphtask
+curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
+  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
+
+# 2. Install jq (the skill's recipes parse JSON with it)
+brew install jq        # macOS — or: apt install jq / apk add jq
+
+# 3. Point the agent at the hosted instance
+export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
+
+# 4. Run Claude Code in any project you want to track
+cd ~/projects/your-project
+claude
+# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
+```
+
+The agent creates a graph on first use and writes its id to
+`.graphtask/graph-id` in the project. Open
+`https://graphtask.dev.wafer.works/g/<id>` in your browser to watch the
+canvas update live as the agent works.
 
 ### 2. Run locally with Docker
 
@@ -59,6 +84,35 @@ docker compose down         # stop, keep data
 docker compose down -v      # stop, wipe data
 HOST_PORT=3001 docker compose up   # serve on a different host port
 ```
+
+**Use it with a Claude Code agent**
+
+```sh
+# 1. Install the skill (one-time; available in every project on your machine)
+mkdir -p ~/.claude/skills/graphtask
+curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
+  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
+
+# 2. Install jq
+brew install jq        # macOS — or: apt install jq / apk add jq
+
+# 3. Point the agent at your local Docker container
+export GRAPHTASK_BASE_URL="http://localhost:3000"
+# (use the same HOST_PORT you set above if not the default)
+
+# 4. Run Claude Code in any project you want to track
+cd ~/projects/your-project
+claude
+# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
+```
+
+The agent creates a graph on first use and writes its id to
+`.graphtask/graph-id` in the project. Open
+`http://localhost:3000/g/<id>` to watch live updates.
+
+If you're hacking on graphtask itself, you can skip the personal install
+— `claude` run from inside the cloned repo auto-discovers the skill at
+`.claude/skills/graphtask/SKILL.md`.
 
 ### 3. Run locally without Docker
 
@@ -121,6 +175,35 @@ caps concurrent viewers at the same number.
   equivalent in your supervisor's config so the **hard** limit is
   raised before the node process starts. A non-root process can only
   raise its soft limit up to the existing hard limit.
+
+**Use it with a Claude Code agent**
+
+```sh
+# 1. Install the skill (one-time; available in every project on your machine)
+mkdir -p ~/.claude/skills/graphtask
+curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
+  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
+
+# 2. Install jq
+brew install jq        # macOS — or: apt install jq / apk add jq
+
+# 3. Point the agent at your local server
+export GRAPHTASK_BASE_URL="http://localhost:3000"
+# (use the same PORT you set above if not the default)
+
+# 4. Run Claude Code in any project you want to track
+cd ~/projects/your-project
+claude
+# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
+```
+
+The agent creates a graph on first use and writes its id to
+`.graphtask/graph-id` in the project. Open
+`http://localhost:3000/g/<id>` to watch live updates.
+
+If you're hacking on graphtask itself, you can skip the personal install
+— `claude` run from inside the cloned repo auto-discovers the skill at
+`.claude/skills/graphtask/SKILL.md`.
 
 ---
 
@@ -264,87 +347,42 @@ before validation, so scalar YAML values do not break task saves.
 
 ---
 
-## Agent API
+## Agent design notes
 
 The HTTP API above is stable enough for an LLM agent (Claude Code, Codex,
-or anything that can run `curl`) to drive end to end — create a graph,
-add tasks, wire dependencies, update statuses as work progresses, and
-traverse for next-actionable tasks. The browser canvas updates live via
-the `/events` SSE endpoint, so a user watching a graph sees the agent's
-edits in real time.
+or anything that can run `curl`) to drive end to end. The skill install
+steps live inside each Getting Started path above; this section covers
+the conventions and constraints any agent integration should follow.
 
-The convention to follow as an agent:
+**Conventions agents follow**
 
 - Persist the active graph id in `.graphtask/graph-id` (per-project, kept
   out of git — it's bearer-token equivalent).
 - Move tasks `todo → in_progress → review`. **Never set `done`.**
   `done` is the human's confirmation; `review` is the agent's
   "I think this is finished, please confirm." Treat `review` as
-  not-yet-done for dependency-readiness purposes.
+  not-yet-done for dependency-readiness purposes (the
+  `/tasks/ready`, `/tasks/:id/blockers`, and `/tasks/:id/unblocks`
+  endpoints already encode this).
 - Use `POST /edges/bulk` for any multi-edge import — it's transactional
   and fails atomically with a `failedAt` index, so you never end up with
   a half-built dependency graph.
 - If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
 
-### Install the agent skill
+**Live updates**
 
-The repo ships a Claude Code skill at `.claude/skills/graphtask/SKILL.md`
-that teaches the agent the workflow above (graph resolution, status
-discipline, bulk edges, status-aware traversal). Most users want the agent
-available in **other** projects (so it can track work on whatever they're
-building, with graphtask running in the background) — that's the
-"personal" install:
+The browser canvas re-renders within ~150 ms of any task/edge mutation
+via the `/events` SSE endpoint, so a user watching a graph sees the
+agent's edits in real time. The agent doesn't need to consume the SSE
+stream itself.
 
-**Personal — recommended for most users** (works in any project on your
-machine):
+**Other agents (Codex, Cursor, etc.)**
 
-```sh
-# No clone needed; download just the skill file:
-mkdir -p ~/.claude/skills/graphtask
-curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
-  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
-
-# Then in the project you want to track:
-cd ~/projects/my-real-project
-claude        # the `graphtask` skill is now available globally
-```
-
-**Project-local — when you're working on graphtask itself.** Clone the
-repo and Claude Code auto-discovers `.claude/skills/graphtask/SKILL.md`
-when run from inside it. No install step:
-
-```sh
-git clone https://github.com/lucasness/graphtask.git
-cd graphtask
-claude
-```
-
-**Other agents (Codex, Cursor, etc.)** — the skill follows the open
-[Agent Skills](https://agentskills.io) standard. Refer to your tool's
-docs for the install path; the `SKILL.md` itself is portable.
-
-#### Pointing at a hosted instance
-
-By default the skill talks to `http://127.0.0.1:3000`. To use the
-hosted instance instead, set `GRAPHTASK_BASE_URL` in the shell where
-you run Claude Code:
-
-```sh
-export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
-claude
-```
-
-Each graph's id is the only access control (no user accounts), so to share
-or collaborate, just share the URL `${GRAPHTASK_BASE_URL}/g/<id>`. To
-revoke a leaked id, hit `POST /api/graphs/<id>/rotate-id` from the UI's
-rotate button or the API.
-
-#### Dependencies
-
-The skill drives the API via `curl` and `jq`. `curl` is universal; `jq`
-needs to be installed separately on most systems (`brew install jq`,
-`apt install jq`, `apk add jq`). Without `jq`, the recipes parse JSON
-incorrectly.
+The shipped skill at `.claude/skills/graphtask/SKILL.md` follows the
+open [Agent Skills](https://agentskills.io) standard. The `SKILL.md`
+file is portable; refer to your tool's docs for the install path. Any
+agent that can `curl` is a viable client — the skill is just the
+playbook.
 
 ---
 
