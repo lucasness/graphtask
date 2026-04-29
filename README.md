@@ -12,9 +12,12 @@ Pick the path that matches how you want to run graphtask.
 
 ### 1. Use the hosted version
 
-> _Hosted instance coming soon — link will go here._
+**<https://graphtask.dev.wafer.works>**
 
-No setup, no install. Open the link, start sketching graphs.
+No setup, no install. Open the link, start sketching graphs. Each graph
+gets a 16-char random id (`/g/<id>`) that acts as the access token —
+share the URL to collaborate, rotate the id from the graph settings to
+revoke.
 
 ### 2. Run locally with Docker
 
@@ -322,12 +325,12 @@ docs for the install path; the `SKILL.md` itself is portable.
 
 #### Pointing at a hosted instance
 
-By default the skill talks to `http://127.0.0.1:3000`. To use a hosted
-graphtask instead, set `GRAPHTASK_BASE_URL` in the shell where you run
-Claude Code:
+By default the skill talks to `http://127.0.0.1:3000`. To use the
+hosted instance instead, set `GRAPHTASK_BASE_URL` in the shell where
+you run Claude Code:
 
 ```sh
-export GRAPHTASK_BASE_URL="https://graphtask.example.com"
+export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
 claude
 ```
 
