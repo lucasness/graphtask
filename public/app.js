@@ -59,6 +59,12 @@ const COLOR_PALETTE = [
   { name: 'Muted', value: '#878580' },
 ];
 const EDGE_CURVE_LIMIT = 500;
+const EDGE_WEIGHT_MIN = 0.10;
+const EDGE_WEIGHT_MAX = 0.90;
+// Below this perpendicular distance, the curve is visually a straight line
+// and weight has no perceptible effect — snap it to 0.5 to keep the data
+// canonical.
+const CURVE_SNAP_DISTANCE = 3;
 
 function resolveNodeOverlap(node) {
   if (!node || node.empty()) return false;
@@ -152,12 +158,24 @@ function roundCurve(value) {
   return Math.round(value * 100) / 100;
 }
 
-function getEdgeCurve(edgeOrLink) {
+// Canonical {distance, weight} for an edge or link. Tolerates the legacy
+// number form (perpendicular offset only, weight implicitly 0.5) so old
+// data and any in-flight requests keep working.
+function getEdgeCurveData(edgeOrLink) {
   const meta = typeof edgeOrLink.data === 'function'
     ? edgeOrLink.data('meta')
     : edgeOrLink.meta;
-  const curve = Number(meta && meta.curve);
-  return Number.isFinite(curve) ? curve : 0;
+  const c = meta && meta.curve;
+  if (c == null) return { distance: 0, weight: 0.5 };
+  if (typeof c === 'number') {
+    return { distance: Number.isFinite(c) ? c : 0, weight: 0.5 };
+  }
+  const distance = Number(c.distance);
+  const weight = Number(c.weight);
+  return {
+    distance: Number.isFinite(distance) ? distance : 0,
+    weight: Number.isFinite(weight) ? weight : 0.5,
+  };
 }
 
 // In-place updates so autosave doesn't re-run cytoscape layout
@@ -201,7 +219,8 @@ function addGraphEdge(edge) {
       target: String(edge.target_id),
       edgeType: edge.type,
       color: meta.color || DEFAULT_EDGE_COLOR,
-      curve: getEdgeCurve({ meta }),
+      curveDistance: getEdgeCurveData({ meta }).distance,
+      curveWeight: getEdgeCurveData({ meta }).weight,
       meta,
     },
   });
@@ -237,7 +256,8 @@ async function fetchGraph() {
         target: String(link.target),
         edgeType: link.type,
         color: (link.meta && link.meta.color) || DEFAULT_EDGE_COLOR,
-        curve: getEdgeCurve(link),
+        curveDistance: getEdgeCurveData(link).distance,
+        curveWeight: getEdgeCurveData(link).weight,
         meta: link.meta || {},
       },
     });
@@ -1376,7 +1396,8 @@ function rebuildPendingNewNodePreviewEdges(ghost = pendingNode) {
         target: toId,
         edgeType: isRelated ? 'related' : 'dependency',
         color: DEFAULT_EDGE_COLOR,
-        curve: 0,
+        curveDistance: 0,
+        curveWeight: 0.5,
         meta: {},
       },
       classes: 'preview',
@@ -1542,7 +1563,8 @@ function rebuildPreviewEdge() {
         target: toId,
         edgeType: isRelated ? 'related' : 'dependency',
         color: DEFAULT_EDGE_COLOR,
-        curve: 0,
+        curveDistance: 0,
+        curveWeight: 0.5,
         meta: {},
       },
       classes: 'preview',
@@ -1989,14 +2011,73 @@ function getEdgeCurveGeometry(edge) {
   const length = Math.hypot(dx, dy);
   if (length < 1) return null;
 
+  const tangent = { x: dx / length, y: dy / length };
+  const normal = { x: -tangent.y, y: tangent.x };
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  const normal = { x: -dy / length, y: dx / length };
-  const curve = getEdgeCurve(edge);
+  const { distance, weight: rawWeight } = getEdgeCurveData(edge);
+
+  // Clamp weight to per-edge bounds derived from node sizes — keeps the
+  // handle visibly outside both nodes even if a stale value was persisted
+  // before nodes resized.
+  const { wMin, wMax } = getEdgeWeightBounds(source, target, length);
+  const weight = Math.max(wMin, Math.min(wMax, rawWeight));
+
+  // Render the handle ON the curve at B(t=weight) — the bezier sample at the
+  // weight parameter. Tangential position along S→T is the smoothstep
+  // s(w) = w²(3-2w); perpendicular displacement at that t is 2(1-w)w·d.
+  const s = weight * weight * (3 - 2 * weight);
+  const tangentialOffset = (s - 0.5) * length;
+  const perpendicularOffset = 2 * weight * (1 - weight) * distance;
   const handle = {
-    x: mid.x + normal.x * (curve / 2),
-    y: mid.y + normal.y * (curve / 2),
+    x: mid.x + tangent.x * tangentialOffset + normal.x * perpendicularOffset,
+    y: mid.y + tangent.y * tangentialOffset + normal.y * perpendicularOffset,
   };
-  return { mid, normal, handle };
+  return { mid, tangent, normal, length, handle };
+}
+
+// Inverse of smoothstep s(w) = w²(3-2w) for y in [0,1] → w in [0,1].
+// Closed form via the trigonometric solution to the cubic 2w³ - 3w² + y = 0.
+function inverseSmoothstep(y) {
+  if (y <= 0) return 0;
+  if (y >= 1) return 1;
+  return 0.5 - Math.sin(Math.asin(1 - 2 * y) / 3);
+}
+
+// Distance from the center of an axis-aligned rectangle to its boundary
+// along a given direction. min(hw/|dx|, hh/|dy|) — pick whichever side the
+// ray hits first. Treats nodes as their bounding rect; close enough for
+// rounded rects too, slightly conservative at the corners.
+function rectRadiusAlongDirection(width, height, dirX, dirY) {
+  const hw = width / 2;
+  const hh = height / 2;
+  const ax = Math.abs(dirX);
+  const ay = Math.abs(dirY);
+  const tX = ax > 1e-9 ? hw / ax : Infinity;
+  const tY = ay > 1e-9 ? hh / ay : Infinity;
+  const t = Math.min(tX, tY);
+  return Number.isFinite(t) ? t : Math.max(hw, hh);
+}
+
+// Per-edge dynamic weight bounds so the handle never lands inside either
+// node. The keep-out zone is the actual rect radius along the edge direction
+// plus a visual margin, expressed as a fraction along S→T and converted to
+// a weight via inverse smoothstep. Intersected with the static
+// [EDGE_WEIGHT_MIN, MAX] range.
+const EDGE_HANDLE_MARGIN = 18;
+function getEdgeWeightBounds(source, target, length) {
+  const a = source.position();
+  const b = target.position();
+  const dirX = (b.x - a.x) / length;
+  const dirY = (b.y - a.y) / length;
+  const sourceR = rectRadiusAlongDirection(source.width(), source.height(), dirX, dirY);
+  const targetR = rectRadiusAlongDirection(target.width(), target.height(), dirX, dirY);
+  const fMin = (sourceR + EDGE_HANDLE_MARGIN) / length;
+  const fMax = 1 - (targetR + EDGE_HANDLE_MARGIN) / length;
+  if (fMin >= fMax) return { wMin: 0.5, wMax: 0.5 };
+  const wMin = Math.max(EDGE_WEIGHT_MIN, inverseSmoothstep(Math.max(0, Math.min(1, fMin))));
+  const wMax = Math.min(EDGE_WEIGHT_MAX, inverseSmoothstep(Math.max(0, Math.min(1, fMax))));
+  if (wMin >= wMax) return { wMin: 0.5, wMax: 0.5 };
+  return { wMin, wMax };
 }
 
 function modelToViewportPoint(pos) {
@@ -2021,10 +2102,10 @@ function pointerToModelPoint(e) {
 
 function getEdgeHandlePoint(edge) {
   if (!edge || edge.empty() || edge.removed()) return null;
-  const midpoint = edge.midpoint && edge.midpoint();
-  if (midpoint && Number.isFinite(midpoint.x) && Number.isFinite(midpoint.y)) {
-    return midpoint;
-  }
+  // Don't use Cytoscape's edge.midpoint() — it returns the midpoint of the
+  // rendered curve (B(0.5)), not our control point. With our handle-at-
+  // control-point model that would visually cap drag reach at ~25% from
+  // each endpoint regardless of the underlying weight value.
   const geometry = getEdgeCurveGeometry(edge);
   return geometry ? geometry.handle : null;
 }
@@ -2072,29 +2153,51 @@ function scheduleCurveHandleHide(edge) {
 }
 
 function setEdgeCurveFromPointer(edge, e) {
-  const geometry = getEdgeCurveGeometry(edge);
-  if (!geometry) return;
+  const geom = getEdgeCurveGeometry(edge);
+  if (!geom) return;
   const point = pointerToModelPoint(e);
-  const rawHandleOffset =
-    (point.x - geometry.mid.x) * geometry.normal.x +
-    (point.y - geometry.mid.y) * geometry.normal.y;
-  const rawCurve = rawHandleOffset * 2;
-  const curve = Math.max(-EDGE_CURVE_LIMIT, Math.min(EDGE_CURVE_LIMIT, roundCurve(rawCurve)));
-  const meta = { ...(edge.data('meta') || {}), curve };
+  const dx = point.x - geom.mid.x;
+  const dy = point.y - geom.mid.y;
+  const alpha = dx * geom.tangent.x + dy * geom.tangent.y; // along S→T
+  const beta = dx * geom.normal.x + dy * geom.normal.y;    // perpendicular
+
+  // Inverse of the geometry: handle is at B(t=w), so the tangential
+  // fraction-from-S equals smoothstep(w). Solve for w via inverse smoothstep,
+  // then back out d from the perpendicular component, which at t=w is
+  // 2(1-w)w·d.
+  const fraction = Math.max(0, Math.min(1, alpha / geom.length + 0.5));
+  let weight = inverseSmoothstep(fraction);
+
+  // Per-edge dynamic clamp keeps the handle outside both node bodies. We
+  // recompute it here because the geometry function uses the same source
+  // data — keeping these in sync prevents render/drag drift.
+  const { wMin, wMax } = getEdgeWeightBounds(edge.source(), edge.target(), geom.length);
+  weight = Math.max(wMin, Math.min(wMax, weight));
+
+  const denom = 2 * weight * (1 - weight);
+  // denom is in (0, 0.5] for weight in (0,1), so this stays well-defined.
+  let distance = beta / denom;
+  distance = Math.max(-EDGE_CURVE_LIMIT, Math.min(EDGE_CURVE_LIMIT, roundCurve(distance)));
+  weight = Math.round(weight * 1000) / 1000;
+
+  const meta = { ...(edge.data('meta') || {}), curve: { distance, weight } };
   edge.data('meta', meta);
-  edge.data('curve', curve);
+  edge.data('curveDistance', distance);
+  edge.data('curveWeight', weight);
   updateCurveHandlePosition();
 }
 
 async function persistEdgeCurve(edge) {
   if (!edge || edge.empty() || edge.removed()) return;
-  const curve = getEdgeCurve(edge);
+  const curve = getEdgeCurveData(edge);
   try {
     const res = await updateEdgeMeta(edge, { curve });
     if (!res.ok) throw new Error('save failed');
     const saved = await res.json();
     edge.data('meta', saved.meta || {});
-    edge.data('curve', getEdgeCurve(saved));
+    const next = getEdgeCurveData(saved);
+    edge.data('curveDistance', next.distance);
+    edge.data('curveWeight', next.weight);
     updateCurveHandlePosition();
   } catch {
     showHint('Could not save curve');
@@ -2105,16 +2208,19 @@ async function deleteEdgeById(edgeId) {
   await fetch(`${apiBase()}/edges/${edgeId}`, { method: 'DELETE' });
 }
 
-function confirmDelete(message) {
+function confirmDelete(message, opts = {}) {
   return new Promise((resolve) => {
     const modal = document.getElementById('delete-modal');
     const desc = document.getElementById('delete-modal-desc');
     const btnConfirm = document.getElementById('delete-confirm');
     const btnCancel = document.getElementById('delete-cancel');
     desc.textContent = message;
+    const originalConfirmText = btnConfirm.textContent;
+    if (opts.confirmText) btnConfirm.textContent = opts.confirmText;
 
     function close(result) {
       modal.classList.add('hidden');
+      btnConfirm.textContent = originalConfirmText;
       btnConfirm.removeEventListener('click', onConfirm);
       btnCancel.removeEventListener('click', onCancel);
       modal.removeEventListener('click', onBackdrop);
@@ -2167,6 +2273,19 @@ const sidebar = {
   graphs: [],
 };
 
+// All time display in this app is UTC. Renders YYYY-MM-DD HH:MM UTC so the
+// same graph reads identically to any viewer regardless of their browser tz.
+function formatUtc(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`
+  );
+}
+
 function relativeTime(iso) {
   const t = new Date(iso).getTime();
   const diff = Date.now() - t;
@@ -2212,7 +2331,7 @@ function renderSidebar() {
 
     const menuBtn = document.createElement('button');
     menuBtn.className = 'sb-menu-btn';
-    menuBtn.textContent = '⋯';
+    menuBtn.textContent = '⋮';
     menuBtn.title = 'Graph options';
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2241,26 +2360,74 @@ function updateEmptyStates() {
 // Single edit modal — Save commits name + description; Delete confirms then removes.
 let _graphModalClose = null;
 function openGraphEditModal(graph) {
-  // If the modal was already open (e.g. clicking ⋯ on another graph), tear
+  // If the modal was already open (e.g. clicking ⋮ on another graph), tear
   // down the previous instance's listeners before binding new ones.
   if (_graphModalClose) _graphModalClose();
 
   const modal = document.getElementById('graph-modal');
   const nameInput = document.getElementById('graph-modal-name');
   const descInput = document.getElementById('graph-modal-desc');
+  const createdEl = document.getElementById('graph-modal-created');
+  const urlInput = document.getElementById('graph-modal-url');
+  const copyBtn = document.getElementById('graph-modal-copy');
+  const rotateBtn = document.getElementById('graph-modal-rotate');
   const saveBtn = document.getElementById('graph-modal-save');
   const deleteBtn = document.getElementById('graph-modal-delete');
 
   nameInput.value = graph.name;
   descInput.value = graph.description || '';
+  createdEl.textContent = formatUtc(graph.created_at);
+  function setShareUrl(id) {
+    urlInput.value = `${location.origin}/g/${id}`;
+  }
+  setShareUrl(graph.id);
 
   function close() {
     _graphModalClose = null;
     modal.classList.add('hidden');
     saveBtn.removeEventListener('click', onSave);
     deleteBtn.removeEventListener('click', onDelete);
+    copyBtn.removeEventListener('click', onCopy);
+    rotateBtn.removeEventListener('click', onRotate);
     modal.removeEventListener('click', onBackdrop);
     document.removeEventListener('keydown', onKey, true);
+  }
+  async function onCopy() {
+    try {
+      await navigator.clipboard.writeText(urlInput.value);
+      const original = copyBtn.textContent;
+      copyBtn.textContent = 'Copied';
+      setTimeout(() => { copyBtn.textContent = original; }, 1200);
+    } catch {
+      urlInput.select();
+    }
+  }
+  async function onRotate() {
+    const ok = await confirmDelete(
+      'Rotate this graph’s URL? Anyone holding the current link will lose access.',
+      { confirmText: 'Rotate' }
+    );
+    if (!ok) return;
+    try {
+      const res = await fetch(`/api/graphs/${graph.id}/rotate-id`, { method: 'POST' });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        alert(e.error || 'Rotate failed');
+        return;
+      }
+      const updated = await res.json();
+      const wasActive = graph.id === activeGraphId;
+      graph.id = updated.id;
+      setShareUrl(updated.id);
+      if (wasActive) {
+        activeGraphId = updated.id;
+        try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, updated.id); } catch {}
+        history.replaceState({ graphId: updated.id }, '', `/g/${updated.id}`);
+      }
+      await fetchGraphsList();
+    } catch {
+      alert('Rotate failed');
+    }
   }
   async function onSave() {
     const nextName = nameInput.value.trim();
@@ -2323,6 +2490,8 @@ function openGraphEditModal(graph) {
 
   saveBtn.addEventListener('click', onSave);
   deleteBtn.addEventListener('click', onDelete);
+  copyBtn.addEventListener('click', onCopy);
+  rotateBtn.addEventListener('click', onRotate);
   modal.addEventListener('click', onBackdrop);
   document.addEventListener('keydown', onKey, true);
   _graphModalClose = close;
@@ -2343,13 +2512,20 @@ function ensureActiveGraph() {
   if (activeGraphId != null) return Promise.resolve();
   if (_ensureGraphPromise) return _ensureGraphPromise;
   _ensureGraphPromise = (async () => {
-    const res = await fetch('/api/graphs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Untitled' }),
-    });
-    if (!res.ok) throw new Error('failed to create graph');
-    const created = await res.json();
+    // Try "Untitled", then "Untitled 2", "Untitled 3", ... so the lazy-create
+    // flow keeps working when the default name is already taken.
+    let created = null;
+    for (let i = 1; i <= 50; i++) {
+      const name = i === 1 ? 'Untitled' : `Untitled ${i}`;
+      const res = await fetch('/api/graphs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) { created = await res.json(); break; }
+      if (res.status !== 409) throw new Error('failed to create graph');
+    }
+    if (!created) throw new Error('failed to create graph');
     _lazyCreatedGraphId = created.id;
     await fetchGraphsList();
     await switchActiveGraph(created.id, { pushState: true });
@@ -2382,23 +2558,89 @@ function maybeCleanupLazyGraph() {
 }
 
 async function createGraphFromUI() {
-  const name = prompt('Graph name:');
-  if (!name) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  const res = await fetch('/api/graphs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: trimmed }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    alert(body.error || 'Failed to create graph');
-    return;
-  }
-  const created = await res.json();
+  const created = await promptNewGraphName();
+  if (!created) return;
   await fetchGraphsList();
   switchActiveGraph(created.id, { pushState: true });
+}
+
+// In-app modal replacement for the legacy prompt(). Resolves to the created
+// graph row on success, or null on cancel. Validation + name-conflict errors
+// render inline so the user can fix and retry without losing what they typed.
+function promptNewGraphName() {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('new-graph-modal');
+    const input = document.getElementById('new-graph-name');
+    const errorEl = document.getElementById('new-graph-error');
+    const createBtn = document.getElementById('new-graph-create');
+    const cancelBtn = document.getElementById('new-graph-cancel');
+
+    input.value = '';
+    errorEl.classList.add('hidden');
+    errorEl.textContent = '';
+
+    function setError(msg) {
+      errorEl.textContent = msg;
+      errorEl.classList.remove('hidden');
+    }
+    function clearError() {
+      errorEl.classList.add('hidden');
+      errorEl.textContent = '';
+    }
+    function close(result) {
+      modal.classList.add('hidden');
+      createBtn.removeEventListener('click', onCreate);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      input.removeEventListener('input', clearError);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(result);
+    }
+    async function onCreate() {
+      const trimmed = input.value.trim();
+      if (!trimmed) {
+        setError('Name is required');
+        input.focus();
+        return;
+      }
+      createBtn.disabled = true;
+      try {
+        const res = await fetch('/api/graphs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setError(body.error || 'Failed to create graph');
+          input.focus();
+          input.select();
+          return;
+        }
+        const created = await res.json();
+        close(created);
+      } finally {
+        createBtn.disabled = false;
+      }
+    }
+    function onCancel() { close(null); }
+    function onBackdrop(e) { if (e.target === modal) close(null); }
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+      else if (e.key === 'Enter' && e.target === input) {
+        e.preventDefault();
+        onCreate();
+      }
+    }
+
+    createBtn.addEventListener('click', onCreate);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    input.addEventListener('input', clearError);
+    document.addEventListener('keydown', onKey, true);
+    modal.classList.remove('hidden');
+    input.focus();
+  });
 }
 
 async function switchActiveGraph(id, { pushState = false } = {}) {
@@ -2541,8 +2783,8 @@ document.addEventListener('DOMContentLoaded', () => {
           'width': 1.5,
           'line-color': 'data(color)',
           'curve-style': 'unbundled-bezier',
-          'control-point-distances': 'data(curve)',
-          'control-point-weights': 0.5,
+          'control-point-distances': 'data(curveDistance)',
+          'control-point-weights': 'data(curveWeight)',
         },
       },
       {

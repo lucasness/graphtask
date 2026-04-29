@@ -54,6 +54,31 @@ describe('Graph CRUD', () => {
         .send({ name: 'OK', description: 'x'.repeat(501) });
       expect(res.status).toBe(400);
     });
+
+    it('should 409 on duplicate name', async () => {
+      await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const res = await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      expect(res.status).toBe(409);
+    });
+
+    it('should 409 on case-insensitive duplicate', async () => {
+      await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const res = await request(app).post('/api/graphs').send({ name: 'MY GRAPH' });
+      expect(res.status).toBe(409);
+    });
+
+    it('should 409 on whitespace-variant duplicate', async () => {
+      await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const res = await request(app).post('/api/graphs').send({ name: 'mygraph' });
+      expect(res.status).toBe(409);
+    });
+
+    it('should allow distinct names', async () => {
+      const a = await request(app).post('/api/graphs').send({ name: 'one' });
+      const b = await request(app).post('/api/graphs').send({ name: 'two' });
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
+    });
   });
 
   describe('GET /api/graphs', () => {
@@ -143,6 +168,15 @@ describe('Graph CRUD', () => {
         .send({ name: 'new' });
       expect(res.status).toBe(404);
     });
+
+    it('should 409 when renaming to a colliding name', async () => {
+      await request(app).post('/api/graphs').send({ name: 'taken' });
+      const other = await request(app).post('/api/graphs').send({ name: 'free' });
+      const res = await request(app)
+        .patch(`/api/graphs/${other.body.id}`)
+        .send({ name: 'TAKEN' });
+      expect(res.status).toBe(409);
+    });
   });
 
   describe('DELETE /api/graphs/:id', () => {
@@ -156,6 +190,57 @@ describe('Graph CRUD', () => {
 
     it('should 404 on non-existent', async () => {
       const res = await request(app).delete('/api/graphs/zzzzzzzz');
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /api/graphs/:id/rotate-id', () => {
+    it('should issue a fresh 16-char id and 404 the old one', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'r' });
+      const oldId = create.body.id;
+      const res = await request(app).post(`/api/graphs/${oldId}/rotate-id`);
+      expect(res.status).toBe(200);
+      expect(res.body.id).not.toBe(oldId);
+      expect(res.body.id).toMatch(/^[a-z2-9]{16}$/);
+      expect(res.body.name).toBe('r');
+
+      const oldGet = await request(app).get(`/api/graphs/${oldId}`);
+      expect(oldGet.status).toBe(404);
+      const newGet = await request(app).get(`/api/graphs/${res.body.id}`);
+      expect(newGet.status).toBe(200);
+    });
+
+    it('should carry tasks and edges to the new id via cascade', async () => {
+      const g = await request(app).post('/api/graphs').send({ name: 'with-data' });
+      const oldId = g.body.id;
+      const t1 = await request(app)
+        .post(`/api/graphs/${oldId}/tasks`)
+        .send({ content: '---\ntitle: a\nstatus: todo\n---\n' });
+      const t2 = await request(app)
+        .post(`/api/graphs/${oldId}/tasks`)
+        .send({ content: '---\ntitle: b\nstatus: todo\n---\n' });
+      await request(app).post(`/api/graphs/${oldId}/edges`).send({
+        source_id: t1.body.id,
+        target_id: t2.body.id,
+        type: 'dependency',
+      });
+
+      const rot = await request(app).post(`/api/graphs/${oldId}/rotate-id`);
+      const newId = rot.body.id;
+
+      const tasks = await request(app).get(`/api/graphs/${newId}/tasks`);
+      expect(tasks.status).toBe(200);
+      expect(tasks.body.length).toBe(2);
+      const edges = await request(app).get(`/api/graphs/${newId}/edges`);
+      expect(edges.status).toBe(200);
+      expect(edges.body.length).toBe(1);
+
+      const oldTasks = await request(app).get(`/api/graphs/${oldId}/tasks`);
+      expect(oldTasks.body).toEqual([]);
+    });
+
+    it('should 404 on non-existent graph', async () => {
+      const res = await request(app).post('/api/graphs/zzzzzzzz/rotate-id');
       expect(res.status).toBe(404);
     });
   });

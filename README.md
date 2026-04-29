@@ -185,8 +185,12 @@ edges(
   and stores a synchronized structured copy in `tasks.meta`.
 - Task metadata: `title`, `status`, optional `description`, optional `color`,
   optional saved graph coordinates `x`/`y`.
-- Edge metadata: optional `curve` (signed Cytoscape unbundled-Bezier offset)
-  and optional `color` (validated 6-digit hex).
+- Edge metadata: optional `curve` shaped as `{distance, weight}` driving the
+  Cytoscape unbundled-Bezier control point — `distance` is the signed
+  perpendicular offset (legacy API still accepts a bare number with implicit
+  `weight: 0.5`), `weight` is the parallel position along the source→target
+  axis (`0.10..0.90`, `0.5` = midpoint). Optional `color` (validated 6-digit
+  hex).
 - `dependency` edges are directed and acyclic; `related` edges can form loops.
 - Cycle detection (POST + PATCH) runs inside a single transaction with
   `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers can't
@@ -234,7 +238,7 @@ before validation, so scalar YAML values do not break task saves.
 The frontend has four main regions:
 
 - **Sidebar**: `#sidebar` lists graphs with name + relative updated time.
-  `+` creates a new graph; `⋯` opens the edit modal (rename, description,
+  `+` creates a new graph; `⋮` opens the edit modal (rename, description,
   delete). The active graph card is highlighted.
 - **Canvas**: `#cy` fills the area to the right of the sidebar. Cytoscape
   paints nodes and edges. Styling is driven by element data (`status`,
@@ -311,8 +315,17 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
   restores.
 - Backward dependency edits are represented visually with `dir-backward`
   until save, then the server PATCH swaps source/target.
-- Hover an edge to reveal the curve handle. Dragging it updates
-  `edges.meta.curve` on release.
+- Hover an edge to reveal the curve handle. The handle sits *on* the rendered
+  curve at `B(t = weight)` — the bezier sample at the weight parameter. Drag
+  it freely in 2D: parallel position along the edge maps to `curve.weight`
+  via inverse-smoothstep, perpendicular distance back-solves into
+  `curve.distance` (bulge height). Weight is clamped per-edge to a dynamic
+  range derived from each node's size + a small margin, so the dot can
+  never land inside either endpoint node — the bounds intersect the static
+  `[0.10, 0.90]` range. Note: changing weight slides the bulge along the
+  edge but doesn't change *how sharply* the curve bends; that's controlled
+  by `distance` (a quadratic bezier's perpendicular peak is always at
+  parameter 0.5 with magnitude `0.5·distance`).
 - Dependency cycle detection wraps the cycle-check + INSERT/UPDATE in a
   single Postgres transaction with a SHARE ROW EXCLUSIVE lock on `edges`,
   so concurrent edge writers can't slip a cycle past the check.
@@ -328,7 +341,7 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 
 ### Graph metadata
 
-- `⋯` on a sidebar card opens `#graph-modal` with name + description fields
+- `⋮` on a sidebar card opens `#graph-modal` with name + description fields
   and Save / Delete buttons. Esc or backdrop click cancels. Delete reuses the
   shared `confirmDelete` modal.
 
@@ -398,7 +411,7 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
   self-edge is skipped.
 - Lazy graph cleanup is local to the active session — closing the tab during
   a pending node leaves an empty `Untitled` graph in the sidebar; it can be
-  deleted manually via the `⋯` modal.
+  deleted manually via the `⋮` modal.
 - Schema changes that alter column types still need a manual `DROP TABLE`
   on existing databases; `IF NOT EXISTS` won't pick up type diffs.
 - The frontend is intentionally not modularized yet.

@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=EB+Garamond:wght@400;500;600&family=Roboto:wght@400;500;700&display=swap">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <aside id="sidebar">
@@ -86,6 +86,19 @@
         <span>Description</span>
         <textarea id="graph-modal-desc" maxlength="500" rows="3" placeholder="Optional"></textarea>
       </label>
+      <div class="modal-field">
+        <span>Created</span>
+        <div id="graph-modal-created" class="modal-readonly"></div>
+      </div>
+      <div class="modal-field">
+        <span>Sharing</span>
+        <div class="share-row">
+          <input type="text" id="graph-modal-url" readonly>
+          <button id="graph-modal-copy" type="button">Copy</button>
+          <button id="graph-modal-rotate" type="button" title="Rotate URL — invalidates the current link">Rotate</button>
+        </div>
+        <p class="share-hint">Anyone with this link can view and edit the graph. Rotate to invalidate previously shared links.</p>
+      </div>
       <div class="modal-actions modal-actions-split">
         <button id="graph-modal-delete" class="danger" type="button">Delete</button>
         <button id="graph-modal-save" class="primary" type="button">Save</button>
@@ -100,6 +113,21 @@
       <div class="modal-actions">
         <button id="delete-cancel">Cancel</button>
         <button id="delete-confirm" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="new-graph-modal" class="modal hidden">
+    <div class="modal-content modal-content-form">
+      <h3>New graph</h3>
+      <label class="modal-field">
+        <span>Name</span>
+        <input type="text" id="new-graph-name" maxlength="80" autocomplete="off" spellcheck="false" placeholder="e.g. Roadmap">
+      </label>
+      <p id="new-graph-error" class="modal-error hidden"></p>
+      <div class="modal-actions modal-actions-split">
+        <button id="new-graph-cancel" type="button">Cancel</button>
+        <button id="new-graph-create" class="primary" type="button">Create</button>
       </div>
     </div>
   </div>
@@ -226,6 +254,6 @@
 
   <script src="https://unpkg.com/cytoscape@3/dist/cytoscape.min.js"></script>
   <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
-  <script src="app.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>

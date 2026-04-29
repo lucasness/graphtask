@@ -5,6 +5,12 @@ const router = Router();
 
 const NAME_MAX = 80;
 const DESCRIPTION_MAX = 500;
+const NAME_UNIQUE_INDEX = 'graphs_name_norm_uniq';
+const NAME_CONFLICT_MSG = 'a graph with this name already exists';
+
+function isNameConflict(err) {
+  return err.code === '23505' && err.constraint === NAME_UNIQUE_INDEX;
+}
 
 function validateName(name) {
   if (typeof name !== 'string') return 'name is required';
@@ -36,8 +42,9 @@ router.post('/', async (req, res) => {
   const descErr = validateDescription(description);
   if (descErr) return res.status(400).json({ error: descErr });
 
-  // graphs.id has a Postgres DEFAULT that generates a short random string.
-  // On the negligible chance of a collision, retry with a fresh DEFAULT.
+  // graphs.id has a Postgres DEFAULT that generates a random string. On the
+  // negligible chance of an id collision, retry with a fresh DEFAULT. A name
+  // collision is a user error and surfaces as 409.
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const result = await pool.query(
@@ -46,7 +53,8 @@ router.post('/', async (req, res) => {
       );
       return res.status(201).json(result.rows[0]);
     } catch (err) {
-      if (err.code !== '23505') throw err; // unique_violation — retry
+      if (isNameConflict(err)) return res.status(409).json({ error: NAME_CONFLICT_MSG });
+      if (err.code !== '23505') throw err; // unique_violation on id — retry
     }
   }
   res.status(500).json({ error: 'failed to allocate graph id' });
@@ -86,10 +94,16 @@ router.patch('/:id', async (req, res) => {
   sets.push('updated_at = NOW()');
   params.push(req.params.id);
 
-  const result = await pool.query(
-    `UPDATE graphs SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-    params
-  );
+  let result;
+  try {
+    result = await pool.query(
+      `UPDATE graphs SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+      params
+    );
+  } catch (err) {
+    if (isNameConflict(err)) return res.status(409).json({ error: NAME_CONFLICT_MSG });
+    throw err;
+  }
   if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
   res.json(result.rows[0]);
 });
@@ -101,6 +115,29 @@ router.delete('/:id', async (req, res) => {
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
   res.json({ deleted: result.rows[0].id });
+});
+
+// Rotate a graph's ID. The URL is the bearer token in the no-auth privacy
+// model — rotating invalidates any previously shared link. ON UPDATE CASCADE
+// on tasks/edges FKs propagates the new id automatically.
+router.post('/:id/rotate-id', async (req, res) => {
+  const oldId = req.params.id;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const result = await pool.query(
+        `UPDATE graphs
+            SET id = generate_short_graph_id(), updated_at = NOW()
+          WHERE id = $1
+        RETURNING *`,
+        [oldId]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
+      return res.json(result.rows[0]);
+    } catch (err) {
+      if (err.code !== '23505') throw err; // unique_violation — retry
+    }
+  }
+  res.status(500).json({ error: 'failed to allocate graph id' });
 });
 
 export default router;

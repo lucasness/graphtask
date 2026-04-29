@@ -6,6 +6,8 @@ const router = Router({ mergeParams: true });
 const validateId = requireIntegerParam('id');
 const VALID_TYPES = ['dependency', 'related'];
 const MAX_CURVE = 500;
+const MIN_WEIGHT = 0.10;
+const MAX_WEIGHT = 0.90;
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
 class CycleError extends Error {
@@ -28,11 +30,28 @@ function normalizeMeta(raw = {}) {
   }
   const meta = {};
   if (raw.curve !== undefined && raw.curve !== null && raw.curve !== '') {
-    const curve = Number(raw.curve);
-    if (!Number.isFinite(curve) || Math.abs(curve) > MAX_CURVE) {
-      return { error: `curve must be a number between -${MAX_CURVE} and ${MAX_CURVE}` };
+    let distance, weight;
+    if (typeof raw.curve === 'object' && !Array.isArray(raw.curve)) {
+      // Canonical form: { distance, weight } — distance is the perpendicular
+      // offset (legacy "curve"); weight is the bezier control-point position
+      // along the edge (0..1, 0.5 = midpoint).
+      distance = Number(raw.curve.distance);
+      weight = raw.curve.weight === undefined ? 0.5 : Number(raw.curve.weight);
+    } else {
+      // Legacy: a bare number meant perpendicular offset with weight=0.5.
+      distance = Number(raw.curve);
+      weight = 0.5;
     }
-    meta.curve = Math.round(curve * 100) / 100;
+    if (!Number.isFinite(distance) || Math.abs(distance) > MAX_CURVE) {
+      return { error: `curve.distance must be a number between -${MAX_CURVE} and ${MAX_CURVE}` };
+    }
+    if (!Number.isFinite(weight) || weight < MIN_WEIGHT || weight > MAX_WEIGHT) {
+      return { error: `curve.weight must be a number between ${MIN_WEIGHT} and ${MAX_WEIGHT}` };
+    }
+    meta.curve = {
+      distance: Math.round(distance * 100) / 100,
+      weight: Math.round(weight * 1000) / 1000,
+    };
   }
   if (raw.color !== undefined && raw.color !== null && raw.color !== '') {
     const color = String(raw.color).trim();

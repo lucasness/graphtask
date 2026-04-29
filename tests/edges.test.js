@@ -54,12 +54,39 @@ describe('Edge CRUD', () => {
       expect(res.body.type).toBe('related');
     });
 
-    it('should create an edge with curve metadata', async () => {
+    it('should create an edge with curve metadata (legacy number)', async () => {
       const res = await request(app)
         .post(edgesUrl())
         .send({ source_id: 1, target_id: 2, type: 'dependency', meta: { curve: 42.123 } });
       expect(res.status).toBe(201);
-      expect(res.body.meta.curve).toBe(42.12);
+      // Legacy numbers normalize to {distance, weight: 0.5} on write.
+      expect(res.body.meta.curve).toEqual({ distance: 42.12, weight: 0.5 });
+    });
+
+    it('should create an edge with curve {distance, weight}', async () => {
+      const res = await request(app)
+        .post(edgesUrl())
+        .send({
+          source_id: 1,
+          target_id: 2,
+          type: 'dependency',
+          meta: { curve: { distance: -50, weight: 0.25 } },
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.meta.curve).toEqual({ distance: -50, weight: 0.25 });
+    });
+
+    it('should reject curve.weight out of range', async () => {
+      const res = await request(app)
+        .post(edgesUrl())
+        .send({
+          source_id: 1,
+          target_id: 2,
+          type: 'dependency',
+          meta: { curve: { distance: 10, weight: 1.5 } },
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/weight/i);
     });
 
     it('should create an edge with color metadata', async () => {
@@ -259,11 +286,11 @@ describe('Edge CRUD', () => {
       );
       const res = await request(app)
         .patch(`${edgesUrl()}/1`)
-        .send({ meta: { curve: -65 } });
+        .send({ meta: { curve: { distance: -65, weight: 0.7 } } });
       expect(res.status).toBe(200);
       expect(res.body.source_id).toBe(1);
       expect(res.body.target_id).toBe(2);
-      expect(res.body.meta.curve).toBe(-65);
+      expect(res.body.meta.curve).toEqual({ distance: -65, weight: 0.7 });
     });
 
     it('should update color metadata without changing endpoints', async () => {

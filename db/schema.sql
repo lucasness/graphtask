@@ -5,17 +5,18 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- graphs.id is a short random string. 8 chars from a 31-char alphabet
+-- graphs.id is a random string. 16 chars from a 31-char alphabet
 -- (lowercase letters + digits, minus 0/1/i/l/o to avoid visual ambiguity).
--- ~850 billion combinations — collision probability is negligible for a
--- personal tool, but the route still retries once on the unique violation.
+-- ~31^16 ≈ 2^79 combinations — unguessable in practice, which is the whole
+-- privacy model: the URL is the bearer token. The route still retries on the
+-- negligible chance of a unique-violation collision.
 CREATE OR REPLACE FUNCTION generate_short_graph_id() RETURNS TEXT AS $$
 DECLARE
   alphabet TEXT := 'abcdefghjkmnpqrstuvwxyz23456789';
   result TEXT := '';
   i INT;
 BEGIN
-  FOR i IN 1..8 LOOP
+  FOR i IN 1..16 LOOP
     result := result || substr(alphabet, 1 + floor(random() * length(alphabet))::int, 1);
   END LOOP;
   RETURN result;
@@ -92,3 +93,92 @@ DROP TRIGGER IF EXISTS bump_on_edge_change ON edges;
 CREATE TRIGGER bump_on_edge_change
   AFTER INSERT OR UPDATE OR DELETE ON edges
   FOR EACH ROW EXECUTE FUNCTION bump_graph_updated_at();
+
+-- The original FKs on graph_id were ON DELETE CASCADE only. ID rotation
+-- (POST /api/graphs/:id/rotate-id) needs ON UPDATE CASCADE so changing
+-- graphs.id automatically propagates to tasks.graph_id and edges.graph_id.
+-- Idempotent: drops the existing constraints by name and re-adds them.
+DO $$ BEGIN
+  ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_graph_id_fkey;
+  ALTER TABLE tasks
+    ADD CONSTRAINT tasks_graph_id_fkey
+    FOREIGN KEY (graph_id) REFERENCES graphs(id)
+    ON DELETE CASCADE ON UPDATE CASCADE;
+
+  ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_graph_id_fkey;
+  ALTER TABLE edges
+    ADD CONSTRAINT edges_graph_id_fkey
+    FOREIGN KEY (graph_id) REFERENCES graphs(id)
+    ON DELETE CASCADE ON UPDATE CASCADE;
+END $$;
+
+-- Resolve any pre-existing duplicate normalized names by suffixing later
+-- copies with " (2)", " (3)", etc., so the unique index below can be built.
+-- Truncate the base name to leave room for the suffix within the 80-char
+-- name length cap. Idempotent / safe to re-run.
+DO $$
+DECLARE
+  r RECORD;
+  base TEXT;
+  suffix TEXT;
+BEGIN
+  FOR r IN
+    SELECT id, name,
+           row_number() OVER (
+             PARTITION BY lower(regexp_replace(name, '\s+', '', 'g'))
+             ORDER BY created_at, id
+           ) AS rn
+      FROM graphs
+  LOOP
+    IF r.rn > 1 THEN
+      suffix := ' (' || r.rn || ')';
+      base := substr(r.name, 1, 80 - length(suffix));
+      UPDATE graphs SET name = base || suffix WHERE id = r.id;
+    END IF;
+  END LOOP;
+END $$;
+
+-- Unique on a normalized form so "My Graph", "my  graph", and "MyGraph" all
+-- collide. Prevents visually-confusing duplicates in the sidebar without
+-- forcing exact-match strictness.
+CREATE UNIQUE INDEX IF NOT EXISTS graphs_name_norm_uniq
+  ON graphs (lower(regexp_replace(name, '\s+', '', 'g')));
+
+-- Edge curve metadata used to be a single signed number (perpendicular
+-- offset; weight implicitly 0.5). It's now an object {distance, weight}
+-- so users can slide the bezier control point along the edge as well as
+-- perpendicular. Convert any existing number-form curve to the object form
+-- with weight=0.5 (the previous implicit default). Idempotent.
+UPDATE edges
+   SET meta = jsonb_set(
+         meta,
+         '{curve}',
+         jsonb_build_object('distance', meta->'curve', 'weight', 0.5)
+       )
+ WHERE jsonb_typeof(meta->'curve') = 'number';
+
+-- One-time backfill: any pre-existing graphs with shorter IDs (e.g. the old
+-- 8-char format) get rotated to a fresh 16-char ID. Safe to re-run; on a
+-- fresh DB it's a no-op. The cascade above carries tasks/edges along.
+DO $$
+DECLARE
+  old_id TEXT;
+  new_id TEXT;
+  attempts INT;
+BEGIN
+  FOR old_id IN SELECT id FROM graphs WHERE length(id) < 16 LOOP
+    attempts := 0;
+    LOOP
+      new_id := generate_short_graph_id();
+      BEGIN
+        UPDATE graphs SET id = new_id WHERE id = old_id;
+        EXIT;
+      EXCEPTION WHEN unique_violation THEN
+        attempts := attempts + 1;
+        IF attempts >= 5 THEN
+          RAISE EXCEPTION 'failed to allocate unique graph id after % attempts', attempts;
+        END IF;
+      END;
+    END LOOP;
+  END LOOP;
+END $$;
