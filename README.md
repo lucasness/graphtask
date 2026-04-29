@@ -503,7 +503,8 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 
 | Key | Behavior |
 |---|---|
-| `F` | Fit graph to viewport |
+| `F` | Fit graph to viewport (preserves layout) |
+| `T` | Tidy: re-run layout with tight spacing, persist new positions, then fit. Overrides any custom node placements |
 | `G` | Create a node at the visible-area center |
 | `S` | Cycle selected node status; Enter saves, Esc cancels |
 | `B` | Open color palette for selected nodes/edges |

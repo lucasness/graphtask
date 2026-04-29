@@ -99,6 +99,20 @@ Status enum: `todo` → `in_progress` → `review` → `done`. Each transition s
 | `review` | You (when you think it's done) | What you did, files changed, how to verify. **This is what the human reads to confirm.** Make it self-contained. |
 | `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself.** |
 
+**Read before you write.** Before PATCHing a task, fetch its current content with `GET /api/graphs/$GID/tasks/$TID` and read the body — the user may have edited it in the UI since you last touched it, and PATCH replaces the whole `content` blob. Merge your changes into what's actually there now; don't clobber the user's notes.
+
+**Keep related task bodies in sync.** When work on one task surfaces information that affects another (e.g., you find that the schema migration also needs a new index, which is a different task), update *that* task's body to reflect the new finding. The graph is a living context document, not a one-shot plan. Each task body should be accurate to the current state of the work.
+
+**Hard rule: before transitioning any task to `in_progress`, check its blockers.**
+
+```bash
+BLOCKERS=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks/$TID/blockers" | jq 'length')
+```
+
+If `BLOCKERS > 0`, **do not start the task.** Pause and tell the user the task is blocked by [list with statuses], and ask whether to proceed anyway. `review` counts as blocking too — even though the agent finished its part, the human hasn't confirmed, so downstream work isn't safe to begin.
+
+Only proceed if (a) blockers is zero, or (b) the user explicitly OKs starting while blocked. Don't rely on what you remember from when you first laid out the graph — the user may have deleted, retitled, or rearranged tasks since.
+
 For readiness queries (section 4), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
 
 PATCH replaces the entire `content` blob (frontmatter + body). Re-serialize the whole thing on every update:

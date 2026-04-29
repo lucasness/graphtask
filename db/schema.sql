@@ -84,7 +84,9 @@ END $$;
 
 -- Bump graphs.updated_at whenever any task or edge in a graph changes, AND
 -- emit a pg_notify event so SSE subscribers can push the change to live
--- viewers. Payload: { graph_id, kind: 'tasks'|'edges', op: 'INSERT'|... }.
+-- viewers. Payload: { graph_id, kind: 'tasks'|'edges', op: 'INSERT'|...,
+-- id: <affected row id> }. The id lets the client follow the agent visually
+-- (pan camera, open side panel) instead of just refetching blindly.
 CREATE OR REPLACE FUNCTION bump_graph_updated_at() RETURNS TRIGGER AS $$
 DECLARE
   gid TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
@@ -92,7 +94,12 @@ BEGIN
   UPDATE graphs SET updated_at = NOW() WHERE id = gid;
   PERFORM pg_notify(
     'graph_change',
-    json_build_object('graph_id', gid, 'kind', TG_TABLE_NAME, 'op', TG_OP)::text
+    json_build_object(
+      'graph_id', gid,
+      'kind', TG_TABLE_NAME,
+      'op', TG_OP,
+      'id', COALESCE(NEW.id, OLD.id)
+    )::text
   );
   RETURN NULL;
 END;

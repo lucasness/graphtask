@@ -285,7 +285,7 @@ async function fetchGraph() {
     cy.layout({
       name: 'breadthfirst',
       directed: true,
-      spacingFactor: 1.5,
+      spacingFactor: 0.75,
       avoidOverlap: true,
     }).run();
   }
@@ -1849,6 +1849,31 @@ async function updateTask(id, content) {
   });
 }
 
+// Re-run the breadthfirst layout with tight spacing, persist the new
+// positions, and zoom-to-fit. Use when manual placements have left the graph
+// sprawling and you want to start over with a clean compact arrangement.
+// Destructive of any custom node positions — that's the point.
+async function tidyAndFit() {
+  if (!cy || cy.elements().length === 0) return;
+  cy.layout({
+    name: 'breadthfirst',
+    directed: true,
+    spacingFactor: 0.75,
+    avoidOverlap: true,
+    fit: false,
+  }).run();
+  resolveAllOverlaps();
+  cy.fit(undefined, 50);
+  // Persist each node's new position so it survives reloads. Done in
+  // parallel; persistNodePosition swallows individual failures with a hint.
+  await Promise.all(
+    cy.nodes()
+      .filter((n) => n.data('taskId') && !n.id().startsWith('__'))
+      .map((n) => persistNodePosition(n))
+  );
+  showHint('Tidied & fit');
+}
+
 async function persistNodePosition(node) {
   if (!node || node.empty() || node.removed()) return;
   const taskId = node.data('taskId');
@@ -2661,6 +2686,19 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
 // drop, so we don't need our own retry loop here.
 let _graphEventSource = null;
 let _graphEventTimer = null;
+// Most recent event payload from this burst, used for agent-follow targeting.
+let _graphEventLastPayload = null;
+
+// Track the last user-driven interaction (mousedown / keydown / wheel)
+// so agent-follow doesn't yank the camera mid-drag or while typing. Idle
+// threshold: 2 seconds.
+let _lastUserInteractionAt = 0;
+function noteUserInteraction() { _lastUserInteractionAt = Date.now(); }
+function userInteractedRecently() { return Date.now() - _lastUserInteractionAt < 2000; }
+['pointerdown', 'keydown', 'wheel'].forEach((evt) => {
+  window.addEventListener(evt, noteUserInteraction, true);
+});
+
 function openGraphEventStream(id) {
   if (_graphEventSource) {
     try { _graphEventSource.close(); } catch {}
@@ -2668,13 +2706,16 @@ function openGraphEventStream(id) {
   }
   if (!id) return;
   const es = new EventSource(`/api/graphs/${id}/events`);
-  es.onmessage = () => {
+  es.onmessage = (e) => {
     if (id !== activeGraphId) return;
+    try { _graphEventLastPayload = JSON.parse(e.data); } catch { _graphEventLastPayload = null; }
     // Coalesce bursts (e.g. a bulk-edges insert fires N notifications).
     if (_graphEventTimer) clearTimeout(_graphEventTimer);
     _graphEventTimer = setTimeout(() => {
       _graphEventTimer = null;
-      refreshFromEvent();
+      const payload = _graphEventLastPayload;
+      _graphEventLastPayload = null;
+      refreshFromEvent(payload);
     }, 150);
   };
   es.onerror = () => {
@@ -2684,7 +2725,7 @@ function openGraphEventStream(id) {
   _graphEventSource = es;
 }
 
-async function refreshFromEvent() {
+async function refreshFromEvent(payload) {
   if (!cy) return;
   // Don't disturb a pending creation flow — fetchGraph wipes the canvas.
   if (pendingNode && !pendingNode.removed()) return;
@@ -2703,6 +2744,39 @@ async function refreshFromEvent() {
     if (e && !e.empty()) e.addClass('selected');
   });
   if (typeof updateToolbar === 'function') updateToolbar();
+
+  // Agent-follow: when an external (SSE-delivered) edit lands on a task and
+  // the user isn't actively interacting, animate the camera to the affected
+  // node, briefly flash it, and (for UPDATE) open the side panel so the user
+  // can see what the agent changed — same UX as if they'd clicked it.
+  if (
+    payload &&
+    payload.kind === 'tasks' &&
+    payload.id != null &&
+    payload.op !== 'DELETE' &&
+    !userInteractedRecently()
+  ) {
+    followAgentEdit(String(payload.id), payload.op);
+  }
+}
+
+function followAgentEdit(taskId, op) {
+  const node = cy.getElementById(taskId);
+  if (!node || node.empty()) return;
+
+  // Brief yellow underlay flash so the change is obvious.
+  node.addClass('agent-flash');
+  setTimeout(() => { try { node.removeClass('agent-flash'); } catch {} }, 1200);
+
+  // For UPDATE events, open the side panel showing the new content. INSERT
+  // events skip the panel — the user can see the new node appearing on the
+  // canvas without us forcing a panel open every time.
+  if (op === 'UPDATE') {
+    showPanel(node);
+  } else {
+    // For INSERT, just pan to it without opening the panel.
+    centerNodeInVisibleArea(node);
+  }
 }
 
 function parseGraphIdFromPath() {
@@ -2796,6 +2870,19 @@ document.addEventListener('DOMContentLoaded', () => {
           'underlay-color': '#CECDC3',
           'underlay-opacity': 0.22,
           'underlay-padding': 5,
+        },
+      },
+      {
+        // Brief glow when an SSE event indicates this node was just touched
+        // by an external editor (e.g. an LLM agent driving the API). The
+        // class is added in followAgentEdit() and removed after ~1.2s.
+        selector: 'node.agent-flash',
+        style: {
+          'underlay-color': '#D0A215',
+          'underlay-opacity': 0.55,
+          'underlay-padding': 10,
+          'transition-property': 'underlay-opacity underlay-padding',
+          'transition-duration': 400,
         },
       },
       {
@@ -3227,6 +3314,10 @@ document.addEventListener('DOMContentLoaded', () => {
         cy.fit(undefined, 50);
         showHint('Zoom to fit');
         break;
+      case 't':
+      case 'T':
+        tidyAndFit();
+        break;
       case 'g':
       case 'G':
         createNodeAtCenter();
@@ -3286,6 +3377,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-zoom-fit').addEventListener('click', () => {
     cy.fit(undefined, 50);
   });
+  document.getElementById('btn-tidy').addEventListener('click', tidyAndFit);
   document.getElementById('btn-delete-node').addEventListener('click', deleteSelected);
   document.getElementById('btn-delete-edge').addEventListener('click', deleteSelected);
   document.getElementById('btn-delete-selection').addEventListener('click', deleteSelected);
