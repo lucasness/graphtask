@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    volumes:
+      # Persist Postgres data across `docker compose down` / `up` cycles.
+      # Wipe it with `docker compose down -v` if you want to start fresh.
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:

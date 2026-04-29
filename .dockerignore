@@ -2,3 +2,5 @@ node_modules
 tests
 vitest.config.js
 .git
+.env
+.wafer/

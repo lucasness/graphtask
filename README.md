@@ -6,54 +6,55 @@ sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
 
 ---
 
-## Getting started
+## Quickstart
 
-### Requirements
+The only requirement on your machine is **Docker Desktop** (or the Docker
+engine). Everything else — Node, Postgres, the pgRouting extension — runs
+inside a single container, so you don't have to match versions or install
+anything language-specific.
+
+```sh
+git clone https://github.com/lucasness/graphtask.git
+cd graphtask
+docker compose up
+```
+
+Open <http://localhost:3000>.
+
+The first run takes a minute or two while Docker pulls the Postgres image
+and initializes the database. Subsequent starts are a few seconds.
+
+Your graphs are stored in a Docker named volume (`pgdata`), so they survive
+`docker compose down` / `up` cycles. Wipe everything with
+`docker compose down -v`.
+
+### Common things
+
+```sh
+docker compose up -d        # run in the background
+docker compose logs -f      # tail logs
+docker compose down         # stop, keep data
+docker compose down -v      # stop, wipe data
+HOST_PORT=3001 docker compose up   # serve on a different host port
+```
+
+### Running without Docker
+
+If you'd rather run natively (e.g. for development):
 
 - **Node 22+** (uses `node --env-file`)
-- **PostgreSQL 17+** with the [`pgrouting`](https://pgrouting.org) extension
-  available (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`)
-
-### Install + run
+- **PostgreSQL 17+** with [`pgrouting`](https://pgrouting.org) installed
+  (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`)
 
 ```sh
-git clone https://github.com/<your-username>/graphtask.git
-cd graphtask
 npm install
-
-# Create a database and load the schema (idempotent).
 createdb graphtask
 psql graphtask -f db/schema.sql
-
-# Start the server.
 DATABASE_URL=postgresql://localhost/graphtask npm start
-# → http://localhost:3000
 ```
 
-If you'd rather keep config in a file, drop a `.env` next to `package.json`:
-
-```env
-DATABASE_URL=postgresql://localhost/graphtask
-PORT=3000
-```
-
-`npm start` reads it via `node --env-file=.env`.
-
-### Tests
-
-```sh
-npm test
-```
-
-Tests spin up and tear down a `graphtask_test` database; the `pgrouting`
-extension must be available on your local Postgres for them to pass.
-
-### Docker
-
-A `Dockerfile` and `docker-entrypoint.sh` are included that bundle Postgres
-+ pgRouting + Node into a single container. `docker build -t graphtask .`
-then `docker run -p 3000:3000 graphtask`. Data lives in the container
-filesystem unless you mount a volume at `/var/lib/postgresql/data`.
+Run the tests with `npm test`. They spin up and tear down a `graphtask_test`
+database; `pgrouting` must be available on your local Postgres.
 
 ---
 
