@@ -377,4 +377,99 @@ describe('Edge CRUD', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('POST /api/graphs/:gid/edges/bulk', () => {
+    it('should insert all edges in a valid batch', async () => {
+      const res = await request(app)
+        .post(`${edgesUrl()}/bulk`)
+        .send({
+          edges: [
+            { source_id: 1, target_id: 2, type: 'dependency' },
+            { source_id: 2, target_id: 3, type: 'dependency' },
+          ],
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.edges).toHaveLength(2);
+      const list = await request(app).get(edgesUrl());
+      expect(list.body).toHaveLength(2);
+    });
+
+    it('should rollback the whole batch when one closes a cycle', async () => {
+      // Pre-existing dep chain 1→2→3.
+      await pool.query(
+        `INSERT INTO edges (graph_id, source_id, target_id, type) VALUES
+          ($1, 1, 2, 'dependency'), ($1, 2, 3, 'dependency')`,
+        [gid]
+      );
+      const res = await request(app)
+        .post(`${edgesUrl()}/bulk`)
+        .send({
+          edges: [
+            { source_id: 3, target_id: 1, type: 'dependency' },
+          ],
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/cycle/i);
+      expect(res.body.failedAt).toBe(0);
+      const list = await request(app).get(edgesUrl());
+      // Original 2 edges only, no rollback leak.
+      expect(list.body).toHaveLength(2);
+    });
+
+    it('should detect a multi-edge cycle within the same batch', async () => {
+      const res = await request(app)
+        .post(`${edgesUrl()}/bulk`)
+        .send({
+          edges: [
+            { source_id: 1, target_id: 2, type: 'dependency' },
+            { source_id: 2, target_id: 3, type: 'dependency' },
+            { source_id: 3, target_id: 1, type: 'dependency' },
+          ],
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/cycle/i);
+      const list = await request(app).get(edgesUrl());
+      expect(list.body).toHaveLength(0);
+    });
+
+    it('should rollback on duplicate within batch', async () => {
+      const res = await request(app)
+        .post(`${edgesUrl()}/bulk`)
+        .send({
+          edges: [
+            { source_id: 1, target_id: 2, type: 'related' },
+            { source_id: 1, target_id: 2, type: 'related' },
+          ],
+        });
+      expect(res.status).toBe(409);
+      expect(res.body.failedAt).toBe(1);
+      const list = await request(app).get(edgesUrl());
+      expect(list.body).toHaveLength(0);
+    });
+
+    it('should reject empty batch', async () => {
+      const res = await request(app).post(`${edgesUrl()}/bulk`).send({ edges: [] });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject batch with cross-graph endpoint', async () => {
+      const otherGid = (
+        await pool.query("INSERT INTO graphs (name) VALUES ('o') RETURNING id")
+      ).rows[0].id;
+      const [c, m] = taskRow('Outside');
+      const o = await pool.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3) RETURNING id`,
+        [otherGid, c, m]
+      );
+      const res = await request(app)
+        .post(`${edgesUrl()}/bulk`)
+        .send({
+          edges: [
+            { source_id: 1, target_id: o.rows[0].id, type: 'dependency' },
+          ],
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/this graph/i);
+    });
+  });
 });

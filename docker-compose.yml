@@ -3,6 +3,15 @@ services:
     build: .
     ports:
       - "${HOST_PORT:-3000}:3000"
+    # Raise the container's open-file-descriptor cap from the conservative
+    # 1024 default. Each open SSE connection (one per browser tab watching a
+    # graph) costs one fd; 65535 leaves headroom for ~10K+ concurrent viewers
+    # comfortably. Setting both soft and hard at the container level lets the
+    # node process raise its own soft limit at startup.
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
       # Persist Postgres data across `docker compose down` / `up` cycles.
       # Wipe it with `docker compose down -v` if you want to start fresh.

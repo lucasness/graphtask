@@ -19,6 +19,11 @@ su postgres -c "psql -tc \"SELECT 1 FROM pg_database WHERE datname='graphtask'\"
   || su postgres -c "createdb graphtask"
 su postgres -c "psql -d graphtask -f /app/db/schema.sql"
 
+# Raise the soft fd limit to whatever the container's hard limit allows.
+# docker-compose sets nofile=65535/65535 by default; if the container was
+# started without that, we still pull the soft limit up to the existing hard.
+ulimit -Sn 65535 2>/dev/null || ulimit -Sn "$(ulimit -Hn)" 2>/dev/null || true
+
 # Start the Node server
 export DATABASE_URL="postgresql://postgres@localhost/graphtask"
 export PORT="${PORT:-3000}"

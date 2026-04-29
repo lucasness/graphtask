@@ -114,6 +114,103 @@ describe('Graph queries', () => {
     });
   });
 
+  // Graph: A→B→D, A→C→D, D--E (related). Statuses set per-test.
+  describe('GET /api/graphs/:gid/tasks/ready', () => {
+    it('should return roots with no prerequisites (default todo statuses)', async () => {
+      const res = await request(app).get(`${tasksUrl()}/ready`);
+      expect(res.status).toBe(200);
+      // A has no prereqs; E only has a 'related' edge so no dep prereqs.
+      // B, C, D all have unfinished prereqs → not ready.
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([1, 5]);
+    });
+
+    it('should treat review as not-yet-done', async () => {
+      // A is in review — its dependents B and C remain blocked.
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"review"') WHERE id = 1`
+      );
+      const res = await request(app).get(`${tasksUrl()}/ready`);
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([5]); // E only — no transitive readiness through review
+    });
+
+    it('should propagate readiness as prereqs become done', async () => {
+      // Mark A done → B and C become ready (their only prereq is A).
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"done"') WHERE id = 1`
+      );
+      const res = await request(app).get(`${tasksUrl()}/ready`);
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([2, 3, 5]); // B, C, E
+    });
+  });
+
+  describe('GET /api/graphs/:gid/tasks/:id/blockers', () => {
+    it('should return all recursive non-done prereqs', async () => {
+      const res = await request(app).get(`${tasksUrl()}/4/blockers`);
+      expect(res.status).toBe(200);
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([1, 2, 3]); // A, B, C
+    });
+
+    it('should exclude prereqs already marked done', async () => {
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"done"') WHERE id IN (1, 2)`
+      );
+      const res = await request(app).get(`${tasksUrl()}/4/blockers`);
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([3]); // only C remains
+    });
+
+    it('should still include review-status prereqs (not done yet)', async () => {
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"done"') WHERE id IN (1, 2)`
+      );
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"review"') WHERE id = 3`
+      );
+      const res = await request(app).get(`${tasksUrl()}/4/blockers`);
+      const ids = res.body.map((t) => t.id);
+      expect(ids).toEqual([3]); // C in review still blocks
+    });
+
+    it('should return 404 for non-existent task', async () => {
+      const res = await request(app).get(`${tasksUrl()}/9999/blockers`);
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('GET /api/graphs/:gid/tasks/:id/unblocks', () => {
+    it("should identify D as unblocked when finishing C (B is done)", async () => {
+      // A done, B done, C in review. Finishing C makes D ready.
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"done"') WHERE id IN (1, 2)`
+      );
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"review"') WHERE id = 3`
+      );
+      const res = await request(app).get(`${tasksUrl()}/3/unblocks`);
+      const ids = res.body.map((t) => t.id);
+      expect(ids).toEqual([4]); // D
+    });
+
+    it("should return empty when other prereqs aren't done", async () => {
+      // Only A done; B still blocking D.
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{status}', '"done"') WHERE id = 1`
+      );
+      const res = await request(app).get(`${tasksUrl()}/2/unblocks`);
+      // B → D, but D's other prereq C is still todo. So finishing B doesn't unblock D.
+      expect(res.body).toEqual([]);
+    });
+
+    it('should return 404 for non-existent task', async () => {
+      const res = await request(app).get(`${tasksUrl()}/9999/unblocks`);
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('GET /api/graphs/:gid/graph/shortest-path', () => {
     it('should find shortest path between two tasks', async () => {
       const res = await request(app).get(`${graphUrl()}/shortest-path?from=1&to=4`);

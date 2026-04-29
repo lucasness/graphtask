@@ -102,6 +102,23 @@ Open <http://localhost:3000>.
 `npm test` spins up and tears down a `graphtask_test` database on your local
 Postgres; `pgrouting` must be installed there.
 
+**Open-file limit (for live updates at scale)**
+
+graphtask uses Server-Sent Events for live graph updates: every browser tab
+viewing a graph holds one open file descriptor on the server for the
+duration of its visit. The OS default cap is often `1024` per process, which
+caps concurrent viewers at the same number.
+
+- The Docker setup raises this to `65535` automatically (`ulimits.nofile`
+  in `docker-compose.yml` + a `ulimit -Sn` in the entrypoint).
+- The native `npm start` script attempts the same (`ulimit -Sn 65535`),
+  falling back to the highest soft limit your shell allows.
+- For production deployments behind a process supervisor (systemd,
+  PM2, Docker, etc.), set `LimitNOFILE=65535` (systemd) or the
+  equivalent in your supervisor's config so the **hard** limit is
+  raised before the node process starts. A non-root process can only
+  raise its soft limit up to the existing hard limit.
+
 ---
 
 ## Stack
@@ -185,6 +202,11 @@ edges(
   and stores a synchronized structured copy in `tasks.meta`.
 - Task metadata: `title`, `status`, optional `description`, optional `color`,
   optional saved graph coordinates `x`/`y`.
+- Status enum: `todo` (no highlight), `in_progress` (orange), `review`
+  (yellow — agent-finished, awaiting human confirmation), `done` (green).
+  Convention: when an LLM agent updates the graph it stops at `review`;
+  `done` is the human's final confirmation. Treat `review` as not-yet-done
+  for dependency-readiness purposes.
 - Edge metadata: optional `curve` shaped as `{distance, weight}` driving the
   Cytoscape unbundled-Bezier control point — `distance` is the signed
   perpendicular offset (legacy API still accepts a bare number with implicit
@@ -215,14 +237,20 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
-| GET | `/api/graphs/:gid/tasks/:id/subtasks` | Walk incoming dependency edges |
-| GET | `/api/graphs/:gid/tasks/:id/ancestors` | Walk outgoing dependency edges |
+| GET | `/api/graphs/:gid/tasks/ready` | Status=todo tasks where every recursive prereq is done (treats `review` as not-yet-done) |
+| GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
+| GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
+| GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
+| GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
 | GET | `/api/graphs/:gid/edges` | List edges in graph |
 | POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, type, meta?}` |
+| POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, type, meta |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
+| POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | pgRouting shortest path |
+| GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op}` on every task/edge change |
 
 `requireIntegerParam('id')` middleware on numeric `:id` segments returns 400
 on non-integer values (otherwise Postgres would raise a 500). `:gid` is an
@@ -230,6 +258,90 @@ opaque short string; a bad one falls through to a 404.
 
 `markdown.applyDefaults` coerces YAML-parsed title and description to strings
 before validation, so scalar YAML values do not break task saves.
+
+---
+
+## Agent API
+
+The HTTP API above is stable enough for an LLM agent (Claude Code, Codex,
+or anything that can run `curl`) to drive end to end — create a graph,
+add tasks, wire dependencies, update statuses as work progresses, and
+traverse for next-actionable tasks. The browser canvas updates live via
+the `/events` SSE endpoint, so a user watching a graph sees the agent's
+edits in real time.
+
+The convention to follow as an agent:
+
+- Persist the active graph id in `.graphtask/graph-id` (per-project, kept
+  out of git — it's bearer-token equivalent).
+- Move tasks `todo → in_progress → review`. **Never set `done`.**
+  `done` is the human's confirmation; `review` is the agent's
+  "I think this is finished, please confirm." Treat `review` as
+  not-yet-done for dependency-readiness purposes.
+- Use `POST /edges/bulk` for any multi-edge import — it's transactional
+  and fails atomically with a `failedAt` index, so you never end up with
+  a half-built dependency graph.
+- If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
+
+### Install the agent skill
+
+The repo ships a Claude Code skill at `.claude/skills/graphtask/SKILL.md`
+that teaches the agent the workflow above (graph resolution, status
+discipline, bulk edges, status-aware traversal). Most users want the agent
+available in **other** projects (so it can track work on whatever they're
+building, with graphtask running in the background) — that's the
+"personal" install:
+
+**Personal — recommended for most users** (works in any project on your
+machine):
+
+```sh
+# No clone needed; download just the skill file:
+mkdir -p ~/.claude/skills/graphtask
+curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
+  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
+
+# Then in the project you want to track:
+cd ~/projects/my-real-project
+claude        # the `graphtask` skill is now available globally
+```
+
+**Project-local — when you're working on graphtask itself.** Clone the
+repo and Claude Code auto-discovers `.claude/skills/graphtask/SKILL.md`
+when run from inside it. No install step:
+
+```sh
+git clone https://github.com/lucasness/graphtask.git
+cd graphtask
+claude
+```
+
+**Other agents (Codex, Cursor, etc.)** — the skill follows the open
+[Agent Skills](https://agentskills.io) standard. Refer to your tool's
+docs for the install path; the `SKILL.md` itself is portable.
+
+#### Pointing at a hosted instance
+
+By default the skill talks to `http://127.0.0.1:3000`. To use a hosted
+graphtask instead, set `GRAPHTASK_BASE_URL` in the shell where you run
+Claude Code:
+
+```sh
+export GRAPHTASK_BASE_URL="https://graphtask.example.com"
+claude
+```
+
+Each graph's id is the only access control (no user accounts), so to share
+or collaborate, just share the URL `${GRAPHTASK_BASE_URL}/g/<id>`. To
+revoke a leaked id, hit `POST /api/graphs/<id>/rotate-id` from the UI's
+rotate button or the API.
+
+#### Dependencies
+
+The skill drives the API via `curl` and `jq`. `curl` is universal; `jq`
+needs to be installed separately on most systems (`brew install jq`,
+`apt install jq`, `apk add jq`). Without `jq`, the recipes parse JSON
+incorrectly.
 
 ---
 

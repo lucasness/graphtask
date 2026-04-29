@@ -91,6 +91,14 @@ describe('Task CRUD', () => {
       expect(res.status).toBe(400);
     });
 
+    it('should accept review as a valid status', async () => {
+      const res = await request(app)
+        .post(tasksUrl())
+        .send({ content: md('Pending review', { status: 'review' }) });
+      expect(res.status).toBe(201);
+      expect(res.body.meta.status).toBe('review');
+    });
+
     it('should reject a task with title > 50 chars', async () => {
       const res = await request(app)
         .post(tasksUrl())

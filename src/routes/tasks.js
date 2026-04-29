@@ -59,6 +59,38 @@ router.get('/leaves', async (req, res) => {
   res.json(result.rows);
 });
 
+// Tasks ready to start: status='todo' AND every recursive prerequisite is
+// 'done'. Treats 'review' and 'in_progress' as not-yet-done — matches the
+// agent convention where 'review' is "agent thinks it's finished, awaiting
+// human confirmation."
+router.get('/ready', async (req, res) => {
+  const { gid } = req.params;
+  const result = await pool.query(
+    `WITH RECURSIVE prereqs AS (
+       SELECT t.id AS root, e.source_id AS prereq
+         FROM tasks t
+         JOIN edges e ON e.target_id = t.id AND e.type = 'dependency'
+        WHERE t.graph_id = $1
+       UNION
+       SELECT p.root, e.source_id
+         FROM prereqs p
+         JOIN edges e ON e.target_id = p.prereq AND e.type = 'dependency'
+        WHERE e.graph_id = $1
+     )
+     SELECT t.* FROM tasks t
+      WHERE t.graph_id = $1
+        AND t.meta->>'status' = 'todo'
+        AND NOT EXISTS (
+          SELECT 1 FROM prereqs p
+          JOIN tasks tp ON tp.id = p.prereq
+          WHERE p.root = t.id AND tp.meta->>'status' <> 'done'
+        )
+      ORDER BY t.id`,
+    [gid]
+  );
+  res.json(result.rows);
+});
+
 router.get('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   const result = await pool.query(
@@ -123,6 +155,72 @@ router.get('/:id/subtasks', validateId, async (req, res) => {
       WHERE e.type = 'dependency' AND e.graph_id = $2
     )
     SELECT t.* FROM tasks t JOIN subtasks s ON t.id = s.id ORDER BY t.id`,
+    [id, gid]
+  );
+  res.json(result.rows);
+});
+
+// Blockers = recursive prerequisites that aren't 'done' yet. Use this to
+// answer "what's stopping me from finishing X?" — returns both
+// in_progress/review tasks (work in flight) and todo tasks (not started).
+router.get('/:id/blockers', validateId, async (req, res) => {
+  const { gid, id } = req.params;
+  const exists = await pool.query(
+    'SELECT 1 FROM tasks WHERE id = $1 AND graph_id = $2',
+    [id, gid]
+  );
+  if (exists.rows.length === 0) return res.status(404).json({ error: 'not found' });
+
+  const result = await pool.query(
+    `WITH RECURSIVE chain AS (
+      SELECT source_id AS id FROM edges
+      WHERE target_id = $1 AND type = 'dependency' AND graph_id = $2
+      UNION
+      SELECT e.source_id FROM edges e
+      JOIN chain c ON e.target_id = c.id
+      WHERE e.type = 'dependency' AND e.graph_id = $2
+    )
+    SELECT t.* FROM tasks t
+    JOIN chain c ON t.id = c.id
+    WHERE t.meta->>'status' <> 'done'
+    ORDER BY t.id`,
+    [id, gid]
+  );
+  res.json(result.rows);
+});
+
+// Unblocks = direct parent tasks that would become ready-to-start if THIS
+// task were marked 'done'. Single-level only (a parent only becomes ready
+// the moment its last blocker finishes; transitive unblocking happens as
+// each level resolves). Use this to answer "if I finish review of X, what
+// opens up?"
+router.get('/:id/unblocks', validateId, async (req, res) => {
+  const { gid, id } = req.params;
+  const exists = await pool.query(
+    'SELECT 1 FROM tasks WHERE id = $1 AND graph_id = $2',
+    [id, gid]
+  );
+  if (exists.rows.length === 0) return res.status(404).json({ error: 'not found' });
+
+  const result = await pool.query(
+    `SELECT t.* FROM tasks t
+     JOIN edges parent_edge
+       ON parent_edge.target_id = t.id
+      AND parent_edge.source_id = $1
+      AND parent_edge.type = 'dependency'
+      AND parent_edge.graph_id = $2
+     WHERE t.graph_id = $2
+       AND t.meta->>'status' = 'todo'
+       AND NOT EXISTS (
+         SELECT 1 FROM edges other
+         JOIN tasks other_task ON other_task.id = other.source_id
+         WHERE other.target_id = t.id
+           AND other.type = 'dependency'
+           AND other.graph_id = $2
+           AND other.source_id <> $1
+           AND other_task.meta->>'status' <> 'done'
+       )
+     ORDER BY t.id`,
     [id, gid]
   );
   res.json(result.rows);

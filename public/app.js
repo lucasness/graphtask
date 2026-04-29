@@ -37,10 +37,11 @@ function isCmd(e) {
 // push that resolves one collision can create another. Returns true if the
 // node was moved.
 const NODE_GAP = 12;
-const STATUS_ORDER = ['todo', 'in_progress', 'done'];
+const STATUS_ORDER = ['todo', 'in_progress', 'review', 'done'];
 const STATUS_LABELS = {
   todo: 'Todo',
   in_progress: 'In progress',
+  review: 'Review',
   done: 'Done',
 };
 const DEFAULT_NODE_COLOR = '#282726';
@@ -2651,6 +2652,57 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   if (cy) cy.elements().remove();
   await fetchGraph();
   if (typeof updateToolbar === 'function') updateToolbar();
+  openGraphEventStream(id);
+}
+
+// Live-update plumbing: open one EventSource per active graph. When the
+// server emits a change (any task/edge mutation in this graph), do a
+// selection-preserving refetch. The native EventSource auto-reconnects on
+// drop, so we don't need our own retry loop here.
+let _graphEventSource = null;
+let _graphEventTimer = null;
+function openGraphEventStream(id) {
+  if (_graphEventSource) {
+    try { _graphEventSource.close(); } catch {}
+    _graphEventSource = null;
+  }
+  if (!id) return;
+  const es = new EventSource(`/api/graphs/${id}/events`);
+  es.onmessage = () => {
+    if (id !== activeGraphId) return;
+    // Coalesce bursts (e.g. a bulk-edges insert fires N notifications).
+    if (_graphEventTimer) clearTimeout(_graphEventTimer);
+    _graphEventTimer = setTimeout(() => {
+      _graphEventTimer = null;
+      refreshFromEvent();
+    }, 150);
+  };
+  es.onerror = () => {
+    // Native EventSource will auto-reconnect; no-op here. Keep the handler
+    // so errors don't bubble to the console as unhandled.
+  };
+  _graphEventSource = es;
+}
+
+async function refreshFromEvent() {
+  if (!cy) return;
+  // Don't disturb a pending creation flow — fetchGraph wipes the canvas.
+  if (pendingNode && !pendingNode.removed()) return;
+  // Don't disturb an inline title edit either.
+  if (cy.$('.inline-title-edit').length > 0) return;
+
+  const selectedNodeIds = cy.nodes('.selected').map((n) => n.id());
+  const selectedEdgeIds = cy.edges('.selected').map((e) => e.id());
+  await fetchGraph();
+  selectedNodeIds.forEach((id) => {
+    const n = cy.getElementById(id);
+    if (n && !n.empty()) n.addClass('selected');
+  });
+  selectedEdgeIds.forEach((id) => {
+    const e = cy.getElementById(id);
+    if (e && !e.empty()) e.addClass('selected');
+  });
+  if (typeof updateToolbar === 'function') updateToolbar();
 }
 
 function parseGraphIdFromPath() {
@@ -2721,6 +2773,13 @@ document.addEventListener('DOMContentLoaded', () => {
         selector: 'node[status = "in_progress"]',
         style: {
           'border-color': '#DA702C',
+          'border-width': 2,
+        },
+      },
+      {
+        selector: 'node[status = "review"]',
+        style: {
+          'border-color': '#D0A215',
           'border-width': 2,
         },
       },

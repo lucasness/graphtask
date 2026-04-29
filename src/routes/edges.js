@@ -130,6 +130,120 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Transactional bulk-insert. Either every edge in the batch lands or none —
+// the agent's mental model is "I either got my whole DAG wired or nothing
+// happened, retry." Validates input shape up front; runs cycle detection
+// once after all rows are inserted so multi-edge cycles (A→B + B→A in the
+// same call) are caught.
+router.post('/bulk', async (req, res) => {
+  const { gid } = req.params;
+  const list = req.body && req.body.edges;
+  if (!Array.isArray(list)) {
+    return res.status(400).json({ error: 'edges must be an array' });
+  }
+  if (list.length === 0) {
+    return res.status(400).json({ error: 'edges must not be empty' });
+  }
+  if (list.length > 500) {
+    return res.status(400).json({ error: 'edges must be 500 or fewer per call' });
+  }
+
+  // Pre-validate every spec so we can fail fast with the offending index.
+  const normalized = [];
+  for (let i = 0; i < list.length; i++) {
+    const spec = list[i] || {};
+    const { source_id, target_id, type } = spec;
+    if (!Number.isInteger(source_id))
+      return res.status(400).json({ error: 'source_id must be an integer', failedAt: i });
+    if (!Number.isInteger(target_id))
+      return res.status(400).json({ error: 'target_id must be an integer', failedAt: i });
+    if (!type || !VALID_TYPES.includes(type))
+      return res.status(400).json({ error: 'type must be dependency or related', failedAt: i });
+    if (source_id === target_id)
+      return res.status(400).json({ error: 'source and target must be different', failedAt: i });
+    const normMeta = normalizeMeta(spec.meta || {});
+    if (normMeta.error)
+      return res.status(400).json({ error: normMeta.error, failedAt: i });
+    normalized.push({ source_id, target_id, type, meta: normMeta.meta });
+  }
+
+  try {
+    const rows = await withTx(async (client) => {
+      await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
+
+      // Verify every referenced task belongs to this graph in one shot.
+      const allTaskIds = [...new Set(normalized.flatMap((e) => [e.source_id, e.target_id]))];
+      const taskCheck = await client.query(
+        `SELECT id FROM tasks WHERE id = ANY($1::int[]) AND graph_id = $2`,
+        [allTaskIds, gid]
+      );
+      if (taskCheck.rows.length !== allTaskIds.length) {
+        throw new CrossGraphError('one or more endpoints are not tasks in this graph');
+      }
+
+      // Insert all edges. Tag failures with the input index so the client
+      // can report which edge tripped a duplicate / FK violation.
+      const inserted = [];
+      for (let i = 0; i < normalized.length; i++) {
+        const e = normalized[i];
+        try {
+          const r = await client.query(
+            `INSERT INTO edges (graph_id, source_id, target_id, type, meta)
+             VALUES ($1, $2, $3, $4::edge_type, $5) RETURNING *`,
+            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta)]
+          );
+          inserted.push(r.rows[0]);
+        } catch (err) {
+          err._failedAt = i;
+          throw err;
+        }
+      }
+
+      // Cycle check after all rows are in place. For any cycle through
+      // these new edges, at least one of them must close a loop, so
+      // running the per-edge check on each new dep edge catches all cases
+      // including A→B + B→A in the same batch.
+      for (let i = 0; i < inserted.length; i++) {
+        const row = inserted[i];
+        if (row.type !== 'dependency') continue;
+        const cycle = await client.query(
+          `WITH RECURSIVE chain AS (
+            SELECT target_id AS node FROM edges
+            WHERE source_id = $1 AND type = 'dependency' AND graph_id = $3
+            UNION
+            SELECT e.target_id FROM edges e
+            JOIN chain c ON e.source_id = c.node
+            WHERE e.type = 'dependency' AND e.graph_id = $3
+          )
+          SELECT 1 FROM chain WHERE node = $2 LIMIT 1`,
+          [row.target_id, row.source_id, gid]
+        );
+        if (cycle.rows.length > 0) {
+          const err = new CycleError('bulk insert would create a cycle');
+          err._failedAt = i;
+          throw err;
+        }
+      }
+
+      return inserted;
+    });
+    res.status(201).json({ edges: rows });
+  } catch (err) {
+    const failedAt = err._failedAt;
+    const respond = (status, message) => {
+      const body = { error: message };
+      if (failedAt !== undefined) body.failedAt = failedAt;
+      return res.status(status).json(body);
+    };
+    if (err instanceof CycleError) return respond(400, err.message);
+    if (err instanceof CrossGraphError) return respond(400, err.message);
+    if (err.code === '23505') return respond(409, 'edge already exists between these nodes');
+    if (err.code === '23503') return respond(400, 'referenced task does not exist');
+    if (err.code === '23514') return respond(400, 'invalid edge');
+    throw err;
+  }
+});
+
 router.get('/', async (req, res) => {
   const { gid } = req.params;
   const result = await pool.query(

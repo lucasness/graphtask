@@ -36,7 +36,7 @@ export function serializeMarkdown(meta, body) {
   return parts.join('\n');
 }
 
-const VALID_STATUSES = ['todo', 'in_progress', 'done'];
+const VALID_STATUSES = ['todo', 'in_progress', 'review', 'done'];
 
 export function validateMeta(meta) {
   if (!meta.title || typeof meta.title !== 'string' || meta.title.trim() === '') {
@@ -49,7 +49,7 @@ export function validateMeta(meta) {
     return 'description must be 150 characters or less';
   }
   if (meta.status && !VALID_STATUSES.includes(meta.status)) {
-    return 'status must be todo, in_progress, or done';
+    return 'status must be todo, in_progress, review, or done';
   }
   return null;
 }

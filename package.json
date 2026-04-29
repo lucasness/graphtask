@@ -5,7 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "start": "node --env-file=.env src/server.js"
+    "start": "ulimit -Sn 65535 2>/dev/null || ulimit -Sn $(ulimit -Hn) 2>/dev/null || true; node --env-file=.env src/server.js"
   },
   "keywords": [],
   "license": "ISC",

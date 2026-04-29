@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   CONSTRAINT description_length
     CHECK (length(meta->>'description') <= 150 OR meta->>'description' IS NULL),
   CONSTRAINT valid_status
-    CHECK (meta->>'status' IN ('todo', 'in_progress', 'done'))
+    CHECK (meta->>'status' IN ('todo', 'in_progress', 'review', 'done'))
 );
 
 CREATE INDEX IF NOT EXISTS tasks_graph_id_idx ON tasks(graph_id);
@@ -74,12 +74,28 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS edges_graph_id_idx ON edges(graph_id);
 
--- Bump graphs.updated_at whenever any task or edge in a graph changes.
--- "Activity" semantic: create/update/delete of nodes or edges all count.
+-- Migrate the valid_status CHECK on tasks to include 'review' on existing
+-- DBs (CREATE TABLE IF NOT EXISTS won't alter constraints on tables that
+-- already exist). Idempotent: drops and re-adds the constraint.
+DO $$ BEGIN
+  ALTER TABLE tasks DROP CONSTRAINT IF EXISTS valid_status;
+  ALTER TABLE tasks
+    ADD CONSTRAINT valid_status
+    CHECK (meta->>'status' IN ('todo', 'in_progress', 'review', 'done'));
+END $$;
+
+-- Bump graphs.updated_at whenever any task or edge in a graph changes, AND
+-- emit a pg_notify event so SSE subscribers can push the change to live
+-- viewers. Payload: { graph_id, kind: 'tasks'|'edges', op: 'INSERT'|... }.
 CREATE OR REPLACE FUNCTION bump_graph_updated_at() RETURNS TRIGGER AS $$
+DECLARE
+  gid TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
 BEGIN
-  UPDATE graphs SET updated_at = NOW()
-   WHERE id = COALESCE(NEW.graph_id, OLD.graph_id);
+  UPDATE graphs SET updated_at = NOW() WHERE id = gid;
+  PERFORM pg_notify(
+    'graph_change',
+    json_build_object('graph_id', gid, 'kind', TG_TABLE_NAME, 'op', TG_OP)::text
+  );
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
