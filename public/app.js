@@ -16,6 +16,11 @@ function apiBase() {
 let editorMode = 'rich'; // 'rich' | 'raw'
 let lastSavedContent = '';
 let saveTimer = null;
+// Timestamp until which scheduleSave should ignore editor change events.
+// Set by loadIntoEditor to swallow the synthetic 'change' that
+// richEditor.setMarkdown fires — without this we round-trip-PATCH the task,
+// which fires a fresh SSE event, which calls loadIntoEditor again, etc.
+let _editorSaveSuppressedUntil = 0;
 let saveInFlight = false;
 let pendingSave = false;
 let savedFadeTimer = null;
@@ -1029,6 +1034,13 @@ function handleSettingsKey(e) {
 let panelLoadedMeta = {};
 
 function loadIntoEditor(content) {
+  // richEditor.setMarkdown below fires a synthetic 'change' event, which
+  // would normally schedule a save. That save would PATCH the task with
+  // editor-roundtripped content (lossy whitespace), which fires a fresh
+  // SSE event back to us — infinite loop / "double focus" bug. Suppress
+  // scheduleSave for a brief window so the synthetic change is ignored
+  // but real user edits a moment later still save normally.
+  _editorSaveSuppressedUntil = Date.now() + 200;
   const { meta, body } = parseFrontmatter(content);
   panelLoadedMeta = meta;
   document.getElementById('field-title').value = meta.title || '';
@@ -2732,6 +2744,19 @@ async function refreshFromEvent(payload) {
   // Don't disturb an inline title edit either.
   if (cy.$('.inline-title-edit').length > 0) return;
 
+  // Capture pre-refresh status so we can tell whether this UPDATE was a
+  // status change (flash with status color) vs body-only edit (purple).
+  let preStatus = null;
+  if (
+    payload &&
+    payload.kind === 'tasks' &&
+    payload.id != null &&
+    payload.op !== 'INSERT'
+  ) {
+    const preNode = cy.getElementById(String(payload.id));
+    if (preNode && !preNode.empty()) preStatus = preNode.data('status');
+  }
+
   const selectedNodeIds = cy.nodes('.selected').map((n) => n.id());
   const selectedEdgeIds = cy.edges('.selected').map((e) => e.id());
   await fetchGraph();
@@ -2756,25 +2781,33 @@ async function refreshFromEvent(payload) {
     payload.op !== 'DELETE' &&
     !userInteractedRecently()
   ) {
-    followAgentEdit(String(payload.id), payload.op);
+    const node = cy.getElementById(String(payload.id));
+    if (node && !node.empty()) {
+      followAgentEdit(node, payload.op, classifyFlashKind(payload.op, preStatus, node));
+    }
   }
 }
 
-function followAgentEdit(taskId, op) {
-  const node = cy.getElementById(taskId);
-  if (!node || node.empty()) return;
+// Pick a visually-meaningful flash class:
+//   INSERT          → dashed blue border, mimicking a user-created new node
+//   status changed  → underlay matching the new status color
+//   body-only       → purple underlay
+function classifyFlashKind(op, preStatus, node) {
+  if (op === 'INSERT') return 'agent-flash-insert';
+  const newStatus = node.data('status');
+  if (newStatus !== preStatus) return `agent-flash-status-${newStatus}`;
+  return 'agent-flash-body';
+}
 
-  // Brief yellow underlay flash so the change is obvious.
-  node.addClass('agent-flash');
-  setTimeout(() => { try { node.removeClass('agent-flash'); } catch {} }, 1200);
+function followAgentEdit(node, op, flashClass) {
+  node.addClass(flashClass);
+  setTimeout(() => { try { node.removeClass(flashClass); } catch {} }, 1200);
 
-  // For UPDATE events, open the side panel showing the new content. INSERT
-  // events skip the panel — the user can see the new node appearing on the
-  // canvas without us forcing a panel open every time.
+  // UPDATE → open the side panel showing the new content.
+  // INSERT → just pan; don't force the panel open every time a new node lands.
   if (op === 'UPDATE') {
     showPanel(node);
   } else {
-    // For INSERT, just pan to it without opening the panel.
     centerNodeInVisibleArea(node);
   }
 }
@@ -2872,17 +2905,62 @@ document.addEventListener('DOMContentLoaded', () => {
           'underlay-padding': 5,
         },
       },
+      // Semantic flashes when an SSE event indicates this node was just
+      // touched by an external editor (e.g. an LLM agent driving the API).
+      // Class is added in followAgentEdit() and removed after ~1.2s.
+      // INSERT: blue dashed border, matching the .editing style for
+      // user-created new nodes — visually says "this is brand new."
       {
-        // Brief glow when an SSE event indicates this node was just touched
-        // by an external editor (e.g. an LLM agent driving the API). The
-        // class is added in followAgentEdit() and removed after ~1.2s.
-        selector: 'node.agent-flash',
+        selector: 'node.agent-flash-insert',
+        style: {
+          'border-color': '#4385BE',
+          'border-style': 'dashed',
+          'border-width': 3,
+        },
+      },
+      // Status changes: underlay glow in the status color so you can tell
+      // at a glance what the new status is, even while the camera is
+      // panning to the node.
+      {
+        selector: 'node.agent-flash-status-todo',
+        style: {
+          'underlay-color': '#878580',
+          'underlay-opacity': 0.55,
+          'underlay-padding': 10,
+        },
+      },
+      {
+        selector: 'node.agent-flash-status-in_progress',
+        style: {
+          'underlay-color': '#DA702C',
+          'underlay-opacity': 0.55,
+          'underlay-padding': 10,
+        },
+      },
+      {
+        selector: 'node.agent-flash-status-review',
         style: {
           'underlay-color': '#D0A215',
           'underlay-opacity': 0.55,
           'underlay-padding': 10,
-          'transition-property': 'underlay-opacity underlay-padding',
-          'transition-duration': 400,
+        },
+      },
+      {
+        selector: 'node.agent-flash-status-done',
+        style: {
+          'underlay-color': '#879A39',
+          'underlay-opacity': 0.55,
+          'underlay-padding': 10,
+        },
+      },
+      // Body-only edit (no status change): purple underlay, distinct from
+      // any status color so it reads as "the agent updated notes here."
+      {
+        selector: 'node.agent-flash-body',
+        style: {
+          'underlay-color': '#8B7EC8',
+          'underlay-opacity': 0.55,
+          'underlay-padding': 10,
         },
       },
       {
@@ -3573,6 +3651,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function scheduleSave() {
+    // Suppress saves caused by loadIntoEditor's synthetic editor change.
+    if (Date.now() < _editorSaveSuppressedUntil) return;
     if (!editingTaskId && !pendingNode) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(performSave, 200);
