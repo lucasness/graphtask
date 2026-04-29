@@ -1,5 +1,3 @@
-CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE;
-
 DO $$ BEGIN
   CREATE TYPE edge_type AS ENUM ('dependency', 'related');
 EXCEPTION WHEN duplicate_object THEN NULL;

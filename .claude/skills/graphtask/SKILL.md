@@ -11,6 +11,17 @@ graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` (
 
 There's no auth. Each graph's id is a random 16-char string and is bearer-token equivalent — anyone with the URL can read or modify the graph.
 
+## When this skill applies
+
+Activate when the user wants to track multi-step work in a graph or asks something about an existing graph. Concrete triggers and what to do:
+
+- *"Turn this plan into a graph"* / *"Track this in graphtask"* — run sections 1 + 2: resolve the graph, materialize the **whole plan** as tasks + dependency edges in one batch *before* starting any of it. The user wants the structure visible first.
+- *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize. Don't recompute readiness yourself; the server does it.
+- *"What can I work on next?"* — `GET /tasks/ready`. If empty, look for `review`-status tasks and run `/unblocks` on each (section 4) to find the ones whose finalization would unblock work.
+- *"Mark X done"* / *"Finish X"* — you move it to `review`, never `done`. See section 3.
+
+Skip if the work is one-step (a tweak, a quick question, fixing a typo). Graph overhead isn't worth it for those.
+
 ## 1. Resolve the active graph
 
 Look up the graph id in this order, fall back to creating a new one:
@@ -45,21 +56,25 @@ If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/r
 
 ## 2. Convert a plan into a graph
 
-For each plan item, create a task. Then wire dependencies in one bulk call so the entire DAG either lands or nothing does.
+**Plan first, then execute.** When the user gives you a multi-step plan, materialize the *entire* DAG before starting the first task. The graph is the artifact the user reviews — they want to see structure on the canvas, not just the next step.
+
+**One task = one user-meaningful unit of work.** Don't create a task per file edit or git commit. Granularity should match what a human would read in a status update.
+
+For each task, write a real markdown body — title alone is not enough. The body is what the human sees when reviewing your work. See section 3 for what to put in the body at each status.
 
 ```bash
-# Tasks (collect ids).
+# Tasks. Body content tells the user what you intend to do, in plain markdown.
 T1=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
   -H 'Content-Type: application/json' \
-  -d '{"content":"---\ntitle: Read existing schema\nstatus: todo\n---\nNotes go here."}' \
+  -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: todo\n---\n## Approach\nGrep src/auth/** for token reads. List call sites that need to switch to cookie-based reads.\n"}' \
   | jq -r .id)
 T2=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
   -H 'Content-Type: application/json' \
-  -d '{"content":"---\ntitle: Draft migration\nstatus: todo\n---\n"}' \
+  -d '{"content":"---\ntitle: Implement cookie-based session\nstatus: todo\n---\n## Approach\nWrap the existing session middleware so reads come from `Set-Cookie` (httpOnly + secure) instead of the auth header.\n"}' \
   | jq -r .id)
 T3=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
   -H 'Content-Type: application/json' \
-  -d '{"content":"---\ntitle: Apply and verify\nstatus: todo\n---\n"}' \
+  -d '{"content":"---\ntitle: Update auth tests\nstatus: todo\n---\n## Approach\nSwitch test fixtures from header-based to cookie-jar style. Update assertions for Set-Cookie response headers.\n"}' \
   | jq -r .id)
 
 # Bulk dependencies — transactional, all-or-nothing.
@@ -71,25 +86,36 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
   ]}"
 ```
 
-`POST /edges/bulk` semantics: validates every edge first, then opens a transaction, inserts them all, then runs cycle detection across the resulting graph. **Any failure rolls everything back** and returns `400`/`409` with `{ error, failedAt: <index> }`. Re-fix the offending edge and retry the whole batch — never assume partial application.
+`POST /edges/bulk` semantics: validates every edge, opens a transaction, inserts them all, then runs cycle detection across the resulting graph. **Any failure rolls everything back** and returns `400`/`409` with `{ error, failedAt: <index> }`. Fix the offending edge and retry the whole batch — never assume partial application.
 
-## 3. Status discipline
+## 3. Status discipline and task body content
 
-Status enum: `todo` → `in_progress` → `review` → `done`.
+Status enum: `todo` → `in_progress` → `review` → `done`. Each transition should bring **new body content** that justifies the status. Don't bump status without updating the body — the body is the artifact.
 
-- **Move to `in_progress`** when you start the task.
-- **Move to `review`** when *you* think it's finished. Submit your output to the user via the body or a description field — they'll review and finalize.
-- **Never set `done`.** `done` is the human's confirmation that they accept your work. If you set `done` yourself, you bypass that gate.
+| Status | Who sets it | What the body should contain |
+|---|---|---|
+| `todo` | You (during plan creation) | The approach: what needs to be done, why, any known constraints. |
+| `in_progress` | You (when you actually start) | Running notes: what you're investigating, what you've ruled out, files you're touching. Update as you go. |
+| `review` | You (when you think it's done) | What you did, files changed, how to verify. **This is what the human reads to confirm.** Make it self-contained. |
+| `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself.** |
 
-For dependency-readiness purposes, treat both `review` and `in_progress` as "not yet done" — a downstream task is *not* ready to start until every prerequisite is `done`.
+For readiness queries (section 4), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
 
-PATCH replaces the entire `content` blob (frontmatter + body), so re-serialize the whole thing:
+PATCH replaces the entire `content` blob (frontmatter + body). Re-serialize the whole thing on every update:
 
 ```bash
+# Moving from todo → in_progress with running notes
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
   -H 'Content-Type: application/json' \
-  -d '{"content":"---\ntitle: Read existing schema\nstatus: in_progress\n---\nFound the relevant constraints in db/schema.sql."}'
+  -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: in_progress\n---\n## Approach\nGrep src/auth/** for token reads.\n\n## Findings so far\n- 4 call sites in src/auth/middleware.js read req.headers.authorization\n- 2 call sites in src/api/* call those middleware functions directly\n"}'
+
+# Moving to review with a self-contained summary
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: review\n---\n## Findings\n6 call sites total — 4 in src/auth/middleware.js, 2 in src/api/users.js and src/api/projects.js.\n\n## Suggested next step\nReplace the middleware-internal reads with a cookie-aware helper, then keep the api/* call sites unchanged (they go through the middleware anyway).\n\n## Verify\nRun `rg -n \"req.headers.authorization\" src/` — should return zero results after T2 lands.\n"}'
 ```
+
+**After everything is in `review`, stop.** Summarize in chat what you submitted and let the user review on the canvas. Don't poll the graph waiting for the human to mark things `done` — they'll use the UI. Your job ends at `review`.
 
 ## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
@@ -142,7 +168,18 @@ curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
   -d '{"type":"related"}'
 ```
 
-## 6. What you must not touch
+## 6. Error handling
+
+The API uses HTTP status codes meaningfully — handle them, don't paper over them:
+
+- **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
+- **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
+- **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤50), `description` length (≤150), or `status` value.
+- **409 on `POST /graphs`** (name conflict, normalized) — pick a different name.
+- **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
+- **409 on `PATCH /graphs/:id`** with name conflict — same as POST; rename.
+
+## 7. What you must not touch
 
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Leave them alone.
 - The `done` status on tasks — never write it; that's the human's call.
@@ -176,7 +213,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
-| GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | Dijkstra over dependency edges |
+| GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
 
 ### Markdown frontmatter shape
@@ -203,9 +240,3 @@ free-form markdown body
 
 `type` ∈ `dependency | related`. Dependency edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk).
 
-## Common failure modes
-
-- **409 on POST /tasks** with name-conflict error — graph names are unique on a normalized form. Use a different name.
-- **400 cycle on POST /edges or /edges/bulk** — your dependency would close a loop. Inspect `failedAt` (bulk only) to find which edge tripped it.
-- **404 on a task or edge** — wrong graph id, or the resource was deleted (likely by the user).
-- **EventSource silently stops updating** — ignore for your purposes; the user's browser will reconnect automatically.

@@ -11,19 +11,30 @@ router.get('/shortest-path', async (req, res) => {
   if (!from || !to || isNaN(from) || isNaN(to))
     return res.status(400).json({ error: 'from and to must be valid integers' });
 
-  // pgr_dijkstra takes a SQL string. Build it at execution time with format()
-  // so we can scope to this graph_id without injection risk (%L quotes literals).
+  // Undirected BFS over dependency edges via recursive CTE. Doesn't depend
+  // on pgrouting (which isn't packaged for Postgres 18 yet); for the graph
+  // sizes we expect, BFS through a recursive CTE is both fast and free of
+  // external extensions. ORDER BY cost ASC + LIMIT 1 returns the path with
+  // the fewest hops; ties broken arbitrarily.
   const result = await pool.query(
-    `SELECT seq, node, edge, cost, agg_cost FROM pgr_dijkstra(
-       format(
-         'SELECT e.id, e.source_id AS source, e.target_id AS target,
-                 1.0::float AS cost
-          FROM edges e
-          WHERE e.type = %L AND e.graph_id = %L',
-         'dependency', $3::text
-       ),
-       $1::bigint, $2::bigint, directed => false
-     )`,
+    `WITH RECURSIVE bfs AS (
+       SELECT $1::int AS node, ARRAY[$1::int] AS path, 0 AS cost
+       UNION ALL
+       SELECT next.node, b.path || next.node, b.cost + 1
+       FROM bfs b
+       CROSS JOIN LATERAL (
+         SELECT CASE WHEN e.source_id = b.node THEN e.target_id ELSE e.source_id END AS node
+         FROM edges e
+         WHERE (e.source_id = b.node OR e.target_id = b.node)
+           AND e.type = 'dependency'
+           AND e.graph_id = $3
+       ) next
+       WHERE NOT (next.node = ANY(b.path))
+     )
+     SELECT path, cost FROM bfs
+     WHERE node = $2
+     ORDER BY cost ASC
+     LIMIT 1`,
     [from, to, gid]
   );
 
@@ -31,8 +42,8 @@ router.get('/shortest-path', async (req, res) => {
     return res.json({ path: [], cost: null, tasks: [] });
   }
 
-  const path = result.rows.map((r) => Number(r.node));
-  const totalCost = result.rows[result.rows.length - 1].agg_cost;
+  const path = result.rows[0].path.map((n) => Number(n));
+  const cost = Number(result.rows[0].cost);
 
   const tasks = await pool.query(
     `SELECT id, meta->>'title' AS title, meta->>'status' AS status
@@ -40,7 +51,7 @@ router.get('/shortest-path', async (req, res) => {
     [path, gid]
   );
 
-  res.json({ path, cost: totalCost, tasks: tasks.rows });
+  res.json({ path, cost, tasks: tasks.rows });
 });
 
 router.get('/', async (req, res) => {

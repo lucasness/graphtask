@@ -1,9 +1,9 @@
 FROM postgres:17
 
-# Install pgRouting + Node.js
+# Install Node.js (no Postgres extensions required — graph traversal uses
+# recursive CTEs in plain SQL).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       postgresql-17-pgrouting \
        curl \
        ca-certificates \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \

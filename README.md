@@ -46,9 +46,9 @@ canvas update live as the agent works.
 
 ### 2. Run locally with Docker
 
-The simplest local path. Everything — Node, Postgres, the pgRouting extension —
-runs inside a single container, so you don't have to match versions or install
-anything language-specific.
+The simplest local path. Everything — Node and Postgres — runs inside a
+single container, so you don't have to match versions or install anything
+language-specific.
 
 **Prerequisites**
 
@@ -122,9 +122,8 @@ Postgres yourself and point the app at your local database.
 **Prerequisites**
 
 - **Node 22+** — the start script uses `node --env-file`, a Node 22 flag.
-- **PostgreSQL 17+** with the [`pgrouting`](https://pgrouting.org) extension
-  installed (Debian/Ubuntu: `postgresql-17-pgrouting`; Homebrew: `pgrouting`).
-  Required for the shortest-path API and for the test suite.
+- **PostgreSQL 14+** — any modern version. No extensions needed; all graph
+  traversal (including shortest-path) runs as recursive CTEs in plain SQL.
 
 **Environment variables** (resolved in `src/db.js` / `src/server.js`, loaded
 from `.env` by `npm start`)
@@ -157,7 +156,7 @@ Open <http://localhost:3000>.
 **Tests**
 
 `npm test` spins up and tears down a `graphtask_test` database on your local
-Postgres; `pgrouting` must be installed there.
+Postgres. No extensions required.
 
 **Open-file limit (for live updates at scale)**
 
@@ -209,7 +208,7 @@ If you're hacking on graphtask itself, you can skip the personal install
 
 ## Stack
 
-- Backend: Express 5 on Node 22, PostgreSQL with pgRouting, `pg`, and `yaml`.
+- Backend: Express 5 on Node 22, PostgreSQL (any modern version), `pg`, and `yaml`.
 - Frontend: Vanilla JS, Cytoscape.js, TOAST UI Editor, and CSS using a Flexoki
   dark palette. No build step.
 - Tests: Vitest and supertest.
@@ -240,7 +239,7 @@ public/
   app.js             frontend graph behavior + multi-graph sidebar
   style.css          app shell, sidebar, toolbar, palette, modal styles
 tests/               Vitest specs: graphs, tasks, edges, graph queries, db, api
-Dockerfile           Postgres 17 + pgRouting + Node 22 image
+Dockerfile           Postgres 17 + Node 22 image
 docker-entrypoint.sh initdb, loopback-only pg_hba, schema load, node start
 ```
 
@@ -335,7 +334,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
 | POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
-| GET | `/api/graphs/:gid/graph/shortest-path` | pgRouting shortest path |
+| GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op}` on every task/edge change |
 
 `requireIntegerParam('id')` middleware on numeric `:id` segments returns 400

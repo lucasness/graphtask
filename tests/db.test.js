@@ -28,13 +28,6 @@ describe('Database schema', () => {
     expect(result.rows[0].result).toBe(1);
   });
 
-  it('should have pgrouting extension enabled', async () => {
-    const result = await pool.query(
-      "SELECT extname FROM pg_extension WHERE extname = 'pgrouting'"
-    );
-    expect(result.rows).toHaveLength(1);
-  });
-
   it('should have graphs table with correct columns', async () => {
     const result = await pool.query(
       `SELECT column_name FROM information_schema.columns
