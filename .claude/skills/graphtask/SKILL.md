@@ -11,6 +11,12 @@ graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` (
 
 There's no auth. Each graph's id is a random 16-char string and is bearer-token equivalent — anyone with the URL can read or modify the graph.
 
+## Privacy / visibility model
+
+Graphs have an `is_public` boolean (default `false`). New graphs are private. `GET /api/graphs` returns **only public graphs** — it's the home-page directory, not an enumeration. Private graphs are reachable only by their id (URL bearer token). Graphs you create through this skill default to private; the human can flip them via the in-app modal or by `PATCH /api/graphs/:id {"is_public":true}` if they want them on the home page.
+
+Graph names are no longer globally unique — duplicate-name `POST` and `PATCH` both succeed (200/201). Don't expect 409 on name conflicts.
+
 ## When this skill applies
 
 **Primary use case: executing a plan.** Whenever you have a multi-step plan — whether you just exited Plan mode, the user approved a plan, or you're about to do work that has more than one logical step — *use this skill before writing any implementation code*. The graph is your execution scaffold. The flow:
@@ -198,14 +204,41 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
 - **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
 - **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤50), `description` length (≤150), or `status` value.
-- **409 on `POST /graphs`** (name conflict, normalized) — pick a different name.
+- **400 on `PATCH /graphs/:id`** with `is_public must be a boolean` — pass `true` / `false`, not strings.
+- **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 8 for valid `settings` shape.
 - **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
-- **409 on `PATCH /graphs/:id`** with name conflict — same as POST; rename.
 
 ## 7. What you must not touch
 
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Leave them alone.
 - The `done` status on tasks — never write it; that's the human's call.
+- The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
+
+## 8. Per-graph appearance settings (do not touch unless asked)
+
+Each graph carries a `settings` JSONB object with optional keys:
+
+| Key | Type | Validation |
+|---|---|---|
+| `font` | string | one of `inter`, `garamond`, `roboto` |
+| `font_color` | string | `^#[0-9A-Fa-f]{6}$` |
+| `bg_color` | string | `^#[0-9A-Fa-f]{6}$` |
+
+Missing keys fall back to the viewer's app-level Defaults. PATCH merges; sending `null` for a key clears it.
+
+```bash
+# Override font + background for this graph
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+  -H 'Content-Type: application/json' \
+  -d '{"settings":{"font":"garamond","bg_color":"#100F0F"}}'
+
+# Clear the per-graph font override (revert to default)
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+  -H 'Content-Type: application/json' \
+  -d '{"settings":{"font":null}}'
+```
+
+Invalid keys/values return 400. There's no `POST /api/graphs/:id/settings` endpoint — `PATCH /api/graphs/:id` with a `settings` field is the only path.
 
 ## API reference
 
@@ -213,10 +246,10 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/graphs` | List graphs |
-| POST | `/api/graphs` | `{name, description?}` — name must be unique (case + whitespace insensitive) |
-| GET | `/api/graphs/:id` | One graph |
-| PATCH | `/api/graphs/:id` | `{name?, description?}` |
+| GET | `/api/graphs` | List **public** graphs only |
+| POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `is_public=false` and `settings={}` |
+| GET | `/api/graphs/:id` | One graph; URL is the bearer token, returns private graphs too |
+| PATCH | `/api/graphs/:id` | `{name?, description?, is_public?, settings?}` — see section 8 for `settings` shape |
 | DELETE | `/api/graphs/:id` | Cascades to tasks + edges |
 | POST | `/api/graphs/:id/rotate-id` | Invalidates the URL; returns the new id |
 | GET | `/api/graphs/:gid/tasks` | List tasks |

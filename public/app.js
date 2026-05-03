@@ -4,7 +4,15 @@ let richEditor = null;
 
 // --- Active graph (multi-graph support) ---
 let activeGraphId = null;
+// The full row for the active graph (name, description, is_public, settings,
+// timestamps). Populated by switchActiveGraph; null when no graph is active.
+// Used by getEffectiveSettings to compute per-graph overrides.
+let currentGraph = null;
 const ACTIVE_GRAPH_STORAGE_KEY = 'graphtask:lastGraphId';
+const RECENT_GRAPHS_STORAGE_KEY = 'graphtask:recent';
+const RECENTS_CAP = 20;
+const PRIVATE_WARN_SUPPRESS_KEY = 'graphtask:hide-private-warn';
+const SIDEBAR_COLLAPSED_KEY = 'graphtask:sidebarCollapsed';
 
 function apiBase() {
   if (activeGraphId == null) {
@@ -49,20 +57,67 @@ const STATUS_LABELS = {
   review: 'Review',
   done: 'Done',
 };
-const DEFAULT_NODE_COLOR = '#282726';
-const DEFAULT_EDGE_COLOR = '#878580';
+// Theme-scoped defaults. The two values below are mutable because the
+// active theme drives them — applyThemeDefaults() rewrites them when the
+// user toggles between light and dark via Settings → Theme.
+//   light → mymind reference (pre-cron design)
+//   dark  → Cron Calendar reference (current design)
+const THEME_DEFAULTS = {
+  light: {
+    font: 'inter',
+    fontColor: '#3a475a',
+    bgColor: '#f7f7f7',
+    defaultNodeColor: '#ffffff',
+    defaultEdgeColor: '#afb5c1',
+  },
+  dark: {
+    font: 'helvetica',
+    fontColor: '#ffffff',
+    bgColor: '#0f0d0a',
+    defaultNodeColor: '#161412',
+    defaultEdgeColor: '#cccccc',
+  },
+};
+let DEFAULT_NODE_COLOR = THEME_DEFAULTS.light.defaultNodeColor;
+let DEFAULT_EDGE_COLOR = THEME_DEFAULTS.light.defaultEdgeColor;
+function applyThemeDefaults(theme) {
+  const t = THEME_DEFAULTS[theme] || THEME_DEFAULTS.light;
+  DEFAULT_NODE_COLOR = t.defaultNodeColor;
+  DEFAULT_EDGE_COLOR = t.defaultEdgeColor;
+  return t;
+}
 const COLOR_PALETTE_COLUMNS = 5;
+// User-pickable node BACKGROUND colors. Default tier is LIGHT per the tier
+// rule, but family-light values for adjacent hues (red-light + orange-light,
+// purple-light + purple-medium) are too visually similar at swatch size, so
+// we substitute the family-medium where needed. Each swatch has a clearly
+// different hue / saturation so the picker reads at a glance.
 const COLOR_PALETTE = [
-  { name: 'Base', value: '#282726' },
-  { name: 'Red', value: '#D14D41' },
-  { name: 'Orange', value: '#DA702C' },
-  { name: 'Yellow', value: '#D0A215' },
-  { name: 'Green', value: '#879A39' },
-  { name: 'Cyan', value: '#3AA99F' },
-  { name: 'Blue', value: '#4385BE' },
-  { name: 'Purple', value: '#8B7EC8' },
-  { name: 'Magenta', value: '#CE5D97' },
-  { name: 'Muted', value: '#878580' },
+  { name: 'Base',     value: '#ffffff' }, // neutral-white
+  { name: 'Peach',    value: '#ffd6c4' }, // red-light    (pale pinkish-peach)
+  { name: 'Coral',    value: '#e27f6e' }, // red-medium   (saturated coral)
+  { name: 'Orange',   value: '#fead81' }, // orange-medium (warm peach)
+  { name: 'Yellow',   value: '#fef0bf' }, // yellow-light
+  { name: 'Green',    value: '#deffe3' }, // green-light
+  { name: 'Blue',     value: '#e2f9ff' }, // blue-light   (icy)
+  { name: 'Sky',      value: '#95daf5' }, // blue-medium  (sky)
+  { name: 'Lavender', value: '#efd6ff' }, // purple-medium
+  { name: 'Muted',    value: '#e5e5e5' }, // neutral-grey
+];
+
+// User-pickable FONT colors. Font sits on top of bg, so it needs strong-tier
+// saturation for legibility. Strong family colors + slate/black neutrals.
+const FONT_COLOR_PALETTE = [
+  { name: 'Slate',    value: '#3a475a' }, // deep-slate (default text)
+  { name: 'Red',      value: '#ef3230' }, // red-strong
+  { name: 'Orange',   value: '#fb5305' }, // main-orange (theme accent)
+  { name: 'Amber',    value: '#fe7233' }, // orange-strong
+  { name: 'Yellow',   value: '#f6c53e' }, // yellow-strong
+  { name: 'Green',    value: '#49ca80' }, // green-strong
+  { name: 'Blue',     value: '#43ace6' }, // blue-strong
+  { name: 'Purple',   value: '#a45fff' }, // purple-strong
+  { name: 'Coral',    value: '#e27f6e' }, // red-medium (warm mid-tone)
+  { name: 'Black',    value: '#000000' },
 ];
 const EDGE_CURVE_LIMIT = 500;
 const EDGE_WEIGHT_MIN = 0.10;
@@ -467,14 +522,19 @@ function updateToolbar() {
 // --- App settings (Cmd+K) ---
 const SETTINGS_KEY = 'graphtask:settings';
 const FONTS = [
-  { id: 'inter', name: 'Inter', stack: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-  { id: 'garamond', name: 'EB Garamond', stack: '"EB Garamond", Garamond, "Times New Roman", serif' },
-  { id: 'roboto', name: 'Roboto', stack: '"Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { id: 'helvetica', name: 'Helvetica Neue', stack: '"Helvetica Neue", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
+  { id: 'inter',     name: 'Inter',          stack: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { id: 'garamond',  name: 'EB Garamond',    stack: '"EB Garamond", Garamond, "Times New Roman", serif' },
+  { id: 'roboto',    name: 'Roboto',         stack: '"Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
 ];
 const DEFAULT_SETTINGS = Object.freeze({
+  // Dark theme is intentionally not selectable from the UI yet — it's still
+  // a work-in-progress. Users default to (and are pinned to) light. The
+  // dark code paths remain so we can re-enable the toggle later.
+  theme: 'light',
   font: 'inter',
-  fontColor: '#CECDC3', // matches --tx
-  bgColor: '#100F0F',   // matches --bg
+  fontColor: '#3a475a', // deep-slate (light-theme default)
+  bgColor: '#f7f7f7',   // neutral-light-grey canvas
 });
 let appSettings = { ...DEFAULT_SETTINGS };
 
@@ -492,6 +552,15 @@ function loadSettings() {
   } catch (err) {
     appSettings = { ...DEFAULT_SETTINGS };
   }
+  // Dark theme is currently disabled — pin everyone to light, even users
+  // whose localStorage carries a stale `theme: 'dark'` from earlier testing.
+  if (appSettings.theme !== 'light') {
+    appSettings.theme = 'light';
+    appSettings.font = THEME_DEFAULTS.light.font;
+    appSettings.fontColor = THEME_DEFAULTS.light.fontColor;
+    appSettings.bgColor = THEME_DEFAULTS.light.bgColor;
+  }
+  applyThemeDefaults(appSettings.theme);
 }
 
 function saveSettings() {
@@ -500,20 +569,83 @@ function saveSettings() {
   } catch (err) { /* storage unavailable; settings won't persist */ }
 }
 
+// Effective settings = active graph's per-graph overrides ∘ app-level Defaults.
+// Missing keys on the graph fall back to the user's defaults so a graph never
+// "snapshots" the current default — it tracks whatever default is current
+// until the user customizes that key explicitly.
+function getEffectiveSettings() {
+  const gs = (currentGraph && currentGraph.settings) || {};
+  return {
+    font: gs.font || appSettings.font,
+    fontColor: gs.font_color || appSettings.fontColor,
+    bgColor: gs.bg_color || appSettings.bgColor,
+  };
+}
+
 function applySettings() {
-  const fontStack = getFontStack(appSettings.font);
+  document.documentElement.dataset.theme = appSettings.theme;
+  const eff = getEffectiveSettings();
+  const fontStack = getFontStack(eff.font);
   document.documentElement.style.setProperty('--app-font', fontStack);
-  document.documentElement.style.setProperty('--app-font-color', appSettings.fontColor);
+  document.documentElement.style.setProperty('--app-font-color', eff.fontColor);
   const cyEl = document.getElementById('cy');
-  if (cyEl) cyEl.style.background = appSettings.bgColor;
+  if (cyEl) cyEl.style.background = eff.bgColor;
   if (cy) {
+    // Re-seat the full theme-scoped style array (the cron and mymind
+    // arrays differ in many selectors — selection underlay, status borders,
+    // editing colour, etc.), then re-apply per-graph font/colour overrides.
+    cy.style().fromJson(cytoscapeStyle(appSettings.theme)).update();
     cy.style().selector('node').style({
       'font-family': fontStack,
-      'color': appSettings.fontColor,
+      'color': eff.fontColor,
     }).update();
   }
 }
 
+function setSettingTheme(theme) {
+  if (theme !== 'light' && theme !== 'dark') return;
+  if (appSettings.theme === theme) return;
+  // Each theme has its own canvas/font defaults; switching resets these to
+  // the new theme's reference values. Per-graph appearance overrides are
+  // untouched (they live on currentGraph.settings, not appSettings).
+  const t = applyThemeDefaults(theme);
+  appSettings.theme = theme;
+  appSettings.font = t.font;
+  appSettings.fontColor = t.fontColor;
+  appSettings.bgColor = t.bgColor;
+  applySettings();
+  saveSettings();
+  // Toast UI Editor theme is baked in at construction; recreate it so the
+  // markdown editor's surface matches the new theme.
+  recreateRichEditorForTheme();
+}
+
+// Toast UI Editor instance — built once at startup, recreated on theme switch.
+function createRichEditor() {
+  return new toastui.Editor({
+    el: document.getElementById('rich-editor'),
+    height: '100%',
+    initialEditType: 'wysiwyg',
+    previewStyle: 'vertical',
+    hideModeSwitch: true,
+    usageStatistics: false,
+    theme: appSettings.theme === 'dark' ? 'dark' : 'default',
+    toolbarItems: [
+      ['heading'],
+      ['bold', 'italic'],
+      ['ul', 'ol'],
+    ],
+  });
+}
+
+function recreateRichEditorForTheme() {
+  if (!richEditor) return;
+  const md = richEditor.getMarkdown();
+  try { richEditor.destroy(); } catch {}
+  richEditor = createRichEditor();
+  richEditor.setMarkdown(md, false);
+  richEditor.on('change', scheduleSave);
+}
 function setSettingFont(id) {
   if (!FONTS.find((f) => f.id === id)) return;
   appSettings.font = id;
@@ -538,9 +670,15 @@ let colorPaletteState = {
   target: 'selection', // 'selection' | 'settings-bg' | 'settings-font-color'
 };
 
+// Font color picker uses a strong-tier palette; everything else (node bg,
+// canvas bg) uses the light-tier COLOR_PALETTE.
+function getActivePalette() {
+  return colorPaletteState.target === 'settings-font-color' ? FONT_COLOR_PALETTE : COLOR_PALETTE;
+}
+
 function findPaletteIndexForColor(value) {
   const target = normalizeColor(value);
-  const idx = COLOR_PALETTE.findIndex((c) => normalizeColor(c.value) === target);
+  const idx = getActivePalette().findIndex((c) => normalizeColor(c.value) === target);
   return idx >= 0 ? idx : 0;
 }
 
@@ -595,9 +733,14 @@ function getColorPaletteAnchor() {
 
 function renderColorPalette() {
   const palette = document.getElementById('color-palette');
-  if (!palette || palette.dataset.rendered === 'true') return;
-
-  COLOR_PALETTE.forEach((color, index) => {
+  if (!palette) return;
+  const active = getActivePalette();
+  // Skip re-render if the same palette is already laid out — keyed by target
+  // so swapping between bg-picker and font-picker correctly rebuilds.
+  const paletteKey = colorPaletteState.target === 'settings-font-color' ? 'font' : 'bg';
+  if (palette.dataset.rendered === paletteKey) return;
+  palette.innerHTML = '';
+  active.forEach((color, index) => {
     const swatch = document.createElement('button');
     swatch.type = 'button';
     swatch.className = 'color-swatch';
@@ -608,13 +751,14 @@ function renderColorPalette() {
     swatch.addEventListener('click', () => commitColorPalette(index));
     palette.appendChild(swatch);
   });
-  palette.dataset.rendered = 'true';
+  palette.dataset.rendered = paletteKey;
 }
 
 function setActiveColorSwatch(index, focus = false) {
   const palette = document.getElementById('color-palette');
   if (!palette) return;
-  const nextIndex = (index + COLOR_PALETTE.length) % COLOR_PALETTE.length;
+  const len = getActivePalette().length;
+  const nextIndex = (index + len) % len;
   colorPaletteState.activeIndex = nextIndex;
   palette.querySelectorAll('.color-swatch').forEach((swatch) => {
     const active = Number(swatch.dataset.index) === nextIndex;
@@ -626,14 +770,15 @@ function setActiveColorSwatch(index, focus = false) {
 }
 
 function moveActiveColorSwatch(rowDelta, colDelta) {
-  const rows = Math.ceil(COLOR_PALETTE.length / COLOR_PALETTE_COLUMNS);
+  const len = getActivePalette().length;
+  const rows = Math.ceil(len / COLOR_PALETTE_COLUMNS);
   const currentRow = Math.floor(colorPaletteState.activeIndex / COLOR_PALETTE_COLUMNS);
   const currentCol = colorPaletteState.activeIndex % COLOR_PALETTE_COLUMNS;
   let nextRow = (currentRow + rowDelta + rows) % rows;
   let nextCol = (currentCol + colDelta + COLOR_PALETTE_COLUMNS) % COLOR_PALETTE_COLUMNS;
   let nextIndex = nextRow * COLOR_PALETTE_COLUMNS + nextCol;
 
-  while (nextIndex >= COLOR_PALETTE.length) {
+  while (nextIndex >= len) {
     nextRow = (nextRow + (rowDelta >= 0 ? 1 : -1) + rows) % rows;
     nextIndex = nextRow * COLOR_PALETTE_COLUMNS + nextCol;
   }
@@ -679,12 +824,15 @@ function openColorPalette(anchor, target = 'selection') {
   if (edgeTypeEditing) cancelEdgeTypeEdit();
   if (statusEditing) cancelStatusEdit();
 
+  // Set the target BEFORE rendering so renderColorPalette picks the right
+  // palette (font vs bg). If we render first, we'd render with the previous
+  // target's palette and the swatches wouldn't match the picker's purpose.
+  colorPaletteState.target = target;
   renderColorPalette();
   const palette = document.getElementById('color-palette');
   if (!palette) return false;
 
   colorPaletteState.open = true;
-  colorPaletteState.target = target;
   palette.classList.remove('hidden');
   let initialIndex;
   if (target === 'settings-bg') initialIndex = findPaletteIndexForColor(appSettings.bgColor);
@@ -732,7 +880,7 @@ function handleColorPaletteKey(e) {
   }
   if (e.key === 'End') {
     e.preventDefault();
-    setActiveColorSwatch(COLOR_PALETTE.length - 1, true);
+    setActiveColorSwatch(getActivePalette().length - 1, true);
     return true;
   }
   if (e.key === 'Enter') {
@@ -830,7 +978,7 @@ async function applySelectionColor(color) {
 }
 
 function commitColorPalette(index) {
-  const color = COLOR_PALETTE[index];
+  const color = getActivePalette()[index];
   if (!color) return;
   const target = colorPaletteState.target;
   closeColorPalette();
@@ -878,7 +1026,18 @@ function getSettingsItems() {
       },
     ];
   }
+  // Theme sub-mode is intentionally unreachable from the menu while dark is
+  // a work-in-progress. The case is kept so re-enabling the entry below is
+  // a one-line change.
+  if (settingsState.mode === 'theme') {
+    return [
+      { label: 'Light', kbd: null, active: appSettings.theme === 'light', onSelect: () => { setSettingTheme('light'); closeSettings(); } },
+      { label: 'Dark',  kbd: null, active: appSettings.theme === 'dark',  onSelect: () => { setSettingTheme('dark');  closeSettings(); } },
+    ];
+  }
   return [
+    // To re-enable theme switching, restore this entry:
+    //   { label: 'Theme', kbd: 'T', onSelect: () => { settingsState.mode = 'theme'; settingsState.activeIndex = 0; clearSettingsSearch(); renderSettings(); } },
     {
       label: 'Font',
       kbd: 'F',
@@ -2249,15 +2408,19 @@ async function deleteEdgeById(edgeId) {
 function confirmDelete(message, opts = {}) {
   return new Promise((resolve) => {
     const modal = document.getElementById('delete-modal');
+    const title = document.getElementById('delete-modal-title');
     const desc = document.getElementById('delete-modal-desc');
     const btnConfirm = document.getElementById('delete-confirm');
     const btnCancel = document.getElementById('delete-cancel');
     desc.textContent = message;
+    const originalTitle = title.textContent;
     const originalConfirmText = btnConfirm.textContent;
+    if (opts.title) title.textContent = opts.title;
     if (opts.confirmText) btnConfirm.textContent = opts.confirmText;
 
     function close(result) {
       modal.classList.add('hidden');
+      title.textContent = originalTitle;
       btnConfirm.textContent = originalConfirmText;
       btnConfirm.removeEventListener('click', onConfirm);
       btnCancel.removeEventListener('click', onCancel);
@@ -2308,12 +2471,94 @@ async function deleteSelected() {
 // --- Sidebar / multi-graph ---
 
 const sidebar = {
-  graphs: [],
+  graphs: [],   // public graphs from GET /api/graphs
+  recents: [],  // browser-local visit history; see RECENT_GRAPHS_STORAGE_KEY
 };
 
-// All time display in this app is UTC. Renders YYYY-MM-DD HH:MM UTC so the
-// same graph reads identically to any viewer regardless of their browser tz.
+// Recent-graphs persistence — purely client-side. The server does not know
+// which graphs you've visited; that's the privacy model. Each entry caches
+// {id, name, is_public, last_visited_at} so the sidebar can render without
+// a round-trip; entries are refreshed lazily by fetchGraphsList.
+function recentsRead() {
+  try {
+    const raw = localStorage.getItem(RECENT_GRAPHS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((r) => r && typeof r.id === 'string');
+  } catch { return []; }
+}
+
+function recentsWrite(list) {
+  try {
+    localStorage.setItem(
+      RECENT_GRAPHS_STORAGE_KEY,
+      JSON.stringify(list.slice(0, RECENTS_CAP))
+    );
+  } catch {}
+}
+
+function recentsUpsert(graph) {
+  if (!graph || typeof graph.id !== 'string') return;
+  const list = recentsRead();
+  const i = list.findIndex((r) => r.id === graph.id);
+  if (i >= 0) list.splice(i, 1);
+  list.unshift({
+    id: graph.id,
+    name: graph.name,
+    is_public: !!graph.is_public,
+    last_visited_at: new Date().toISOString(),
+  });
+  recentsWrite(list);
+  sidebar.recents = list;
+}
+
+function recentsRemove(id) {
+  const list = recentsRead().filter((r) => r.id !== id);
+  recentsWrite(list);
+  sidebar.recents = list;
+}
+
+// Sidebar collapse state. Driven by `.collapsed` on `#sidebar`; CSS hides
+// the title, list, and bottom-spacer text, leaving the expand and gear
+// icons. Persisted across reloads.
+function isSidebarCollapsed() {
+  const el = document.getElementById('sidebar');
+  return !!(el && el.classList.contains('collapsed'));
+}
+
+function setSidebarCollapsed(collapsed) {
+  const el = document.getElementById('sidebar');
+  if (!el) return;
+  el.classList.toggle('collapsed', !!collapsed);
+  // The canvas, bottom toolbar, and panel all anchor off `--sidebar-w` so
+  // they reflow when the sidebar shrinks. Keep that var in sync.
+  document.documentElement.style.setProperty('--sidebar-w', collapsed ? '48px' : '240px');
+  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch {}
+  // Cytoscape sized off the parent — let it know the viewport changed.
+  if (typeof cy !== 'undefined' && cy) {
+    requestAnimationFrame(() => { try { cy.resize(); } catch {} });
+  }
+}
+
+function applySidebarCollapsedFromStorage() {
+  let stored = '0';
+  try { stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) || '0'; } catch {}
+  setSidebarCollapsed(stored === '1');
+}
+
+// All time display in this app is UTC so the same graph reads identically
+// to any viewer regardless of their browser tz. Two formats:
+//   formatUtc      → MM/DD/YY        (compact, default)
+//   formatUtcLong  → YYYY-MM-DD HH:MM UTC (full, on hover/click in modal)
 function formatUtc(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}/${pad(d.getUTCFullYear() % 100)}`;
+}
+function formatUtcLong(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
@@ -2344,52 +2589,156 @@ async function fetchGraphsList() {
   const res = await fetch('/api/graphs');
   if (!res.ok) throw new Error('failed to load graphs');
   sidebar.graphs = await res.json();
+  sidebar.recents = recentsRead();
   renderSidebar();
+  // Lazy refresh of recents: fetch each cached entry to update name/is_public
+  // and drop entries the user no longer has access to (404).
+  refreshRecents();
+}
+
+async function refreshRecents() {
+  const list = recentsRead();
+  let changed = false;
+  for (const r of list) {
+    try {
+      const res = await fetch(`/api/graphs/${encodeURIComponent(r.id)}`);
+      if (res.status === 404) {
+        const after = recentsRead().filter((e) => e.id !== r.id);
+        recentsWrite(after);
+        sidebar.recents = after;
+        changed = true;
+        continue;
+      }
+      if (!res.ok) continue;
+      const row = await res.json();
+      if (row.name !== r.name || !!row.is_public !== !!r.is_public) {
+        const current = recentsRead();
+        const i = current.findIndex((e) => e.id === r.id);
+        if (i >= 0) {
+          current[i] = { ...current[i], name: row.name, is_public: !!row.is_public };
+          recentsWrite(current);
+          sidebar.recents = current;
+          changed = true;
+        }
+      }
+    } catch { /* network/transient — leave the cached entry alone */ }
+  }
+  if (changed) renderSidebar();
 }
 
 function renderSidebar() {
   const list = document.getElementById('sidebar-list');
   if (!list) return;
   list.innerHTML = '';
-  for (const g of sidebar.graphs) {
-    const item = document.createElement('div');
-    item.className = 'sb-item' + (g.id === activeGraphId ? ' active' : '');
-    item.dataset.graphId = String(g.id);
-    if (g.description) item.title = g.description;
 
-    const name = document.createElement('div');
-    name.className = 'sb-name';
-    name.textContent = g.name;
-    item.appendChild(name);
+  // The "+ New graph" item is always the first row, directly under the GRAPHS
+  // header — it replaced the old top-right `+` button.
+  list.appendChild(makeNewGraphItem());
 
-    const meta = document.createElement('div');
-    meta.className = 'sb-meta';
-    meta.textContent = relativeTime(g.updated_at);
-    item.appendChild(meta);
+  const publicGraphs = sidebar.graphs;
+  const publicIds = new Set(publicGraphs.map((g) => g.id));
+  // Recents section excludes anything already shown in Public.
+  const recentEntries = sidebar.recents.filter((r) => !publicIds.has(r.id));
 
-    const menuBtn = document.createElement('button');
-    menuBtn.className = 'sb-menu-btn';
-    menuBtn.textContent = '⋮';
-    menuBtn.title = 'Graph options';
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openGraphEditModal(g);
-    });
-    item.appendChild(menuBtn);
-
-    item.addEventListener('click', () => {
-      if (g.id !== activeGraphId) switchActiveGraph(g.id, { pushState: true });
-    });
-
-    list.appendChild(item);
+  if (publicGraphs.length > 0) {
+    list.appendChild(makeSectionHeader('Public'));
+    for (const g of publicGraphs) list.appendChild(makeSidebarItem(g, { source: 'public' }));
+  }
+  if (recentEntries.length > 0) {
+    list.appendChild(makeSectionHeader('Recently visited'));
+    for (const r of recentEntries) list.appendChild(makeSidebarItem(r, { source: 'recent' }));
   }
   updateEmptyStates();
 }
 
+function makeNewGraphItem() {
+  const item = document.createElement('div');
+  item.className = 'sb-item sb-new-item';
+  item.title = 'Create a new graph';
+  const plus = document.createElement('span');
+  plus.className = 'sb-new-plus';
+  plus.textContent = '+';
+  item.appendChild(plus);
+  const label = document.createElement('span');
+  label.className = 'sb-new-label';
+  label.textContent = 'New graph';
+  item.appendChild(label);
+  item.addEventListener('click', () => { createGraphFromUI(); });
+  return item;
+}
+
+function makeSectionHeader(text) {
+  const h = document.createElement('div');
+  h.className = 'sb-section';
+  h.textContent = text;
+  return h;
+}
+
+function makeSidebarItem(graphLike, { source }) {
+  const item = document.createElement('div');
+  item.className = 'sb-item' + (graphLike.id === activeGraphId ? ' active' : '');
+  item.dataset.graphId = String(graphLike.id);
+  if (graphLike.description) item.title = graphLike.description;
+
+  const name = document.createElement('div');
+  name.className = 'sb-name';
+  // Lock icon for any row currently known to be private. Recents cache
+  // is_public; the public list never gets one (it only contains is_public=true).
+  if (source === 'recent' && !graphLike.is_public) {
+    const lock = document.createElement('span');
+    lock.className = 'sb-lock';
+    lock.textContent = '🔒';
+    lock.title = 'Private — only people with the URL can see this graph';
+    name.appendChild(lock);
+  }
+  name.appendChild(document.createTextNode(graphLike.name));
+  item.appendChild(name);
+
+  const meta = document.createElement('div');
+  meta.className = 'sb-meta';
+  const stamp = graphLike.updated_at || graphLike.last_visited_at;
+  meta.textContent = stamp ? relativeTime(stamp) : '';
+  item.appendChild(meta);
+
+  const menuBtn = document.createElement('button');
+  menuBtn.className = 'sb-menu-btn';
+  menuBtn.textContent = '⋮';
+  menuBtn.title = 'Graph options';
+  menuBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    // Public rows already carry full metadata (name, description, created_at,
+    // updated_at, is_public) from GET /api/graphs. Recents cache only the
+    // subset we need to render — fetch the full row so the modal can show
+    // description / created_at and produce a clean diff on Save.
+    if (source === 'public') {
+      openGraphEditModal(graphLike);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/graphs/${encodeURIComponent(graphLike.id)}`);
+      if (!res.ok) {
+        alert('Could not open graph options');
+        return;
+      }
+      openGraphEditModal(await res.json());
+    } catch {
+      alert('Could not open graph options');
+    }
+  });
+  item.appendChild(menuBtn);
+
+  item.addEventListener('click', () => {
+    if (graphLike.id !== activeGraphId) switchActiveGraph(graphLike.id, { pushState: true });
+  });
+
+  return item;
+}
+
 function updateEmptyStates() {
   const sidebarEmpty = document.getElementById('sidebar-empty');
-  const noGraphs = sidebar.graphs.length === 0;
-  if (sidebarEmpty) sidebarEmpty.classList.toggle('hidden', !noGraphs);
+  const nothingToShow =
+    sidebar.graphs.length === 0 && sidebar.recents.length === 0;
+  if (sidebarEmpty) sidebarEmpty.classList.toggle('hidden', !nothingToShow);
   // Refresh the canvas-level empty-state hint so its copy matches
   // whether or not a graph is active.
   if (typeof updateEmptyState === 'function') updateEmptyState();
@@ -2397,6 +2746,20 @@ function updateEmptyStates() {
 
 // Single edit modal — Save commits name + description; Delete confirms then removes.
 let _graphModalClose = null;
+
+// Convergence point for Cmd+K, the toolbar Settings button, and the
+// post-create modal's Settings button. Toggles the modal closed if it's
+// already open. No-op when there's no active graph (empty home page).
+async function openGraphSettings() {
+  if (_graphModalClose) { _graphModalClose(); return; }
+  if (activeGraphId == null) return;
+  try {
+    const res = await fetch(`/api/graphs/${encodeURIComponent(activeGraphId)}`);
+    if (!res.ok) return;
+    openGraphEditModal(await res.json());
+  } catch {}
+}
+
 function openGraphEditModal(graph) {
   // If the modal was already open (e.g. clicking ⋮ on another graph), tear
   // down the previous instance's listeners before binding new ones.
@@ -2404,17 +2767,156 @@ function openGraphEditModal(graph) {
 
   const modal = document.getElementById('graph-modal');
   const nameInput = document.getElementById('graph-modal-name');
+  const nameError = document.getElementById('graph-modal-name-error');
   const descInput = document.getElementById('graph-modal-desc');
   const createdEl = document.getElementById('graph-modal-created');
   const urlInput = document.getElementById('graph-modal-url');
   const copyBtn = document.getElementById('graph-modal-copy');
   const rotateBtn = document.getElementById('graph-modal-rotate');
+  const privateCheckbox = document.getElementById('graph-modal-private');
+  const visibilityLabel = document.getElementById('graph-modal-visibility-label');
+  const fontPicker = document.getElementById('graph-modal-font');
+  const fontSwatchesEl = document.getElementById('graph-modal-font-swatches');
+  const bgSwatchesEl = document.getElementById('graph-modal-bg-swatches');
   const saveBtn = document.getElementById('graph-modal-save');
   const deleteBtn = document.getElementById('graph-modal-delete');
 
-  nameInput.value = graph.name;
+  nameInput.textContent = graph.name || '';
+  nameError.textContent = '';
+  nameError.classList.add('hidden');
   descInput.value = graph.description || '';
-  createdEl.textContent = formatUtc(graph.created_at);
+  // Checkbox is now "Private" — checked = private, unchecked = public.
+  // Inverse of the wire-level `is_public` flag.
+  privateCheckbox.checked = !graph.is_public;
+  // Label copy reflects current state so toggling has an obvious visual
+  // effect beyond just the checkbox fill. Save-link warning rides along
+  // with the Private state since that's where it's relevant.
+  function syncVisibilityLabel() {
+    visibilityLabel.innerHTML = privateCheckbox.checked
+      ? 'Private <span class="visibility-hint">(save your link somewhere!)</span>'
+      : 'Public';
+  }
+  syncVisibilityLabel();
+  privateCheckbox.addEventListener('change', syncVisibilityLabel);
+
+  // Created-at toggles between compact (default) and full UTC datetime.
+  // Hover previews the full form; click sticks it. Modal always opens
+  // collapsed — no persistence across opens.
+  let createdExpanded = false;
+  function renderCreated() {
+    createdEl.textContent = `Created ${
+      createdExpanded ? formatUtcLong(graph.created_at) : formatUtc(graph.created_at)
+    }`;
+  }
+  function onCreatedEnter() {
+    createdEl.textContent = `Created ${formatUtcLong(graph.created_at)}`;
+  }
+  function onCreatedLeave() { renderCreated(); }
+  function onCreatedClick() { createdExpanded = !createdExpanded; renderCreated(); }
+  renderCreated();
+  createdEl.addEventListener('mouseenter', onCreatedEnter);
+  createdEl.addEventListener('mouseleave', onCreatedLeave);
+  createdEl.addEventListener('click', onCreatedClick);
+
+  // Per-graph appearance overrides. Each per-key state has two pieces:
+  //   customized → did the user explicitly set this key (vs. inheriting)?
+  //   value      → if customized, what hex/font-id?
+  // The color picker always shows *something* — when not customized, it
+  // shows the effective app default so the user sees the graph's current
+  // appearance. The "Reset" button clears `customized` and snaps the input
+  // back to the app default.
+  const initialSettings = (graph.settings && typeof graph.settings === 'object') ? graph.settings : {};
+  const appearance = {
+    font: { initial: initialSettings.font || null, current: initialSettings.font || null },
+    font_color: { initial: initialSettings.font_color || null, customized: !!initialSettings.font_color },
+    bg_color: { initial: initialSettings.bg_color || null, customized: !!initialSettings.bg_color },
+  };
+
+  // Custom font picker — native <select> popups ignore per-option
+  // font-family on macOS, so we render a controlled menu we can style.
+  // The trigger label inherits the chosen option's inline font-family so
+  // the closed picker also shows the choice in its own face.
+  const fontTrigger = fontPicker.querySelector('.font-picker-trigger');
+  const fontValueEl = fontPicker.querySelector('.font-picker-value');
+  const fontMenu = fontPicker.querySelector('.font-picker-menu');
+  const fontOptions = Array.from(fontPicker.querySelectorAll('.font-picker-option'));
+
+  function applyFontSelection(value) {
+    appearance.font.current = value || null;
+    const opt = fontOptions.find((o) => o.dataset.value === (value || '')) || fontOptions[0];
+    fontValueEl.textContent = opt.textContent;
+    fontValueEl.style.fontFamily = opt.style.fontFamily || '';
+    fontOptions.forEach((o) => {
+      o.classList.toggle('active', o === opt);
+      o.setAttribute('aria-selected', o === opt ? 'true' : 'false');
+    });
+  }
+  function openFontMenu() {
+    fontMenu.classList.remove('hidden');
+    fontTrigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('mousedown', onFontDocClick, true);
+    document.addEventListener('keydown', onFontDocKey, true);
+  }
+  function closeFontMenu() {
+    fontMenu.classList.add('hidden');
+    fontTrigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('mousedown', onFontDocClick, true);
+    document.removeEventListener('keydown', onFontDocKey, true);
+  }
+  function onFontTriggerClick() {
+    if (fontMenu.classList.contains('hidden')) openFontMenu();
+    else closeFontMenu();
+  }
+  function onFontOptionClick(e) {
+    const btn = e.currentTarget;
+    applyFontSelection(btn.dataset.value);
+    closeFontMenu();
+  }
+  function onFontDocClick(e) {
+    if (!fontPicker.contains(e.target)) closeFontMenu();
+  }
+  function onFontDocKey(e) {
+    if (e.key === 'Escape') { e.stopPropagation(); closeFontMenu(); }
+  }
+
+  applyFontSelection(appearance.font.current || '');
+  fontTrigger.addEventListener('click', onFontTriggerClick);
+  fontOptions.forEach((o) => o.addEventListener('click', onFontOptionClick));
+
+  // Render the inline swatch grids for Text + Background. Picking the same
+  // color as the app default clears the per-graph override (acts as reset
+  // without a dedicated button).
+  function renderSwatches(container, palette, key) {
+    const appDefault = key === 'font_color' ? appSettings.fontColor : appSettings.bgColor;
+    const effective = appearance[key].customized
+      ? (appearance[key].initial || appDefault)
+      : appDefault;
+    container.innerHTML = '';
+    palette.forEach((color) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'color-swatch';
+      btn.style.backgroundColor = color.value;
+      btn.title = color.name;
+      btn.setAttribute('aria-label', color.name);
+      if (normalizeColor(color.value) === normalizeColor(effective)) {
+        btn.classList.add('active');
+      }
+      btn.addEventListener('click', () => {
+        if (normalizeColor(color.value) === normalizeColor(appDefault)) {
+          appearance[key].customized = false;
+        } else {
+          appearance[key].customized = true;
+          appearance[key].initial = color.value;
+        }
+        container.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      container.appendChild(btn);
+    });
+  }
+  renderSwatches(fontSwatchesEl, FONT_COLOR_PALETTE, 'font_color');
+  renderSwatches(bgSwatchesEl, COLOR_PALETTE, 'bg_color');
   function setShareUrl(id) {
     urlInput.value = `${location.origin}/g/${id}`;
   }
@@ -2427,23 +2929,92 @@ function openGraphEditModal(graph) {
     deleteBtn.removeEventListener('click', onDelete);
     copyBtn.removeEventListener('click', onCopy);
     rotateBtn.removeEventListener('click', onRotate);
+    privateCheckbox.removeEventListener('change', syncVisibilityLabel);
+    createdEl.removeEventListener('mouseenter', onCreatedEnter);
+    createdEl.removeEventListener('mouseleave', onCreatedLeave);
+    createdEl.removeEventListener('click', onCreatedClick);
+    fontTrigger.removeEventListener('click', onFontTriggerClick);
+    fontOptions.forEach((o) => o.removeEventListener('click', onFontOptionClick));
+    closeFontMenu();
+    nameInput.removeEventListener('blur', onNameBlur);
+    nameInput.removeEventListener('keydown', onNameKey);
+    nameInput.removeEventListener('input', clearNameError);
     modal.removeEventListener('click', onBackdrop);
     document.removeEventListener('keydown', onKey, true);
+  }
+  function showNameError(msg) {
+    nameError.textContent = msg;
+    nameError.classList.remove('hidden');
+  }
+  function clearNameError() {
+    nameError.textContent = '';
+    nameError.classList.add('hidden');
+  }
+  // Autosave-on-blur for the inline-editable graph name. Empty input reverts
+  // to the last saved name; conflicts (409) and other server errors surface
+  // via the inline #graph-modal-name-error. The bottom Save button still runs
+  // independently for description/visibility/appearance.
+  async function onNameBlur() {
+    const next = nameInput.textContent.trim();
+    if (!next) {
+      nameInput.textContent = graph.name || '';
+      clearNameError();
+      return;
+    }
+    if (next === graph.name) {
+      clearNameError();
+      return;
+    }
+    try {
+      const res = await fetch(`/api/graphs/${graph.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: next }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        showNameError(e.error || 'Could not save name.');
+        return;
+      }
+      const updated = await res.json();
+      graph.name = updated.name;
+      nameInput.textContent = updated.name;
+      clearNameError();
+      if (graph.id === activeGraphId) currentGraph = updated;
+      fetchGraphsList();
+    } catch {
+      showNameError('Could not save name.');
+    }
+  }
+  function onNameKey(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      nameInput.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      nameInput.textContent = graph.name || '';
+      clearNameError();
+      nameInput.blur();
+    }
   }
   async function onCopy() {
     try {
       await navigator.clipboard.writeText(urlInput.value);
-      const original = copyBtn.textContent;
-      copyBtn.textContent = 'Copied';
-      setTimeout(() => { copyBtn.textContent = original; }, 1200);
+      const icon = copyBtn.querySelector('i');
+      if (icon) {
+        const original = icon.className;
+        icon.className = 'ph ph-check';
+        setTimeout(() => { icon.className = original; }, 1200);
+      }
     } catch {
       urlInput.select();
     }
   }
   async function onRotate() {
     const ok = await confirmDelete(
-      'Rotate this graph’s URL? Anyone holding the current link will lose access.',
-      { confirmText: 'Rotate' }
+      'Current link will no longer exist.',
+      { title: 'Rotate link?', confirmText: 'Rotate' }
     );
     if (!ok) return;
     try {
@@ -2455,8 +3026,12 @@ function openGraphEditModal(graph) {
       }
       const updated = await res.json();
       const wasActive = graph.id === activeGraphId;
+      const oldId = graph.id;
       graph.id = updated.id;
       setShareUrl(updated.id);
+      // The old id is now invalid; replace it in the recents list.
+      recentsRemove(oldId);
+      recentsUpsert(updated);
       if (wasActive) {
         activeGraphId = updated.id;
         try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, updated.id); } catch {}
@@ -2468,7 +3043,7 @@ function openGraphEditModal(graph) {
     }
   }
   async function onSave() {
-    const nextName = nameInput.value.trim();
+    const nextName = nameInput.textContent.trim();
     const nextDescRaw = descInput.value;
     if (!nextName) {
       nameInput.focus();
@@ -2479,6 +3054,25 @@ function openGraphEditModal(graph) {
     const trimmedDesc = nextDescRaw.trim();
     const newDesc = trimmedDesc === '' ? null : nextDescRaw;
     if (newDesc !== (graph.description ?? null)) body.description = newDesc;
+    const nextPublic = !privateCheckbox.checked;
+    if (nextPublic !== !!graph.is_public) body.is_public = nextPublic;
+
+    // Per-graph appearance: send a partial settings patch when any of the
+    // three changed. null means "revert to default" — server strips nulls
+    // out of the merged JSONB so the key disappears.
+    const settingsPatch = {};
+    const fontInitial = initialSettings.font || null;
+    const nextFont = appearance.font.current || null;
+    if (nextFont !== fontInitial) settingsPatch.font = nextFont; // may be null
+    for (const key of ['font_color', 'bg_color']) {
+      const initialHex = initialSettings[key] || null;
+      const nextHex = appearance[key].customized
+        ? (appearance[key].initial || null)
+        : null;
+      if (nextHex !== initialHex) settingsPatch[key] = nextHex;
+    }
+    if (Object.keys(settingsPatch).length > 0) body.settings = settingsPatch;
+
     if (Object.keys(body).length === 0) { close(); return; }
     try {
       const res = await fetch(`/api/graphs/${graph.id}`, {
@@ -2490,6 +3084,14 @@ function openGraphEditModal(graph) {
         const e = await res.json().catch(() => ({}));
         alert(e.error || 'Save failed');
         return;
+      }
+      const updated = await res.json();
+      // Reflect new appearance / metadata immediately. If the user edited
+      // the active graph (the common case), update currentGraph and re-apply
+      // visual settings so the canvas reflects the change without a reload.
+      if (graph.id === activeGraphId) {
+        currentGraph = updated;
+        applySettings();
       }
       close();
       await fetchGraphsList();
@@ -2504,11 +3106,14 @@ function openGraphEditModal(graph) {
     if (!ok) return;
     await fetch(`/api/graphs/${graph.id}`, { method: 'DELETE' });
     close();
+    recentsRemove(graph.id);
     if (graph.id === activeGraphId) {
       activeGraphId = null;
+      currentGraph = null;
       try { localStorage.removeItem(ACTIVE_GRAPH_STORAGE_KEY); } catch {}
       history.replaceState({}, '', '/');
       if (cy) cy.elements().remove();
+      applySettings();
     }
     await fetchGraphsList();
     if (!activeGraphId && sidebar.graphs.length > 0) {
@@ -2519,10 +3124,12 @@ function openGraphEditModal(graph) {
   }
   function onBackdrop(e) { if (e.target === modal) close(); }
   function onKey(e) {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
-    else if (e.key === 'Enter' && e.target === nameInput) {
+    // Enter while editing the name is handled by onNameKey (commit-blur).
+    // Escape on the name field reverts; outside the name field, it closes.
+    if (e.key === 'Escape' && e.target !== nameInput) {
       e.preventDefault();
-      onSave();
+      e.stopPropagation();
+      close();
     }
   }
 
@@ -2530,12 +3137,17 @@ function openGraphEditModal(graph) {
   deleteBtn.addEventListener('click', onDelete);
   copyBtn.addEventListener('click', onCopy);
   rotateBtn.addEventListener('click', onRotate);
+  nameInput.addEventListener('blur', onNameBlur);
+  nameInput.addEventListener('keydown', onNameKey);
+  nameInput.addEventListener('input', clearNameError);
   modal.addEventListener('click', onBackdrop);
   document.addEventListener('keydown', onKey, true);
   _graphModalClose = close;
   modal.classList.remove('hidden');
-  nameInput.focus();
-  nameInput.select();
+  // Open the modal scrolled to the top, but don't auto-focus the name
+  // anymore — clicking it is the affordance. Auto-focusing felt aggressive
+  // for a heading.
+  modal.scrollTop = 0;
 }
 
 // Lazy-create a graph the first time the user does anything that needs one.
@@ -2600,6 +3212,61 @@ async function createGraphFromUI() {
   if (!created) return;
   await fetchGraphsList();
   switchActiveGraph(created.id, { pushState: true });
+  // Fire only on explicit creation. New graphs default to private; the user
+  // needs to know they should bookmark the URL or flip to public. Honors the
+  // "Never show again" preference in localStorage.
+  showPrivateWarning(created);
+}
+
+// Post-create privacy warning. Bails immediately if the user previously chose
+// "Never show again". Settings button opens the graph edit modal so they can
+// flip is_public / copy URL / rotate without an extra click; Dismiss closes.
+let _privateWarnClose = null;
+function showPrivateWarning(graph) {
+  try {
+    if (localStorage.getItem(PRIVATE_WARN_SUPPRESS_KEY) === '1') return;
+  } catch {}
+  if (_privateWarnClose) _privateWarnClose();
+
+  const modal = document.getElementById('private-warn-modal');
+  const suppressEl = document.getElementById('private-warn-suppress');
+  const settingsBtn = document.getElementById('private-warn-settings');
+  const dismissBtn = document.getElementById('private-warn-dismiss');
+
+  suppressEl.checked = false;
+
+  function persistSuppressIfChecked() {
+    if (!suppressEl.checked) return;
+    try { localStorage.setItem(PRIVATE_WARN_SUPPRESS_KEY, '1'); } catch {}
+  }
+  function close() {
+    _privateWarnClose = null;
+    modal.classList.add('hidden');
+    settingsBtn.removeEventListener('click', onSettings);
+    dismissBtn.removeEventListener('click', onDismiss);
+    modal.removeEventListener('click', onBackdrop);
+    document.removeEventListener('keydown', onKey, true);
+  }
+  function onSettings() {
+    persistSuppressIfChecked();
+    close();
+    openGraphEditModal(graph);
+  }
+  function onDismiss() {
+    persistSuppressIfChecked();
+    close();
+  }
+  function onBackdrop(e) { if (e.target === modal) onDismiss(); }
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onDismiss(); }
+  }
+
+  settingsBtn.addEventListener('click', onSettings);
+  dismissBtn.addEventListener('click', onDismiss);
+  modal.addEventListener('click', onBackdrop);
+  document.addEventListener('keydown', onKey, true);
+  _privateWarnClose = close;
+  modal.classList.remove('hidden');
 }
 
 // In-app modal replacement for the legacy prompt(). Resolves to the created
@@ -2687,7 +3354,21 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
   renderSidebar();
   if (cy) cy.elements().remove();
-  await fetchGraph();
+  // In parallel: load the graph contents and the graph row metadata. The
+  // metadata write to recents is best-effort — if the graph doesn't exist,
+  // fetchGraph will surface the failure.
+  const [, graphRow] = await Promise.all([
+    fetchGraph(),
+    fetch(`/api/graphs/${encodeURIComponent(id)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null),
+  ]);
+  if (graphRow) {
+    currentGraph = graphRow;
+    recentsUpsert(graphRow);
+    renderSidebar();
+    applySettings();
+  }
   if (typeof updateToolbar === 'function') updateToolbar();
   openGraphEventStream(id);
 }
@@ -2819,13 +3500,14 @@ function parseGraphIdFromPath() {
 
 async function bootSidebar() {
   await fetchGraphsList();
-  // Resolve which graph to open: URL → localStorage → first available → none
+  // Resolve which graph to open: URL → localStorage → first public → none.
+  // The URL-supplied id is bearer-token equivalent and must be honored even
+  // if the graph is private (and therefore not in sidebar.graphs). Same for
+  // the stored last-active id — if it's been deleted, switchActiveGraph
+  // will surface that, and recentsRefresh will eventually drop it.
   let target = parseGraphIdFromPath();
-  if (target && !sidebar.graphs.some((g) => g.id === target)) target = null;
   if (target == null) {
-    let stored = null;
-    try { stored = localStorage.getItem(ACTIVE_GRAPH_STORAGE_KEY); } catch {}
-    if (stored && sidebar.graphs.some((g) => g.id === stored)) target = stored;
+    try { target = localStorage.getItem(ACTIVE_GRAPH_STORAGE_KEY) || null; } catch {}
   }
   if (target == null && sidebar.graphs.length > 0) target = sidebar.graphs[0].id;
 
@@ -2839,9 +3521,12 @@ async function bootSidebar() {
 
 window.addEventListener('popstate', () => {
   const id = parseGraphIdFromPath();
-  if (id != null && sidebar.graphs.some((g) => g.id === id)) {
+  if (id != null) {
     if (id !== activeGraphId) switchActiveGraph(id, { pushState: false });
   } else if (id == null && activeGraphId != null) {
+    // Falling back to /: clear per-graph appearance overrides.
+    currentGraph = null;
+    applySettings();
     activeGraphId = null;
     if (cy) cy.elements().remove();
     renderSidebar();
@@ -2849,253 +3534,132 @@ window.addEventListener('popstate', () => {
   }
 });
 
+// --- Cytoscape style arrays — one per theme.
+// We deliberately keep both arrays in full (including the rules that don't
+// differ between themes) so the toggle is byte-for-byte exact and easy to
+// audit. The dark array is the cron-reference design; the light array is
+// the prior mymind-reference design.
+function cytoscapeStyleDark() {
+  return [
+    {
+      selector: 'node',
+      style: {
+        'shape': 'round-rectangle',
+        'background-color': 'data(color)',
+        'border-color': '#cccccc',
+        'border-width': 1,
+        'label': 'data(title)',
+        'text-valign': 'center',
+        'text-halign': 'center',
+        'font-size': '13px',
+        'font-family': getFontStack(appSettings.font),
+        'color': appSettings.fontColor,
+        'text-wrap': 'wrap',
+        'text-max-width': '140px',
+        'width': 'label',
+        'height': 'label',
+        'padding': '16px',
+        'text-overflow-wrap': 'whitespace',
+      },
+    },
+    { selector: 'node[status = "in_progress"]', style: { 'border-color': '#ffffff', 'border-width': 2 } },
+    { selector: 'node[status = "review"]', style: { 'border-color': '#ff4700', 'border-width': 2, 'border-style': 'dashed', 'border-dash-pattern': [6, 4] } },
+    { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
+    { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
+    { selector: 'node.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 6 } },
+    { selector: 'node.agent-flash-insert', style: { 'border-color': '#ff4700', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
+    { selector: 'node.agent-flash-status-todo', style: { 'underlay-color': '#cccccc', 'underlay-opacity': 0.35, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#ffffff', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-review', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.5, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-done', style: { 'underlay-color': '#cccccc', 'underlay-opacity': 0.2, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-body', style: { 'underlay-color': '#ffffff', 'underlay-opacity': 0.25, 'underlay-padding': 10 } },
+    { selector: 'node.selected.status-editing-todo, node.selected.status-editing-in_progress, node.selected.status-editing-done', style: { 'border-color': '#ff4700', 'border-width': 2.5 } },
+    { selector: 'node.editing', style: { 'border-color': '#ff4700', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
+    { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
+    { selector: 'edge', style: { 'width': 1.5, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
+    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    { selector: 'edge.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
+    { selector: 'edge.highlighted', style: { 'line-color': '#ff4700', 'target-arrow-color': '#ff4700', 'width': 3.5, 'z-index': 10 } },
+    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)' } },
+    { selector: 'node.edge-hover-target', style: { 'border-color': '#ff4700', 'border-width': 2 } },
+    { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
+    { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
+  ];
+}
+function cytoscapeStyleLight() {
+  // Palette mapping (May 2026):
+  //   Tier rule: light → fill, medium → text, strong → border / highlight.
+  //   in_progress         → bg blue-light #e2f9ff, text blue-medium #95daf5, border blue-strong #43ace6
+  //   review              → bg yellow-light #fef0bf, text yellow-medium #f6e5a5, border yellow-strong #f6c53e
+  //   done                → bg green-light #deffe3, text green-medium #beecd1, border green-strong #49ca80
+  //   selection / main    → main-orange #fb5305 (selection underlay, edge.selected, status-editing-todo)
+  //   agent-edit / hover  → purple-strong #a45fff (.editing, agent-flash-insert/body, edge-hover-target)
+  //   warning             → red-strong #ef3230 (edge.highlighted)
+  //   default todo border → neutral-grey #e5e5e5 (todo has no family hue)
+  return [
+    {
+      selector: 'node',
+      style: {
+        'shape': 'round-rectangle',
+        'background-color': 'data(color)',
+        'border-color': '#e5e5e5',
+        'border-width': 3,
+        'label': 'data(title)',
+        'text-valign': 'center',
+        'text-halign': 'center',
+        'font-size': '13px',
+        'font-family': getFontStack(appSettings.font),
+        'color': appSettings.fontColor,
+        'text-wrap': 'wrap',
+        'text-max-width': '140px',
+        'width': 'label',
+        'height': 'label',
+        'padding': '16px',
+        'text-overflow-wrap': 'whitespace',
+      },
+    },
+    // Three-tier per-status palette: light = fill, medium = text, strong = border.
+    // (todo has no status hue and falls through to the default body text color.)
+    { selector: 'node[status = "in_progress"]', style: { 'background-color': '#e2f9ff', 'border-color': '#43ace6', 'color': '#43ace6' } },
+    { selector: 'node[status = "review"]',      style: { 'background-color': '#fef0bf', 'border-color': '#f6c53e', 'color': '#f6c53e' } },
+    { selector: 'node[status = "done"]',        style: { 'background-color': '#deffe3', 'border-color': '#49ca80', 'color': '#49ca80' } },
+    { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
+    { selector: 'node.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
+    { selector: 'node.agent-flash-insert', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
+    { selector: 'node.agent-flash-status-todo',        style: { 'underlay-color': '#e5e5e5', 'underlay-opacity': 0.55, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#43ace6', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-review',      style: { 'underlay-color': '#f6c53e', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-done',        style: { 'underlay-color': '#49ca80', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-body', style: { 'underlay-color': '#a45fff', 'underlay-opacity': 0.35, 'underlay-padding': 10 } },
+    { selector: 'node.selected.status-editing-todo',        style: { 'border-color': '#fb5305', 'border-width': 1.5 } },
+    { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': '#43ace6', 'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#49ca80', 'border-width': 2.5 } },
+    { selector: 'node.editing', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
+    { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
+    { selector: 'edge', style: { 'width': 1.5, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
+    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    { selector: 'edge.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
+    { selector: 'edge.highlighted', style: { 'line-color': '#ef3230', 'target-arrow-color': '#ef3230', 'width': 3.5, 'z-index': 10 } },
+    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)' } },
+    { selector: 'node.edge-hover-target', style: { 'border-color': '#a45fff', 'border-width': 2 } },
+    { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
+    { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
+  ];
+}
+function cytoscapeStyle(theme) {
+  return theme === 'light' ? cytoscapeStyleLight() : cytoscapeStyleDark();
+}
+
 // --- Initialize ---
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   cy = cytoscape({
     container: document.getElementById('cy'),
-    style: [
-      {
-        selector: 'node',
-        style: {
-          'shape': 'round-rectangle',
-          'background-color': 'data(color)',
-          'border-color': '#403E3C',
-          'border-width': 1.5,
-          'label': 'data(title)',
-          'text-valign': 'center',
-          'text-halign': 'center',
-          'font-size': '13px',
-          'font-family': getFontStack(appSettings.font),
-          'color': appSettings.fontColor,
-          'text-wrap': 'wrap',
-          'text-max-width': '140px',
-          'width': 'label',
-          'height': 'label',
-          'padding': '14px',
-          'text-overflow-wrap': 'anywhere',
-        },
-      },
-      {
-        selector: 'node[status = "in_progress"]',
-        style: {
-          'border-color': '#DA702C',
-          'border-width': 2,
-        },
-      },
-      {
-        selector: 'node[status = "review"]',
-        style: {
-          'border-color': '#D0A215',
-          'border-width': 2,
-        },
-      },
-      {
-        selector: 'node[status = "done"]',
-        style: {
-          'border-color': '#879A39',
-          'border-width': 2,
-        },
-      },
-      {
-        selector: 'node.selected',
-        style: {
-          'underlay-color': '#CECDC3',
-          'underlay-opacity': 0.22,
-          'underlay-padding': 5,
-        },
-      },
-      // Semantic flashes when an SSE event indicates this node was just
-      // touched by an external editor (e.g. an LLM agent driving the API).
-      // Class is added in followAgentEdit() and removed after ~1.2s.
-      // INSERT: blue dashed border, matching the .editing style for
-      // user-created new nodes — visually says "this is brand new."
-      {
-        selector: 'node.agent-flash-insert',
-        style: {
-          'border-color': '#4385BE',
-          'border-style': 'dashed',
-          'border-width': 3,
-        },
-      },
-      // Status changes: underlay glow in the status color so you can tell
-      // at a glance what the new status is, even while the camera is
-      // panning to the node.
-      {
-        selector: 'node.agent-flash-status-todo',
-        style: {
-          'underlay-color': '#878580',
-          'underlay-opacity': 0.55,
-          'underlay-padding': 10,
-        },
-      },
-      {
-        selector: 'node.agent-flash-status-in_progress',
-        style: {
-          'underlay-color': '#DA702C',
-          'underlay-opacity': 0.55,
-          'underlay-padding': 10,
-        },
-      },
-      {
-        selector: 'node.agent-flash-status-review',
-        style: {
-          'underlay-color': '#D0A215',
-          'underlay-opacity': 0.55,
-          'underlay-padding': 10,
-        },
-      },
-      {
-        selector: 'node.agent-flash-status-done',
-        style: {
-          'underlay-color': '#879A39',
-          'underlay-opacity': 0.55,
-          'underlay-padding': 10,
-        },
-      },
-      // Body-only edit (no status change): purple underlay, distinct from
-      // any status color so it reads as "the agent updated notes here."
-      {
-        selector: 'node.agent-flash-body',
-        style: {
-          'underlay-color': '#8B7EC8',
-          'underlay-opacity': 0.55,
-          'underlay-padding': 10,
-        },
-      },
-      {
-        selector: 'node.selected.status-editing-todo',
-        style: {
-          'border-color': '#403E3C',
-          'border-width': 1.5,
-        },
-      },
-      {
-        selector: 'node.selected.status-editing-in_progress',
-        style: {
-          'border-color': '#DA702C',
-          'border-width': 2.5,
-        },
-      },
-      {
-        selector: 'node.selected.status-editing-done',
-        style: {
-          'border-color': '#879A39',
-          'border-width': 2.5,
-        },
-      },
-      {
-        selector: 'node.editing',
-        style: {
-          'border-color': '#4385BE',
-          'border-style': 'dashed',
-          'border-width': 2.5,
-        },
-      },
-      {
-        // Hide the cytoscape label only while the HTML title overlay is
-        // rendering on top of the node, to avoid double-rendering. Panel-only
-        // edits keep the label visible.
-        selector: 'node.inline-title-edit',
-        style: {
-          'text-opacity': 0,
-        },
-      },
-      {
-        selector: 'edge',
-        style: {
-          'width': 1.5,
-          'line-color': 'data(color)',
-          'curve-style': 'unbundled-bezier',
-          'control-point-distances': 'data(curveDistance)',
-          'control-point-weights': 'data(curveWeight)',
-        },
-      },
-      {
-        selector: 'edge[edgeType = "dependency"]',
-        style: {
-          'target-arrow-shape': 'triangle',
-          'target-arrow-color': 'data(color)',
-          'line-color': 'data(color)',
-          'width': 2,
-        },
-      },
-      {
-        selector: 'edge[edgeType = "related"]',
-        style: {
-          'target-arrow-shape': 'triangle',
-          'target-arrow-color': 'data(color)',
-          'source-arrow-shape': 'triangle',
-          'source-arrow-color': 'data(color)',
-          'line-color': 'data(color)',
-          'width': 2,
-        },
-      },
-      {
-        selector: 'edge.selected',
-        style: {
-          'underlay-color': '#CECDC3',
-          'underlay-opacity': 0.22,
-          'underlay-padding': 5,
-          'z-index': 9,
-        },
-      },
-      {
-        selector: 'edge.edge-type-editing',
-        style: {
-          'line-style': 'dashed',
-          'line-dash-pattern': [8, 6],
-        },
-      },
-      {
-        selector: 'edge.highlighted',
-        style: {
-          'line-color': '#D14D41',
-          'target-arrow-color': '#D14D41',
-          'width': 3.5,
-          'z-index': 10,
-        },
-      },
-      // Optimistic visual when an existing dependency edge is being flipped
-      {
-        selector: 'edge.dir-backward',
-        style: {
-          'target-arrow-shape': 'none',
-          'source-arrow-shape': 'triangle',
-          'source-arrow-color': 'data(color)',
-        },
-      },
-      // Transient highlight while hovering a node during edge creation —
-      // mirrors the .selected look so the user sees where the edge will land
-      {
-        selector: 'node.edge-hover-target',
-        style: {
-          'border-color': '#4385BE',
-          'border-width': 3,
-        },
-      },
-      // Edge-creation phantom: invisible cursor-tracker, ignores all events
-      {
-        selector: 'node.phantom',
-        style: {
-          'width': 1,
-          'height': 1,
-          'background-opacity': 0,
-          'border-width': 0,
-          'label': '',
-          'events': 'no',
-        },
-      },
-      // Edge-creation preview: muted version of the real edge style
-      {
-        selector: 'edge.preview',
-        style: {
-          'opacity': 0.6,
-          'events': 'no',
-          'z-index': 8,
-        },
-      },
-    ],
+    style: cytoscapeStyle(appSettings.theme),
     layout: { name: 'preset' },
     wheelSensitivity: 0.3,
     boxSelectionEnabled: false,
@@ -3337,11 +3901,12 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.tagName === 'TEXTAREA' ||
       e.target.tagName === 'SELECT' ||
       e.target.isContentEditable;
-    // Cmd+K toggles the settings overlay from anywhere, including inside fields.
+    // Cmd+K opens *graph* settings (the graph edit modal) when there's an
+    // active graph. App-level Defaults live behind the gear icon. Cmd+K is
+    // a no-op on the empty home page.
     if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
-      if (settingsState.open) closeSettings();
-      else openSettings();
+      openGraphSettings();
       return;
     }
     if (handleSettingsKey(e)) return;
@@ -3496,20 +4061,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Rich editor ---
-  richEditor = new toastui.Editor({
-    el: document.getElementById('rich-editor'),
-    height: '100%',
-    initialEditType: 'wysiwyg',
-    previewStyle: 'vertical',
-    hideModeSwitch: true,
-    usageStatistics: false,
-    theme: 'dark',
-    toolbarItems: [
-      ['heading'],
-      ['bold', 'italic'],
-      ['ul', 'ol'],
-    ],
-  });
+  richEditor = createRichEditor();
 
   document.getElementById('mode-rich').addEventListener('click', () => setEditorMode('rich'));
   document.getElementById('mode-raw').addEventListener('click', () => setEditorMode('raw'));
@@ -3780,7 +4332,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('panel-close').addEventListener('click', hidePanel);
 
   // --- Settings overlay (Cmd+K) wiring ---
-  document.getElementById('btn-settings').addEventListener('click', openSettings);
+  document.getElementById('btn-settings').addEventListener('click', openGraphSettings);
   document.getElementById('settings-search').addEventListener('input', () => {
     settingsState.activeIndex = 0;
     renderSettings();
@@ -3790,9 +4342,19 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   applySettings();
 
-  // Sidebar wiring
-  const newBtn = document.getElementById('sidebar-new-btn');
-  if (newBtn) newBtn.addEventListener('click', createGraphFromUI);
+  // Sidebar wiring. The "+ New graph" item is rendered inside the list by
+  // renderSidebar (see makeNewGraphItem); the header button is now the
+  // collapse control. The bottom-pinned gear opens app-level Defaults.
+  const collapseBtn = document.getElementById('sidebar-collapse-btn');
+  const expandBtn = document.getElementById('sidebar-expand-btn');
+  const appSettingsBtn = document.getElementById('app-settings-btn');
+  if (collapseBtn) collapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
+  if (expandBtn) expandBtn.addEventListener('click', () => setSidebarCollapsed(false));
+  if (appSettingsBtn) appSettingsBtn.addEventListener('click', () => {
+    if (isSidebarCollapsed()) setSidebarCollapsed(false);
+    openSettings();
+  });
+  applySidebarCollapsedFromStorage();
 
   // Boot sidebar — fetches graphs, resolves active graph, loads its data.
   // Replaces the old single-graph fetchGraph() bootstrap.

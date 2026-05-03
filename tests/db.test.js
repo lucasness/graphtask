@@ -35,7 +35,7 @@ describe('Database schema', () => {
     );
     const columns = result.rows.map((r) => r.column_name);
     expect(columns).toEqual([
-      'id', 'name', 'description', 'created_at', 'updated_at',
+      'id', 'name', 'description', 'is_public', 'settings', 'created_at', 'updated_at',
     ]);
   });
 

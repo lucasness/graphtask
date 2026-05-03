@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS graphs (
   id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
   name TEXT NOT NULL,
   description TEXT,
+  is_public BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Per-graph overrides for font / font_color / bg_color. Missing keys
+  -- fall back to the viewer's app-level Defaults at render time. Stored
+  -- as JSONB so future per-graph settings can be added without a schema
+  -- change. Always an object — never NULL — so client code can do
+  -- `graph.settings.font || appDefault.font` without a null check.
+  settings JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -35,8 +42,21 @@ CREATE TABLE IF NOT EXISTS graphs (
   CONSTRAINT graph_name_length
     CHECK (length(name) <= 80),
   CONSTRAINT graph_description_length
-    CHECK (description IS NULL OR length(description) <= 500)
+    CHECK (description IS NULL OR length(description) <= 500),
+  CONSTRAINT graph_settings_object
+    CHECK (jsonb_typeof(settings) = 'object')
 );
+
+-- Migration for DBs created before is_public / settings existed.
+ALTER TABLE graphs ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE graphs ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb;
+DO $$ BEGIN
+  ALTER TABLE graphs DROP CONSTRAINT IF EXISTS graph_settings_object;
+  ALTER TABLE graphs ADD CONSTRAINT graph_settings_object CHECK (jsonb_typeof(settings) = 'object');
+END $$;
+
+-- Partial index for the home-page list query (only public graphs are listed).
+CREATE INDEX IF NOT EXISTS graphs_is_public_idx ON graphs(is_public) WHERE is_public = TRUE;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id SERIAL PRIMARY KEY,
@@ -159,11 +179,13 @@ BEGIN
   END LOOP;
 END $$;
 
--- Unique on a normalized form so "My Graph", "my  graph", and "MyGraph" all
--- collide. Prevents visually-confusing duplicates in the sidebar without
--- forcing exact-match strictness.
-CREATE UNIQUE INDEX IF NOT EXISTS graphs_name_norm_uniq
-  ON graphs (lower(regexp_replace(name, '\s+', '', 'g')));
+-- The previous global unique-on-normalized-name index was dropped: in a no-auth
+-- bearer-token model it let anyone probe whether a graph by a given name
+-- existed via the 409 response on POST. The dedup-suffix backfill above is
+-- left in place since it's idempotent on existing DBs (and a no-op on fresh
+-- ones) — we don't undo prior renames because users may have come to identify
+-- their graph as "X (2)".
+DROP INDEX IF EXISTS graphs_name_norm_uniq;
 
 -- Edge curve metadata used to be a single signed number (perpendicular
 -- offset; weight implicitly 0.5). It's now an object {distance, weight}

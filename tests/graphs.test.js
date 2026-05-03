@@ -55,22 +55,29 @@ describe('Graph CRUD', () => {
       expect(res.status).toBe(400);
     });
 
-    it('should 409 on duplicate name', async () => {
-      await request(app).post('/api/graphs').send({ name: 'My Graph' });
-      const res = await request(app).post('/api/graphs').send({ name: 'My Graph' });
-      expect(res.status).toBe(409);
+    // Global name uniqueness was dropped — the 409 response let attackers
+    // probe whether a graph by a given name existed. Duplicate names now
+    // succeed at every casing/whitespace variant.
+    it('should allow duplicate names', async () => {
+      const a = await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const b = await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
+      expect(a.body.id).not.toBe(b.body.id);
     });
 
-    it('should 409 on case-insensitive duplicate', async () => {
-      await request(app).post('/api/graphs').send({ name: 'My Graph' });
-      const res = await request(app).post('/api/graphs').send({ name: 'MY GRAPH' });
-      expect(res.status).toBe(409);
+    it('should allow case-insensitive duplicates', async () => {
+      const a = await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const b = await request(app).post('/api/graphs').send({ name: 'MY GRAPH' });
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
     });
 
-    it('should 409 on whitespace-variant duplicate', async () => {
-      await request(app).post('/api/graphs').send({ name: 'My Graph' });
-      const res = await request(app).post('/api/graphs').send({ name: 'mygraph' });
-      expect(res.status).toBe(409);
+    it('should allow whitespace-variant duplicates', async () => {
+      const a = await request(app).post('/api/graphs').send({ name: 'My Graph' });
+      const b = await request(app).post('/api/graphs').send({ name: 'mygraph' });
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(201);
     });
 
     it('should allow distinct names', async () => {
@@ -78,6 +85,12 @@ describe('Graph CRUD', () => {
       const b = await request(app).post('/api/graphs').send({ name: 'two' });
       expect(a.status).toBe(201);
       expect(b.status).toBe(201);
+    });
+
+    it('should default new graphs to private', async () => {
+      const res = await request(app).post('/api/graphs').send({ name: 'private by default' });
+      expect(res.status).toBe(201);
+      expect(res.body.is_public).toBe(false);
     });
   });
 
@@ -88,12 +101,28 @@ describe('Graph CRUD', () => {
       expect(res.body).toEqual([]);
     });
 
-    it('should return graphs ordered by updated_at DESC', async () => {
-      await request(app).post('/api/graphs').send({ name: 'first' });
-      await request(app).post('/api/graphs').send({ name: 'second' });
-      await request(app).post('/api/graphs').send({ name: 'third' });
+    // The list endpoint is the home-page directory; only public graphs are
+    // listed. Private graphs are still reachable by URL.
+    it('should return only public graphs ordered by updated_at DESC', async () => {
+      const a = await request(app).post('/api/graphs').send({ name: 'first' });
+      const b = await request(app).post('/api/graphs').send({ name: 'second' });
+      const c = await request(app).post('/api/graphs').send({ name: 'third' });
+      for (const id of [a.body.id, b.body.id, c.body.id]) {
+        await request(app).patch(`/api/graphs/${id}`).send({ is_public: true });
+      }
       const res = await request(app).get('/api/graphs');
       expect(res.body.map((g) => g.name)).toEqual(['third', 'second', 'first']);
+    });
+
+    it('should exclude private graphs from the list', async () => {
+      const priv = await request(app).post('/api/graphs').send({ name: 'private' });
+      const pub = await request(app).post('/api/graphs').send({ name: 'public' });
+      await request(app).patch(`/api/graphs/${pub.body.id}`).send({ is_public: true });
+      const res = await request(app).get('/api/graphs');
+      expect(res.body.map((g) => g.id)).toEqual([pub.body.id]);
+      // Private graph still reachable by id (URL bearer-token model).
+      const direct = await request(app).get(`/api/graphs/${priv.body.id}`);
+      expect(direct.status).toBe(200);
     });
   });
 
@@ -169,13 +198,98 @@ describe('Graph CRUD', () => {
       expect(res.status).toBe(404);
     });
 
-    it('should 409 when renaming to a colliding name', async () => {
+    it('should allow renaming to a colliding name', async () => {
       await request(app).post('/api/graphs').send({ name: 'taken' });
       const other = await request(app).post('/api/graphs').send({ name: 'free' });
       const res = await request(app)
         .patch(`/api/graphs/${other.body.id}`)
         .send({ name: 'TAKEN' });
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('TAKEN');
+    });
+
+    it('should toggle is_public', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'toggle' });
+      expect(create.body.is_public).toBe(false);
+      const flipOn = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ is_public: true });
+      expect(flipOn.status).toBe(200);
+      expect(flipOn.body.is_public).toBe(true);
+      const list = await request(app).get('/api/graphs');
+      expect(list.body.map((g) => g.id)).toContain(create.body.id);
+      const flipOff = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ is_public: false });
+      expect(flipOff.body.is_public).toBe(false);
+      const listAfter = await request(app).get('/api/graphs');
+      expect(listAfter.body.map((g) => g.id)).not.toContain(create.body.id);
+    });
+
+    it('should 400 when is_public is not a boolean', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'g' });
+      const res = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ is_public: 'yes' });
+      expect(res.status).toBe(400);
+    });
+
+    it('should default settings to an empty object on create', async () => {
+      const res = await request(app).post('/api/graphs').send({ name: 'g' });
+      expect(res.status).toBe(201);
+      expect(res.body.settings).toEqual({});
+    });
+
+    it('should accept a valid settings patch and merge keys', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'g' });
+      const r1 = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { font: 'garamond', font_color: '#abcdef' } });
+      expect(r1.status).toBe(200);
+      expect(r1.body.settings).toEqual({ font: 'garamond', font_color: '#abcdef' });
+
+      // Subsequent patch merges with existing keys.
+      const r2 = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { bg_color: '#100F0F' } });
+      expect(r2.body.settings).toEqual({
+        font: 'garamond',
+        font_color: '#abcdef',
+        bg_color: '#100F0F',
+      });
+
+      // Setting a key to null clears it (revert to default).
+      const r3 = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { font: null } });
+      expect(r3.body.settings).toEqual({
+        font_color: '#abcdef',
+        bg_color: '#100F0F',
+      });
+    });
+
+    it('should 400 on unknown settings key', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'g' });
+      const res = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { wat: 'nope' } });
+      expect(res.status).toBe(400);
+    });
+
+    it('should 400 on invalid font id', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'g' });
+      const res = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { font: 'comic-sans' } });
+      expect(res.status).toBe(400);
+    });
+
+    it('should 400 on non-hex color', async () => {
+      const create = await request(app).post('/api/graphs').send({ name: 'g' });
+      const res = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ settings: { font_color: 'red' } });
+      expect(res.status).toBe(400);
     });
   });
 

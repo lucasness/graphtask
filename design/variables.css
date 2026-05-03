@@ -1,0 +1,96 @@
+:root {
+  /* === Neutrals === */
+  --neutral-white:      #ffffff;
+  --neutral-light-grey: #f7f7f7;
+  --neutral-grey:       #e5e5e5;
+
+  /* === Brand accent === */
+  --main-orange: #fb5305;
+
+  /* === Status families (light / medium / strong) === */
+  --orange-light:  #ffe3c8;
+  --orange-medium: #fead81;
+  --orange-strong: #fe7233;
+
+  --purple-light:  #f8e5fd;
+  --purple-medium: #efd6ff;
+  --purple-strong: #a45fff;
+
+  --green-light:  #deffe3;
+  --green-medium: #beecd1;
+  --green-strong: #49ca80;
+
+  --blue-light:  #e2f9ff;
+  --blue-medium: #95daf5;
+  --blue-strong: #43ace6;
+
+  --red-light:  #ffd6c4;
+  --red-medium: #e27f6e;
+  --red-strong: #ef3230;
+
+  --yellow-light:  #fef0bf;
+  --yellow-medium: #f6e5a5;
+  --yellow-strong: #f6c53e;
+
+  /* === Slate-family text neutrals === */
+  --color-midnight-ink: #000000;
+  --color-graphite-nav: #24272d;
+  --color-deep-slate:   #3a475a;
+  --color-storm:        #4a5465;
+  --color-steel:        #717286;
+  --color-slate:        #748297;
+  --color-ash:          #afb5c1;
+  --color-chalk:        #a6a8aa;
+
+  /* === Semantic role aliases === */
+  --color-ember-orange: var(--main-orange);
+  --color-cobalt-link:  var(--purple-strong);
+  --color-canvas-white: var(--neutral-light-grey);
+  --color-pure-white:   var(--neutral-white);
+  --color-blush-tint:   var(--neutral-light-grey);
+  --color-mist:         var(--neutral-grey);
+  --red:                var(--red-strong);
+
+  /* === Fonts === */
+  --font-display: 'Playfair Display', 'EB Garamond', Garamond, 'Times New Roman', serif;
+  --font-label:   'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body:    'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-ui:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* === Type scale === */
+  --text-body-sm: 13px;
+  --leading-body-sm: 1.55;
+  --tracking-body-sm: normal;
+  --text-caption: 15px;
+  --leading-caption: 1.55;
+  --text-body: 16px;
+  --leading-body: 1.55;
+  --text-subheading: 18px;
+  --text-heading-sm: 28px;
+
+  /* === Spacing (theme-invariant, 4px base) === */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* === Layout === */
+  --sidebar-w: 240px;
+
+  /* === Border radius === */
+  --radius-md: 12px;
+  --radius-cardsalt: 12px;
+  --radius-cards: 16px;
+  --radius-buttons: 100px;
+  --radius-tags: 36px;
+  --radius-full: 9999px;
+
+  /* === Shadows (cool grey, soft) === */
+  --shadow-sm: rgba(140, 142, 151, 0.32) 0 4px 7px -4px;
+  --shadow-md:
+    rgba(140, 142, 151, 0.32) 0 4px 7px -4px,
+    rgba(140, 142, 151, 0.16) 0 12px 24px -8px;
+}

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -21,20 +21,36 @@
 
   <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
   <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/theme/toastui-editor-dark.min.css">
+  <!-- Design-system typefaces (Playfair Display / Nunito / DM Sans / Inter)
+       plus the two extra picker choices (EB Garamond / Roboto). All loaded
+       from Google Fonts; CSS references in design/variables.css fall back
+       to local equivalents only as a safety net. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=EB+Garamond:wght@400;500;600&family=Roboto:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=EB+Garamond:wght@400;500&family=Inter:wght@400;500;600&family=Nunito:wght@600&family=Playfair+Display:wght@400;500&family=Roboto:wght@400;500&display=swap">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <aside id="sidebar">
     <div id="sidebar-header">
       <span class="sidebar-title">Graphs</span>
-      <button id="sidebar-new-btn" title="New graph" aria-label="New graph">+</button>
+      <button id="sidebar-collapse-btn" class="sb-icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <i class="ph ph-arrow-line-left" aria-hidden="true"></i>
+      </button>
     </div>
+    <button id="sidebar-expand-btn" class="sb-icon-btn sb-collapsed-only" title="Expand sidebar" aria-label="Expand sidebar">
+      <i class="ph ph-arrow-line-right" aria-hidden="true"></i>
+    </button>
     <div id="sidebar-list"></div>
     <div id="sidebar-empty" class="hidden">
       <p>No graphs yet</p>
+    </div>
+    <div id="sidebar-bottom">
+      <button id="app-settings-btn" class="sb-bottom-btn" title="App-level Defaults" aria-label="Settings">
+        <i class="ph ph-gear" aria-hidden="true"></i>
+        <span class="sb-bottom-label">Settings</span>
+      </button>
     </div>
   </aside>
 
@@ -93,40 +109,90 @@
 
   <div id="graph-modal" class="modal hidden">
     <div class="modal-content modal-content-form">
-      <h3>Edit graph</h3>
-      <label class="modal-field">
-        <span>Name</span>
-        <input type="text" id="graph-modal-name" maxlength="80" autocomplete="off" spellcheck="false">
+      <div id="graph-modal-created" class="modal-subtitle"></div>
+      <h3 id="graph-modal-name" class="editable-heading" contenteditable="true" spellcheck="false" data-placeholder="Untitled"></h3>
+      <div id="graph-modal-name-error" class="modal-error hidden"></div>
+
+      <label class="modal-field modal-field-flush">
+        <textarea id="graph-modal-desc" maxlength="500" rows="3" placeholder="Description (optional)"></textarea>
       </label>
-      <label class="modal-field">
-        <span>Description</span>
-        <textarea id="graph-modal-desc" maxlength="500" rows="3" placeholder="Optional"></textarea>
-      </label>
-      <div class="modal-field">
-        <span>Created</span>
-        <div id="graph-modal-created" class="modal-readonly"></div>
-      </div>
-      <div class="modal-field">
-        <span>Sharing</span>
+
+      <div class="modal-field modal-field-flush">
         <div class="share-row">
           <input type="text" id="graph-modal-url" readonly>
-          <button id="graph-modal-copy" type="button">Copy</button>
-          <button id="graph-modal-rotate" type="button" title="Rotate URL — invalidates the current link">Rotate</button>
+          <button id="graph-modal-copy" type="button" title="Copy URL" aria-label="Copy URL"><i class="ph ph-copy"></i></button>
+          <button id="graph-modal-rotate" type="button" title="Rotate URL — invalidates the current link" aria-label="Rotate URL"><i class="ph ph-arrows-clockwise"></i></button>
         </div>
-        <p class="share-hint">Anyone with this link can view and edit the graph. Rotate to invalidate previously shared links.</p>
       </div>
-      <div class="modal-actions modal-actions-split">
+
+      <div class="modal-field">
+        <span>Visibility</span>
+        <label class="visibility-row">
+          <input type="checkbox" id="graph-modal-private">
+          <span id="graph-modal-visibility-label"></span>
+        </label>
+      </div>
+
+      <div class="modal-field">
+        <span>Appearance</span>
+        <div class="appearance-grid">
+          <div class="appearance-row">
+            <span class="appearance-label">Font</span>
+            <div class="font-picker" id="graph-modal-font">
+              <button type="button" class="font-picker-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <span class="font-picker-value">Default</span>
+                <span class="font-picker-caret" aria-hidden="true">
+                  <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+                </span>
+              </button>
+              <div class="font-picker-menu hidden" role="listbox">
+                <button type="button" class="font-picker-option" role="option" data-value="">Default</button>
+                <button type="button" class="font-picker-option" role="option" data-value="inter" style="font-family: 'Inter', sans-serif;">Inter</button>
+                <button type="button" class="font-picker-option" role="option" data-value="garamond" style="font-family: 'EB Garamond', Garamond, serif;">EB Garamond</button>
+                <button type="button" class="font-picker-option" role="option" data-value="roboto" style="font-family: 'Roboto', sans-serif;">Roboto</button>
+              </div>
+            </div>
+          </div>
+          <div class="appearance-color-row">
+            <div class="appearance-color-group">
+              <span class="appearance-label">Text</span>
+              <div class="appearance-swatches" id="graph-modal-font-swatches"></div>
+            </div>
+            <div class="appearance-color-group">
+              <span class="appearance-label">Background</span>
+              <div class="appearance-swatches" id="graph-modal-bg-swatches"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions modal-actions-center">
         <button id="graph-modal-delete" class="danger" type="button">Delete</button>
         <button id="graph-modal-save" class="primary" type="button">Save</button>
       </div>
     </div>
   </div>
 
+  <div id="private-warn-modal" class="modal hidden">
+    <div class="modal-content modal-content-form">
+      <h3>Graphs are private by default</h3>
+      <p class="modal-body-text">Save the link somewhere, or change to public.</p>
+      <label class="suppress-row">
+        <input type="checkbox" id="private-warn-suppress">
+        <span>Never show again</span>
+      </label>
+      <div class="modal-actions modal-actions-center">
+        <button id="private-warn-dismiss" type="button">Dismiss</button>
+        <button id="private-warn-settings" class="primary" type="button">Settings</button>
+      </div>
+    </div>
+  </div>
+
   <div id="delete-modal" class="modal hidden">
     <div class="modal-content">
-      <h3>Confirm delete</h3>
+      <h3 id="delete-modal-title">Confirm delete</h3>
       <p id="delete-modal-desc"></p>
-      <div class="modal-actions">
+      <div class="modal-actions modal-actions-center">
         <button id="delete-cancel">Cancel</button>
         <button id="delete-confirm" class="danger">Delete</button>
       </div>
@@ -136,12 +202,11 @@
   <div id="new-graph-modal" class="modal hidden">
     <div class="modal-content modal-content-form">
       <h3>New graph</h3>
-      <label class="modal-field">
-        <span>Name</span>
-        <input type="text" id="new-graph-name" maxlength="80" autocomplete="off" spellcheck="false" placeholder="e.g. Roadmap">
+      <label class="modal-field modal-field-flush">
+        <input type="text" id="new-graph-name" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Name">
       </label>
       <p id="new-graph-error" class="modal-error hidden"></p>
-      <div class="modal-actions modal-actions-split">
+      <div class="modal-actions modal-actions-center">
         <button id="new-graph-cancel" type="button">Cancel</button>
         <button id="new-graph-create" class="primary" type="button">Create</button>
       </div>
@@ -256,8 +321,12 @@
   <div id="edge-curve-handle" class="hidden" title="Drag to curve edge"></div>
   <div id="color-palette" class="color-palette hidden" role="listbox" aria-label="Background color"></div>
 
-  <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-label="Settings">
+  <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-label="Defaults">
     <div class="settings-card">
+      <div class="settings-heading">
+        <h3>Defaults</h3>
+        <p>For new graphs. Override in graph settings.</p>
+      </div>
       <input id="settings-search" class="settings-search" type="text" placeholder="Type / to search" autocomplete="off" spellcheck="false">
       <div id="settings-results" class="settings-results"></div>
     </div>

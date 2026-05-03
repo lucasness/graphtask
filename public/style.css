@@ -1,38 +1,286 @@
-/* Flexoki Dark palette */
-:root {
-  --bg: #100F0F;        /* black */
-  --bg-2: #1C1B1A;      /* base-950 */
-  --ui: #282726;        /* base-900 */
-  --ui-2: #343331;      /* base-850 */
-  --ui-3: #403E3C;      /* base-800 */
-  --tx-3: #575653;      /* base-700, faint */
-  --tx-2: #878580;      /* base-500, muted */
-  --tx: #CECDC3;        /* base-200, primary */
+/* === Theme system ===
+   Two themes are available, switched by [data-theme] on <html>:
+   - "dark"  → Cron Calendar style port. Dark cockpit, white-on-near-black,
+                 action-orange accent. Currently disabled at the UI level —
+                 loadSettings() in app.js pins everyone to "light".
+   - "light" → Active theme. Warm light canvas, ember-orange brand mark,
+                 cobalt-purple as the only chromatic interactive fill.
+                 Spec: /design/DESIGN.md (+ design/variables.css, theme.css,
+                 tokens.json).
+   Both themes redefine the FULL set of tokens. Avoid relying on any
+   token cascading from base :root into a theme override — keep everything
+   redundantly explicit so adding a third theme later is straightforward.
 
+   Tokens that don't change across themes (spacing, sidebar width, the
+   semantic warning red) live in base :root. */
+
+:root {
+  /* --- Spacing scale (theme-invariant) --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* --- Layout --- */
+  --sidebar-w: 240px;
+
+  /* --- Semantic accents used in misc UI moments (warning text,
+     edge-type icons). Both themes share these. --- */
   --red: #D14D41;
-  --orange: #DA702C;
   --yellow: #D0A215;
   --green: #879A39;
   --cyan: #3AA99F;
-  --blue: #4385BE;
   --purple: #8B7EC8;
   --magenta: #CE5D97;
+}
 
-  /* User-configurable via Settings (Cmd+K). Applies to nodes + side panel
-     only — chrome (toolbar, modals, settings overlay) keeps the system font
-     and primary text color. */
-  --app-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --app-font-color: #CECDC3;
+/* ---------- DARK (default) — Cron Calendar reference ---------- */
+:root,
+:root[data-theme="dark"] {
+  /* Reference colors */
+  --color-cron-black: #0f0d0a;
+  --color-deep-graphite: #161412;
+  --color-bright-white: #ffffff;
+  --color-subtle-gray: #cccccc;
+  --color-action-orange: #ff4700;
+  --color-soft-ember: #451e09;
+  --color-deep-ember: #8b2e09;
 
-  --sidebar-w: 240px;
+  /* Reference fonts (Helvetica Neue universally) */
+  --font-helvetica-neue: 'Helvetica Neue', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* Reference type scale */
+  --text-caption: 13px;
+  --leading-caption: 1.7;
+  --text-body-sm: 15px;
+  --leading-body-sm: 1.7;
+  --tracking-body-sm: 0.15px;
+  --text-body: 22px;
+  --leading-body: 1.5;
+  --text-subheading: 18px;
+  --text-heading-sm: 22px;
+
+  /* Reference radii (flat surfaces, 4px buttons, 9999px pills) */
+  --radius-md: 4px;
+  --radius-full: 9999px;
+
+  /* Reference shadows — flat with subtle ember-tinted glow */
+  --shadow-sm: 0 4px 12px rgba(255, 71, 0, 0.06);
+  --shadow-md:
+    0 8px 24px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(255, 71, 0, 0.08);
+
+  /* Legacy mymind token names → re-pointed to cron equivalents */
+  --color-canvas-white:   var(--color-cron-black);
+  --color-pure-white:     var(--color-deep-graphite);
+  --color-midnight-ink:   var(--color-bright-white);
+  --color-deep-slate:     var(--color-bright-white);
+  --color-graphite-nav:   var(--color-bright-white);
+  --color-storm:          var(--color-bright-white);
+  --color-steel:          var(--color-subtle-gray);
+  --color-slate:          var(--color-subtle-gray);
+  --color-ash:            var(--color-subtle-gray);
+  --color-mist:           rgba(255, 255, 255, 0.10);
+  --color-blush-tint:     rgba(255, 255, 255, 0.05);
+  --color-ember-orange:   var(--color-action-orange);
+  --color-cobalt-link:    var(--color-action-orange);
+
+  /* All four legacy font tokens collapse to Helvetica Neue */
+  --font-display: var(--font-helvetica-neue);
+  --font-label:   var(--font-helvetica-neue);
+  --font-body:    var(--font-helvetica-neue);
+  --font-ui:      var(--font-helvetica-neue);
+
+  /* Legacy radius aliases — cron is flatter than mymind */
+  --radius-cards:    8px;
+  --radius-cardsalt: 4px;
+  --radius-buttons:  4px;
+  --radius-tags:     var(--radius-full);
+
+  /* Backwards-compat surface aliases */
+  --bg: var(--color-cron-black);
+  --bg-2: var(--color-deep-graphite);
+  --bg-3: rgba(255, 255, 255, 0.05);
+  --bg-input: var(--color-deep-graphite);
+  --tx: var(--color-bright-white);
+  --tx-2: var(--color-subtle-gray);
+  --tx-3: rgba(204, 204, 204, 0.6);
+  --ui:   rgba(255, 255, 255, 0.05);
+  --ui-2: rgba(255, 255, 255, 0.10);
+  --ui-3: rgba(255, 255, 255, 0.15);
+  --border:        rgba(255, 255, 255, 0.10);
+  --border-strong: var(--color-subtle-gray);
+  --r-sm: 4px;
+  --r-md: 4px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+
+  /* Theme-scoped semantic accents */
+  --orange: var(--color-action-orange);
+  --blue: var(--color-action-orange);
+
+  /* Layout / per-graph appearance defaults */
+  --canvas-bg: var(--color-cron-black);
+  --app-font: var(--font-helvetica-neue);
+  --app-font-color: var(--color-bright-white);
+}
+
+/* ---------- LIGHT — refreshed palette (May 2026) ---------- */
+:root[data-theme="light"] {
+  /* === New palette — saved in full per design intent ===
+     Three neutrals, one main accent, six status hue families
+     (each family has light/medium/strong tiers). Roles are assigned
+     downstream via the legacy-name aliases that the rest of the CSS
+     and the cytoscape light style array reference. */
+
+  /* Neutrals */
+  --neutral-white:      #ffffff;
+  --neutral-light-grey: #f7f7f7;
+  --neutral-grey:       #e5e5e5;
+
+  /* Main theme accent */
+  --main-orange: #fb5305;
+
+  /* Status — orange family */
+  --orange-light:  #ffe3c8;
+  --orange-medium: #fead81;
+  --orange-strong: #fe7233;
+
+  /* Status — purple family */
+  --purple-light:  #f8e5fd;
+  --purple-medium: #efd6ff;
+  --purple-strong: #a45fff;
+
+  /* Status — green family */
+  --green-light:  #deffe3;
+  --green-medium: #beecd1;
+  --green-strong: #49ca80;
+
+  /* Status — blue family */
+  --blue-light:  #e2f9ff;
+  --blue-medium: #95daf5;
+  --blue-strong: #43ace6;
+
+  /* Status — red family */
+  --red-light:  #ffd6c4;
+  --red-medium: #e27f6e;
+  --red-strong: #ef3230;
+
+  /* Status — yellow family */
+  --yellow-light:  #fef0bf;
+  --yellow-medium: #f6e5a5;
+  --yellow-strong: #f6c53e;
+
+  /* === Reference-name aliases — re-pointed to the new palette === */
+  --color-ember-orange:    var(--main-orange);
+  --color-cobalt-link:     var(--purple-strong);
+  --color-midnight-ink:    #000000;
+  --color-canvas-white:    var(--neutral-light-grey);
+  --color-pure-white:      var(--neutral-white);
+  --color-blush-tint:      var(--neutral-light-grey);
+  --color-mist:            var(--neutral-grey);
+  --color-slate-blue-card: var(--blue-light);
+  --color-parchment-card:  var(--yellow-light);
+  --color-sage-card:       var(--green-light);
+  --color-deep-slate: #3a475a;
+  --color-storm: #4a5465;
+  --color-steel: #717286;
+  --color-slate: #748297;
+  --color-graphite-nav: #24272d;
+  --color-ash: #afb5c1;
+  --color-chalk: #a6a8aa;
+
+  /* Theme-scoped warning red — uses the new red-strong instead of the
+     base :root default. */
+  --red: var(--red-strong);
+
+  /* Cron-token aliases for any rules that reference them directly.
+     Kept harmless under light by mapping to mymind equivalents. */
+  --color-cron-black:     var(--color-canvas-white);
+  --color-deep-graphite:  var(--color-pure-white);
+  --color-bright-white:   var(--color-graphite-nav);
+  --color-subtle-gray:    var(--color-steel);
+  --color-action-orange:  var(--color-ember-orange);
+  --color-soft-ember:     #ffe6df;
+  --color-deep-ember:     var(--color-ember-orange);
+  --font-helvetica-neue:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Reference fonts */
+  --font-display: 'Playfair Display', 'EB Garamond', Garamond, 'Times New Roman', serif;
+  --font-label:   'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body:    'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-ui:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Reference type scale */
+  --text-caption: 15px;
+  --leading-caption: 1.55;
+  --text-body-sm: 13px;
+  --leading-body-sm: 1.55;
+  --tracking-body-sm: normal;
+  --text-body: 16px;
+  --leading-body: 1.55;
+  --text-subheading: 18px;
+  --text-heading-sm: 28px;
+
+  /* Reference radii */
+  --radius-md: 12px;
+  --radius-full: 9999px;
+  --radius-cards:    16px;
+  --radius-cardsalt: 12px;
+  --radius-buttons:  100px;
+  --radius-tags:     36px;
+
+  /* Reference shadows — cool grey, soft */
+  --shadow-sm: rgba(140, 142, 151, 0.32) 0 4px 7px -4px;
+  --shadow-md:
+    rgba(140, 142, 151, 0.32) 0 4px 7px -4px,
+    rgba(140, 142, 151, 0.16) 0 12px 24px -8px;
+
+  /* Backwards-compat surface aliases */
+  --bg: var(--color-canvas-white);
+  --bg-2: var(--color-pure-white);
+  --bg-3: var(--color-blush-tint);
+  --bg-input: var(--color-pure-white);
+  --tx: var(--color-graphite-nav);
+  --tx-2: var(--color-storm);
+  --tx-3: var(--color-steel);
+  --ui:   rgba(0, 0, 0, 0.03);
+  --ui-2: rgba(0, 0, 0, 0.06);
+  --ui-3: var(--color-mist);
+  --border:        var(--color-mist);
+  --border-strong: var(--color-ash);
+  --r-sm: 8px;
+  --r-md: var(--radius-cardsalt);
+  --r-lg: var(--radius-cards);
+  --r-xl: 20px;
+
+  /* Theme-scoped semantic accents */
+  --orange: var(--color-ember-orange);
+  --blue: var(--color-cobalt-link);
+
+  /* Layout / per-graph appearance defaults */
+  --canvas-bg: var(--color-canvas-white);
+  --app-font: var(--font-ui);
+  --app-font-color: var(--color-deep-slate);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* macOS renders text heavier than designed by default — antialias the root
+   so all text reads crisper. Other platforms ignore the property. */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg);
-  color: var(--tx);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  background: var(--color-canvas-white);
+  color: var(--color-storm);
   overflow: hidden;
 }
 
@@ -42,18 +290,24 @@ body {
   left: var(--sidebar-w);
   width: calc(100vw - var(--sidebar-w));
   height: 100vh;
-  background: var(--bg);
+  /* JS sets the inline background based on per-graph settings; this is
+     just the initial paint before applySettings runs. */
+  background: var(--canvas-bg);
 }
 
 /* Left sidebar */
 #sidebar {
+  /* Slow, expressive sidebar transitions per the mymind motion spec.
+     cubic-bezier(0.19, 1, 0.22, 1) is the reference's primary easing —
+     fast-in, slow-out at 0.7s gives a placed-rather-than-dropped feel. */
+  transition: width 0.7s cubic-bezier(0.19, 1, 0.22, 1);
   position: fixed;
   top: 0;
   left: 0;
   width: var(--sidebar-w);
   height: 100vh;
-  background: var(--bg-2);
-  border-right: 1px solid var(--ui-3);
+  background: var(--color-pure-white);
+  border-right: 1px solid var(--color-mist);
   z-index: 9;
   display: flex;
   flex-direction: column;
@@ -63,22 +317,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--ui-3);
+  padding: 18px 20px 14px;
 }
 #sidebar-header .sidebar-title {
+  font-family: var(--font-label);
   font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--tx-2);
+  letter-spacing: 0.125em;
+  color: var(--color-ember-orange);
 }
-#sidebar-new-btn {
+.sb-icon-btn {
   background: transparent;
-  color: var(--tx);
-  border: 1px solid var(--ui-3);
+  color: var(--tx-2);
+  border: none;
   border-radius: 6px;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
@@ -86,37 +341,129 @@ body {
   align-items: center;
   justify-content: center;
 }
-#sidebar-new-btn:hover { background: var(--ui); }
+.sb-icon-btn:hover { background: var(--ui); color: var(--tx); }
+.sb-icon-btn .ph { font-size: 16px; line-height: 1; }
+
+/* The collapsed-only expand button is rendered in DOM at all times so its
+   listener stays bound; it's hidden until #sidebar enters .collapsed. */
+#sidebar-expand-btn { display: none; }
+#sidebar.collapsed #sidebar-expand-btn {
+  display: inline-flex;
+  align-self: center;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+
+#sidebar-bottom {
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+}
+
+/* Bottom-row button — gear + "Settings" label centered when expanded;
+   collapses to just the gear icon (still centered) when the sidebar is. */
+.sb-bottom-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--tx-2);
+  font-size: 13px;
+  /* Optical balance: icon side gets ~2px less padding than text side so
+     the gear sits on the same visual axis as the centered label. */
+  padding: 6px 10px 6px 8px;
+  cursor: pointer;
+}
+.sb-bottom-btn:hover { background: var(--ui); color: var(--tx); }
+.sb-bottom-btn .ph { font-size: 16px; line-height: 1; }
+#sidebar.collapsed .sb-bottom-label { display: none; }
+
+/* Collapsed sidebar: skinny strip showing only the expand and gear icons. */
+#sidebar.collapsed {
+  width: 48px;
+}
+#sidebar.collapsed #sidebar-header,
+#sidebar.collapsed #sidebar-list,
+#sidebar.collapsed #sidebar-empty { display: none; }
+
+/* "+ New graph" pseudo-item rendered as the first row of the list.
+   Reads as a quiet ghost-pill invitation — the orange comes alive on
+   hover, never as a default fill. */
+.sb-new-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 12px 10px;
+  padding: 9px 14px;
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-buttons);
+  color: var(--color-storm);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.sb-new-item:hover {
+  border-color: var(--color-ember-orange);
+  color: var(--color-ember-orange);
+}
+.sb-new-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  line-height: 1;
+}
+.sb-new-item:hover .sb-new-plus { color: var(--color-ember-orange); }
 
 #sidebar-list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 4px 0 12px;
 }
 .sb-item {
   position: relative;
-  padding: 8px 14px;
-  border-left: 2px solid transparent;
+  padding: 10px 20px;
   cursor: pointer;
   user-select: none;
+  transition: background-color 0.2s ease;
 }
-.sb-item:hover { background: var(--ui); }
-.sb-item.active {
-  background: var(--ui);
-  border-left-color: var(--blue);
+.sb-item:hover { background: var(--color-blush-tint); }
+.sb-item.active { background: var(--color-blush-tint); }
+/* Active item gets the reference's signature ember-bullet prefix —
+   the brand mark woven into wayfinding. */
+.sb-item.active::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ember-orange);
 }
 .sb-name {
-  color: var(--tx);
-  font-size: 14px;
+  color: var(--color-graphite-nav);
+  font-family: var(--font-ui);
+  font-size: 15px;
   font-weight: 500;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   padding-right: 24px;
 }
 .sb-meta {
-  color: var(--tx-2);
-  font-size: 11px;
+  color: var(--color-steel);
+  font-family: var(--font-body);
+  font-size: 12px;
   margin-top: 2px;
 }
 .sb-menu-btn {
@@ -143,6 +490,35 @@ body {
 .sb-item:hover .sb-menu-btn,
 .sb-item.active .sb-menu-btn { opacity: 1; }
 .sb-menu-btn:hover { background: var(--ui-2); color: var(--tx); }
+/* Extend the 22px visible glyph to a 36px tap target. Doesn't reach 40px
+   because that would overlap the row's click target on the left; this is
+   as large as it can be without colliding with the row click handler. */
+.sb-menu-btn::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+}
+
+.sb-section {
+  padding: 18px 20px 6px;
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.125em;
+  text-transform: uppercase;
+  color: var(--color-ember-orange);
+}
+.sb-section:first-child { padding-top: 8px; }
+.sb-lock {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 11px;
+  opacity: 0.7;
+}
 
 #sidebar-empty {
   padding: 20px 14px;
@@ -153,7 +529,10 @@ body {
 #sidebar-empty.hidden { display: none; }
 
 
-/* Panel */
+/* Right-side task editing panel — chrome, not canvas. Uses chrome tokens
+   (var(--tx) for text) rather than the per-graph --app-font-color so the
+   editor reads consistently regardless of which graph is open. The
+   per-graph FONT still cascades, but color is decoupled. */
 .panel {
   position: fixed;
   top: 0;
@@ -162,19 +541,19 @@ body {
   min-width: 320px;
   max-width: 95vw;
   height: 100vh;
-  background: var(--bg-2);
-  border-left: 1px solid var(--ui-3);
+  background: var(--color-pure-white);
+  border-left: 1px solid var(--color-mist);
   /* Extra bottom padding clears the floating bottom toolbar so the body
      editor's content never sits behind it. */
-  padding: 20px 20px 80px 20px;
+  padding: 24px 24px 96px 24px;
   overflow-y: auto;
   z-index: 10;
-  transition: transform 0.2s ease;
-  box-shadow: -2px 0 12px rgba(0,0,0,0.4);
+  transition: transform 0.7s cubic-bezier(0.19, 1, 0.22, 1);
+  box-shadow: var(--shadow-md);
   display: flex;
   flex-direction: column;
   font-family: var(--app-font);
-  color: var(--app-font-color);
+  color: var(--color-storm);
 }
 .panel input,
 .panel textarea,
@@ -184,7 +563,7 @@ body {
 .panel .ProseMirror,
 .panel .ProseMirror * {
   font-family: var(--app-font) !important;
-  color: var(--app-font-color) !important;
+  color: var(--tx) !important;
 }
 .panel.hidden { transform: translateX(100%); }
 .panel.resizing { transition: none; user-select: none; }
@@ -200,7 +579,7 @@ body {
 }
 #panel-resize-handle:hover,
 .panel.resizing #panel-resize-handle {
-  background: rgba(67,133,190,0.25);
+  background: color-mix(in srgb, var(--blue) 25%, transparent);
 }
 
 #task-form {
@@ -266,7 +645,15 @@ body {
   gap: 10px;
   margin-bottom: 16px;
 }
-.panel-header h2 { font-size: 18px; color: var(--tx); flex: 1; }
+.panel-header h2 {
+  flex: 1;
+  font-family: var(--font-display);
+  font-size: var(--text-heading-sm);
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--color-midnight-ink);
+}
 .panel-header button {
   background: none;
   border: none;
@@ -358,58 +745,144 @@ button {
 }
 .modal.hidden { display: none; }
 .modal-content {
-  background: var(--bg-2);
-  border: 1px solid var(--ui-3);
-  padding: 24px;
-  border-radius: 8px;
+  background: var(--color-pure-white);
+  border: none;
+  padding: 32px;
+  border-radius: var(--radius-cards);
   min-width: 280px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-md);
 }
-.modal-content h3 { margin-bottom: 8px; color: var(--tx); }
-.modal-content p { margin-bottom: 16px; font-size: 14px; color: var(--tx-2); }
+/* Slow expressive enter per mymind motion — fast-in / slow-out at 0.7s. */
+@keyframes gt-modal-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.modal:not(.hidden) .modal-content {
+  animation: gt-modal-in 0.7s cubic-bezier(0.19, 1, 0.22, 1);
+}
+.modal-content h3 {
+  margin: 0 0 6px;
+  color: var(--color-midnight-ink);
+  font-family: var(--font-display);
+  font-size: var(--text-heading-sm);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+}
+/* Metadata caption — sits at the top-right of the modal, above the heading.
+   Right-aligned and quieter than the heading so the title remains the
+   primary focus. */
+/* Width: fit-content + margin-left: auto pins the block to the right edge
+   while keeping its hit area the size of the text — so hover/click only
+   fires when the cursor is actually over the date, not anywhere along the
+   row. */
+.modal-subtitle {
+  display: block;
+  width: fit-content;
+  margin: 0 0 6px auto;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--color-steel);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+.modal-subtitle:hover { color: var(--color-graphite-nav); }
+.modal-content p {
+  margin: 0 0 16px;
+  font-family: var(--font-body);
+  font-size: var(--text-caption);
+  line-height: 1.55;
+  color: var(--color-storm);
+  text-wrap: pretty;
+}
 .modal-actions { display: flex; gap: 8px; }
+/* Default modal button = Slate Ghost Pill (Cancel / Dismiss / Reset).
+   Reference rule: every button shape is a 100px pill. */
 .modal-actions button {
   flex: 1;
-  padding: 10px;
-  background: var(--ui);
-  color: var(--tx);
-  border: 1px solid var(--ui-3);
+  padding: 10px 22px;
+  background: transparent;
+  color: var(--color-slate);
+  border: 1px solid var(--color-slate);
+  border-radius: var(--radius-buttons);
+  font-family: var(--font-label);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.053em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
 }
-.modal-actions button:hover { background: var(--ui-2); }
-#edge-cancel { background: transparent; color: var(--tx-2); }
-#edge-cancel:hover { color: var(--tx); }
+.modal-actions button:hover {
+  color: var(--color-graphite-nav);
+  border-color: var(--color-graphite-nav);
+}
+#edge-cancel { border-color: transparent; }
+#edge-cancel:hover { border-color: var(--color-mist); }
 
 /* Form-style modal (graph edit) */
-.modal-content-form { min-width: 360px; max-width: 90vw; }
-.modal-field { display: block; margin-bottom: 14px; }
-.modal-field span {
-  display: block;
-  font-size: 12px;
-  color: var(--tx-2);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.modal-content-form {
+  min-width: 360px;
+  max-width: 520px;
+  width: 100%;
+  box-sizing: border-box;
 }
+.modal-field { display: block; margin-bottom: 28px; }
+/* Section eyebrow — Nunito-SemiBold uppercase ember tracked +0.125em.
+   The design uses ember eyebrows sparingly (one per section, as visual
+   punctuation). Only fields whose meaning isn't self-evident from a
+   placeholder or from the controls themselves get one. Generous bottom
+   margin signals "this label belongs to the block below, not the row
+   immediately under it." */
+.modal-field > span:first-child {
+  display: block;
+  margin-bottom: 14px;
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-ember-orange);
+  text-transform: uppercase;
+  letter-spacing: 0.125em;
+}
+/* "Flush" fields skip the eyebrow entirely — placeholder/control
+   communicates the purpose. Used for Name, Description, share row. */
+.modal-field-flush { margin-bottom: 12px; }
 .modal-field input,
 .modal-field textarea {
   width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--ui-3);
-  border-radius: 4px;
-  color: var(--tx);
-  font: inherit;
-  font-size: 14px;
-  padding: 8px 10px;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cardsalt);
+  color: var(--color-graphite-nav);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  padding: 10px 14px;
   outline: none;
   resize: vertical;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
+.modal-field input::placeholder,
+.modal-field textarea::placeholder { color: var(--color-ash); }
+/* Cobalt focus — the only chromatic non-orange interactive color. */
 .modal-field input:focus,
-.modal-field textarea:focus { border-color: var(--blue); }
+.modal-field textarea:focus {
+  border-color: var(--color-cobalt-link);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
+}
 .modal-readonly {
   font-size: 13px;
   color: var(--tx-2);
   font-variant-numeric: tabular-nums;
 }
+/* Dynamic / monospace-ish strings get tabular numerals so digits don't
+   reflow as values change (relative times, share URL). */
+.sb-meta,
+#graph-modal-url { font-variant-numeric: tabular-nums; }
+.share-hint, .modal-body-text,
+.settings-heading p { text-wrap: pretty; }
 .modal-error {
   margin: 0 0 12px;
   font-size: 13px;
@@ -417,65 +890,369 @@ button {
 }
 .modal-error.hidden { display: none; }
 
-.modal-actions-split { justify-content: space-between; }
-.modal-actions-split button { flex: 0 0 auto; min-width: 96px; }
-.modal-actions button.primary {
-  background: var(--blue);
-  border-color: var(--blue);
-  color: var(--bg);
+/* Inline-editable heading. The h3 carries the modal's title styling already;
+   we add a hover/focus background to signal "click to edit" and a placeholder
+   for the empty state. Tab/Enter blur to commit (handled in JS).
+   margin-left == -padding-left so the hover background extends symmetrically
+   around the text without offsetting the text from the modal's left edge. */
+.editable-heading {
+  outline: none;
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  cursor: text;
+  transition: background-color 0.15s ease;
+  word-break: break-word;
 }
-.modal-actions button.primary:hover { filter: brightness(1.1); }
+.editable-heading:hover { background: var(--color-blush-tint); }
+.editable-heading:focus { background: var(--color-blush-tint); }
+.editable-heading:empty::before {
+  content: attr(data-placeholder);
+  color: var(--color-ash);
+  pointer-events: none;
+}
+
+/* Centered action group — primary on the right, danger to its left,
+   both grouped at the modal's center axis. The reference uses centered
+   primary actions (the Outlined Ember pill is the brand "moment"). */
+.modal-actions-center {
+  justify-content: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+.modal-actions-center button { flex: 0 0 auto; min-width: 110px; }
+
+/* Legacy split layout — kept for any modal that hasn't migrated yet. */
+.modal-actions-split { justify-content: flex-end; }
+.modal-actions-split button { flex: 0 0 auto; min-width: 88px; }
+.modal-actions-split .danger { margin-right: 8px; }
+/* Primary CTA — Green Outlined Pill (constructive: Save / Confirm). */
+.modal-actions button.primary {
+  background: transparent;
+  border-color: var(--green-strong);
+  color: var(--green-strong);
+}
+.modal-actions button.primary:hover {
+  background: color-mix(in srgb, var(--green-strong) 10%, transparent);
+  color: var(--green-strong);
+  border-color: var(--green-strong);
+}
+/* Danger — Red Outlined Pill (destructive: Delete / Rotate). */
 .modal-actions button.danger {
   background: transparent;
   border-color: var(--red);
   color: var(--red);
 }
-.modal-actions button.danger:hover { background: rgba(209, 77, 65, 0.15); }
+.modal-actions button.danger:hover {
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: var(--red);
+  border-color: var(--red);
+}
 
-/* Sharing row inside the graph-edit modal */
-.share-row { display: flex; gap: 6px; }
+/* Sharing row inside the graph-edit modal — input is text-only, side
+   buttons take the small Slate Ghost Pill treatment. */
+.share-row { display: flex; gap: 8px; }
 .share-row input {
   flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--ui-3);
-  border-radius: 4px;
-  color: var(--tx-2);
-  font: inherit;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cardsalt);
+  color: var(--color-cobalt-link); /* the URL is a link, hence cobalt */
+  font-family: var(--font-ui);
   font-size: 13px;
-  padding: 8px 10px;
+  padding: 9px 14px;
   outline: none;
 }
-.share-row input:focus { border-color: var(--ui-3); color: var(--tx); }
+.share-row input:focus { border-color: var(--color-cobalt-link); }
+/* Bare icon buttons — no enclosing pill. The icon glyph alone is the
+   affordance; hover darkens the color from slate to graphite. */
 .share-row button {
-  background: var(--ui);
-  color: var(--tx);
-  border: 1px solid var(--ui-3);
-  border-radius: 4px;
-  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--color-slate);
+  border: none;
+  padding: 0 6px;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.share-row button .ph {
+  font-size: 18px;
+  line-height: 1;
+}
+.share-row button:hover {
+  color: var(--color-graphite-nav);
+}
+.share-hint {
+  margin: 10px 0 0;
+  font-family: var(--font-body);
   font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-steel);
+}
+.visibility-row {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  color: var(--color-graphite-nav);
+}
+.visibility-hint {
+  color: var(--color-steel);
+  font-size: 13px;
+  margin-left: 2px;
+}
+.visibility-row input[type="checkbox"],
+.suppress-row input[type="checkbox"] {
+  /* Reset to a custom box — the OS-default checkbox renders large on macOS
+     even when width/height is set, because the system style ignores it.
+     padding + font-size resets are critical: this checkbox is inside
+     `.modal-field` whose `input` selector applies 10px 14px padding +
+     15px font-size, which would otherwise inflate the box to ~28x20px. */
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
+  margin: 0;
+  cursor: pointer;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  position: relative;
+  transition-property: background-color, border-color, box-shadow;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+.visibility-row input[type="checkbox"]:hover,
+.suppress-row input[type="checkbox"]:hover { border-color: var(--tx-3); }
+.visibility-row input[type="checkbox"]:checked,
+.suppress-row input[type="checkbox"]:checked {
+  /* Cobalt is the only "filled" interactive color in the system —
+     ember stays outline-only. */
+  background: var(--color-cobalt-link);
+  border-color: var(--color-cobalt-link);
+}
+.visibility-row input[type="checkbox"]:checked::after,
+.suppress-row input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'><path d='M6.4 11.2L2.6 7.4 4 6l2.4 2.4L11.6 3.2 13 4.6z'/></svg>") center / 8px 8px no-repeat;
+}
+/* Extend the 12px visible box to a ~24px hit area without affecting layout. */
+.visibility-row input[type="checkbox"]::before,
+.suppress-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.appearance-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.appearance-label {
+  flex: 0 0 100px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-storm);
+  /* Override .modal-field > span:first-child uppercase + ember */
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0;
+}
+.appearance-input {
+  flex: 1;
+  height: 34px;
+  padding: 0 12px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  background: var(--color-pure-white);
+  color: var(--color-graphite-nav);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cardsalt);
+  min-width: 0;
+  box-sizing: border-box;
+}
+input.appearance-input[type="color"] {
+  flex: 0 0 56px;
+  width: 56px;
+  padding: 2px;
   cursor: pointer;
 }
-.share-row button:hover { background: var(--ui-2); }
-.share-hint {
-  margin: 6px 0 0;
+
+/* Custom font picker — native <select> popups ignore per-option font-family
+   on macOS, so we replace the select with a controlled trigger + menu we
+   can fully style. Trigger reads as a bare label + chevron (no enclosing
+   container) to match the original minimal aesthetic. */
+.font-picker {
+  position: relative;
+  display: inline-block;
+}
+.font-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--color-graphite-nav);
+  cursor: pointer;
+  outline: none;
+  transition: color 0.2s ease;
+}
+.font-picker-trigger:hover { color: var(--color-midnight-ink); }
+.font-picker-trigger:focus-visible {
+  box-shadow: inset 0 -1px 0 0 var(--color-cobalt-link);
+}
+.font-picker-value {
+  /* Inline font-family is set by JS to mirror the chosen option's font. */
+  font-family: inherit;
+}
+.font-picker-caret {
+  display: inline-flex;
+  color: var(--color-steel);
+  line-height: 0;
+}
+.font-picker-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 160px;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cards);
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.font-picker-menu.hidden { display: none; }
+.font-picker-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--color-graphite-nav);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.font-picker-option:hover { background: var(--color-blush-tint); }
+.font-picker-option.active {
+  background: var(--color-blush-tint);
+  color: var(--color-ember-orange);
+}
+
+/* Two-column appearance row: Text swatches + Background swatches side-by-side. */
+.appearance-color-row {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+.appearance-color-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.appearance-color-group .appearance-label { flex: 0 0 auto; }
+/* Gap leaves 8px clearance between an active swatch's 2px outset ring and
+   its neighbor's border (gap 10 - 2 = 8px). */
+.appearance-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 10px;
+}
+.appearance-swatches .color-swatch {
+  /* Explicit display + aspect-ratio + padding: 0 to defeat any inherited
+     button vertical-padding / line-height that would render the box as a
+     rectangle instead of a true 22x22 square. */
+  display: block;
+  width: 22px;
+  height: 22px;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  background-clip: padding-box;
+}
+.appearance-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--color-slate);
+  color: var(--color-slate);
+  border-radius: var(--radius-buttons);
+  padding: 5px 14px;
+  font-family: var(--font-label);
   font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.053em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.appearance-clear:hover {
+  color: var(--color-graphite-nav);
+  border-color: var(--color-graphite-nav);
+}
+.modal-body-text {
+  margin: 0 0 18px;
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--color-storm);
+}
+.suppress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin: 0 0 16px;
+  font-size: 13px;
   color: var(--tx-2);
+}
+.suppress-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Bottom toolbar */
 #bottom-bar.hidden { display: none; }
 #bottom-bar {
   position: fixed;
-  bottom: 16px;
+  bottom: 24px;
   left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2);
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  background: var(--bg-2);
-  border: 1px solid var(--ui-3);
-  border-radius: 10px;
-  padding: 4px 8px;
-  box-shadow: 0 2px 16px rgba(0,0,0,0.4);
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-buttons);
+  padding: 6px 12px;
+  box-shadow: var(--shadow-sm);
   z-index: 10;
 }
 
@@ -488,21 +1265,22 @@ button {
 
 .tb-divider {
   width: 1px;
-  height: 20px;
-  background: var(--ui-3);
-  margin: 0 6px;
+  height: 16px;
+  background: var(--color-mist);
+  margin: 0 8px;
 }
 
 .tb-hint,
 .tb-count,
 .tb-direction,
 .tb-direction-controls {
+  font-family: var(--font-body);
   font-size: 12px;
-  color: var(--tx-3);
+  color: var(--color-steel);
   padding: 0 6px;
   white-space: nowrap;
 }
-.tb-direction { color: var(--tx-2); font-variant-numeric: tabular-nums; }
+.tb-direction { color: var(--color-storm); font-variant-numeric: tabular-nums; }
 .tb-direction-controls {
   display: inline-flex;
   align-items: center;
@@ -541,47 +1319,47 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  padding: 6px 12px;
   background: transparent;
-  color: var(--tx-2);
-  border: none;
-  border-radius: 6px;
-  font-size: 12px;
+  color: var(--color-storm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-buttons);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 .tool-btn:hover {
-  background: var(--ui);
-  color: var(--tx);
+  background: var(--color-blush-tint);
+  color: var(--color-graphite-nav);
 }
+/* Active state = ember outlined chip — the toolbar's primary moment. */
 .tool-btn.active {
-  background: rgba(67,133,190,0.15);
-  color: var(--blue);
+  background: transparent;
+  color: var(--color-ember-orange);
+  border-color: var(--color-ember-orange);
 }
-.tool-btn svg {
-  flex-shrink: 0;
-}
+.tool-btn svg { flex-shrink: 0; }
 
 .color-palette {
   position: fixed;
   display: grid;
   grid-template-columns: repeat(5, 28px);
   gap: 12px;
-  padding: 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--ui-3);
-  border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.48);
+  padding: 16px;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cards);
+  box-shadow: var(--shadow-md);
   z-index: 24;
 }
-.color-palette.hidden {
-  display: none;
-}
+.color-palette.hidden { display: none; }
 .color-swatch {
   width: 28px;
   height: 28px;
   aspect-ratio: 1;
-  border: 1.5px solid var(--ui-3);
+  border: 1px solid var(--color-mist);
   border-radius: 4px;
   cursor: pointer;
   outline: none;
@@ -589,7 +1367,7 @@ button {
 .color-swatch:hover,
 .color-swatch:focus-visible,
 .color-swatch.active {
-  box-shadow: 0 0 0 1.5px var(--tx);
+  box-shadow: 0 0 0 2px var(--color-graphite-nav);
 }
 
 /* Settings overlay (Cmd+K) */
@@ -607,21 +1385,42 @@ button {
 .settings-card {
   width: 420px;
   max-width: calc(100vw - 32px);
-  background: var(--bg-2);
-  border: 1px solid var(--ui-3);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cards);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
+}
+.settings-heading {
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid var(--color-mist);
+}
+.settings-heading h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--color-midnight-ink);
+}
+.settings-heading p {
+  margin: 6px 0 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-steel);
 }
 .settings-search {
   display: block;
   width: 100%;
-  padding: 12px 14px;
+  padding: 14px 18px;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--ui-3);
-  color: var(--tx);
-  font-size: 14px;
+  border-bottom: 1px solid var(--color-mist);
+  color: var(--color-graphite-nav);
+  font-family: var(--font-body);
+  font-size: 15px;
   outline: none;
 }
 .settings-search::placeholder { color: var(--tx-3); }
@@ -635,18 +1434,19 @@ button {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 14px;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: var(--tx);
-  font-size: 13px;
+  border-radius: 8px;
+  color: var(--color-graphite-nav);
+  font-family: var(--font-ui);
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
 }
 .settings-item + .settings-item { margin-top: 2px; }
-.settings-item:hover { background: var(--ui); }
-.settings-item.active { background: var(--ui-2); }
+.settings-item:hover { background: var(--color-blush-tint); }
+.settings-item.active { background: var(--color-blush-tint); }
 .settings-color-dot {
   width: 14px;
   height: 14px;
@@ -658,12 +1458,12 @@ button {
 kbd {
   display: inline-flex;
   align-items: center;
-  padding: 1px 5px;
+  padding: 1px 6px;
   font: 11px/1 ui-monospace, 'SF Mono', monospace;
-  color: var(--tx-3);
-  background: var(--ui);
-  border: 1px solid var(--ui-3);
-  border-radius: 3px;
+  color: var(--color-steel);
+  background: var(--color-blush-tint);
+  border: 1px solid var(--color-mist);
+  border-radius: 4px;
   min-height: 16px;
 }
 .tool-btn kbd { margin-left: 2px; }
@@ -718,32 +1518,36 @@ kbd {
   display: none;
 }
 
-/* Cmd+drag selection rubber band */
+/* Cmd+drag selection rubber band — cobalt is the only chromatic
+   non-orange interactive color in the system. */
 .cmd-box {
   position: fixed;
   pointer-events: none;
-  background: rgba(67,133,190,0.12);
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
   border: 1px dashed var(--blue);
   z-index: 8;
 }
 .cmd-box.hidden { display: none; }
 
-/* Hotkey hint toast */
+/* Hotkey hint toast — small floating card. */
 #hotkey-hint {
   position: fixed;
-  top: 16px;
+  top: 18px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--ui);
-  color: var(--tx);
-  border: 1px solid var(--ui-3);
+  background: var(--color-pure-white);
+  color: var(--color-graphite-nav);
+  border: 1px solid var(--color-mist);
   padding: 8px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-buttons);
+  font-family: var(--font-ui);
   font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
   z-index: 30;
   pointer-events: none;
-  opacity: 0.95;
-  transition: opacity 0.3s ease;
+  opacity: 1;
+  transition: opacity 0.2s ease;
 }
 #hotkey-hint.hidden {
   opacity: 0;
@@ -765,8 +1569,34 @@ kbd {
 }
 #empty-state.hidden { display: none; }
 #empty-state p {
-  font-size: 18px;
-  color: var(--tx-3);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.02em;
+  color: var(--color-ash);
 }
 
 .hidden { }
+
+/* === Interactive press feedback ===
+   A 0.96 scale on :active gives buttons tactile feedback. 100ms eases
+   on both press and release. Specific properties only (never `all`). */
+.modal-actions button,
+.sb-icon-btn,
+.sb-bottom-btn,
+.sb-menu-btn,
+.tool-btn,
+.appearance-clear,
+.share-row button {
+  transition-property: background-color, color, scale, box-shadow, border-color, opacity;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+.modal-actions button:active,
+.sb-icon-btn:active,
+.sb-bottom-btn:active,
+.sb-menu-btn:active,
+.tool-btn:active,
+.appearance-clear:active,
+.share-row button:active { scale: 0.96; }
