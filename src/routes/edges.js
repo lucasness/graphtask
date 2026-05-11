@@ -1,10 +1,35 @@
 import { Router } from 'express';
 import pool, { withTx } from '../db.js';
 import { requireIntegerParam } from './_validate.js';
+import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 
 const router = Router({ mergeParams: true });
 const validateId = requireIntegerParam('id');
 const VALID_TYPES = ['dependency', 'related'];
+
+// Shape edges use for OCC merge: top-level scalar fields + meta keys
+// flattened to `meta.<key>` so concurrent edits to different meta keys
+// (e.g. one writer touches color, the other touches curve) merge cleanly.
+function flattenEdge(row) {
+  return flattenJsonb(
+    {
+      source_id: row.source_id,
+      target_id: row.target_id,
+      type: row.type,
+      meta: row.meta || {},
+    },
+    'meta',
+  );
+}
+function unflattenEdge(flat) {
+  const out = unflattenJsonb(flat, 'meta');
+  return {
+    source_id: out.source_id,
+    target_id: out.target_id,
+    type: out.type,
+    meta: out.meta || {},
+  };
+}
 const MAX_CURVE = 500;
 const MIN_WEIGHT = 0.10;
 const MAX_WEIGHT = 0.90;
@@ -113,9 +138,9 @@ router.post('/', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO edges (graph_id, source_id, target_id, type, meta)
-         VALUES ($1, $2, $3, $4::edge_type, $5) RETURNING *`,
-        [gid, source_id, target_id, type, JSON.stringify(normalizedMeta.meta)]
+        `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by)
+         VALUES ($1, $2, $3, $4::edge_type, $5, $6) RETURNING *`,
+        [gid, source_id, target_id, type, JSON.stringify(normalizedMeta.meta), req.writerType]
       );
       return result.rows[0];
     });
@@ -188,9 +213,9 @@ router.post('/bulk', async (req, res) => {
         const e = normalized[i];
         try {
           const r = await client.query(
-            `INSERT INTO edges (graph_id, source_id, target_id, type, meta)
-             VALUES ($1, $2, $3, $4::edge_type, $5) RETURNING *`,
-            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta)]
+            `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by)
+             VALUES ($1, $2, $3, $4::edge_type, $5, $6) RETURNING *`,
+            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta), req.writerType]
           );
           inserted.push(r.rows[0]);
         } catch (err) {
@@ -255,7 +280,7 @@ router.get('/', async (req, res) => {
 
 router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const { source_id, target_id, type } = req.body;
+  const { source_id, target_id, type, base_version, base_row } = req.body;
 
   if (type !== undefined && !VALID_TYPES.includes(type))
     return res.status(400).json({ error: 'type must be dependency or related' });
@@ -264,20 +289,55 @@ router.patch('/:id', validateId, async (req, res) => {
     'SELECT * FROM edges WHERE id = $1 AND graph_id = $2',
     [id, gid]
   );
-  if (current.rows.length === 0) return res.status(404).json({ error: 'not found' });
+  if (current.rows.length === 0) return res.status(410).json({ error: 'edge no longer exists' });
   const existing = current.rows[0];
 
-  const newSource = source_id !== undefined ? source_id : existing.source_id;
-  const newTarget = target_id !== undefined ? target_id : existing.target_id;
-  const newType = type !== undefined ? type : existing.type;
-  let newMeta = existing.meta || {};
+  // The writer's "base view" — the row state they think they're editing
+  // against. Used both as the diff base for the merge and as the source of
+  // truth for fields the writer didn't mention in this PATCH. Falls back to
+  // the current row when the client hasn't opted in to OCC.
+  const base = base_row || existing;
+
+  // Build the writer's intended full row: their base view with the partial
+  // changes applied. Meta is a shallow merge so writers can patch individual
+  // keys (color, curve) without overwriting the rest.
+  let writerMeta = { ...(base.meta || {}) };
   if (req.body.meta !== undefined) {
     const normalizedMeta = normalizeMeta(req.body.meta);
     if (normalizedMeta.error) return res.status(400).json({ error: normalizedMeta.error });
-    newMeta = { ...newMeta, ...normalizedMeta.meta };
-    if (req.body.meta.curve === null) delete newMeta.curve;
-    if (req.body.meta.color === null) delete newMeta.color;
+    writerMeta = { ...writerMeta, ...normalizedMeta.meta };
+    if (req.body.meta.curve === null) delete writerMeta.curve;
+    if (req.body.meta.color === null) delete writerMeta.color;
   }
+  const writerRow = {
+    source_id: source_id !== undefined ? source_id : base.source_id,
+    target_id: target_id !== undefined ? target_id : base.target_id,
+    type: type !== undefined ? type : base.type,
+    meta: writerMeta,
+  };
+
+  // Three-way merge runs only when the client opted in (sent base_row +
+  // base_version) AND a concurrent write has happened. Without those, fall
+  // back to the writer's row directly (backward compat for older clients
+  // and for paths that don't carry OCC fields yet).
+  let finalRow;
+  if (base_row && base_version !== undefined && base_version !== existing.version) {
+    const { merged } = mergeFields(
+      flattenEdge(base),
+      flattenEdge(writerRow),
+      flattenEdge(existing),
+      req.writerType,
+      existing.last_modified_by,
+    );
+    finalRow = unflattenEdge(merged);
+  } else {
+    finalRow = writerRow;
+  }
+
+  const newSource = finalRow.source_id;
+  const newTarget = finalRow.target_id;
+  const newType = finalRow.type;
+  const newMeta = finalRow.meta;
 
   if (newSource === newTarget)
     return res.status(400).json({ error: 'source and target must be different' });
@@ -305,9 +365,16 @@ router.patch('/:id', validateId, async (req, res) => {
       }
 
       const result = await client.query(
-        `UPDATE edges SET source_id = $1, target_id = $2, type = $3::edge_type, meta = $4
-         WHERE id = $5 AND graph_id = $6 RETURNING *`,
-        [newSource, newTarget, newType, JSON.stringify(newMeta), id, gid]
+        `UPDATE edges
+            SET source_id = $1,
+                target_id = $2,
+                type = $3::edge_type,
+                meta = $4,
+                version = version + 1,
+                last_modified_by = $5
+          WHERE id = $6 AND graph_id = $7
+        RETURNING *`,
+        [newSource, newTarget, newType, JSON.stringify(newMeta), req.writerType, id, gid]
       );
       return result.rows[0];
     });

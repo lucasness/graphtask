@@ -2,6 +2,15 @@ let cy;
 let editingTaskId = null;
 let richEditor = null;
 
+// Identifies this client as a human writer for server-side conflict
+// resolution (see src/writerType.js + docs/optimistic-concurrency.md).
+// Sent on every write request so a concurrent agent edit can't silently
+// overwrite a human's same-field change.
+const WRITE_HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Writer-Type': 'human',
+};
+
 // --- Active graph (multi-graph support) ---
 let activeGraphId = null;
 // The full row for the active graph (name, description, is_public, settings,
@@ -250,6 +259,7 @@ function updateGraphNode(task) {
   node.data('status', meta.status || 'todo');
   node.data('color', meta.color || DEFAULT_NODE_COLOR);
   node.data('meta', meta);
+  if (typeof task.version === 'number') node.data('version', task.version);
 }
 
 function addGraphNode(task) {
@@ -265,6 +275,7 @@ function addGraphNode(task) {
       status: meta.status || 'todo',
       color: meta.color || DEFAULT_NODE_COLOR,
       meta,
+      version: typeof task.version === 'number' ? task.version : 0,
     },
   });
 }
@@ -283,6 +294,7 @@ function addGraphEdge(edge) {
       curveDistance: getEdgeCurveData({ meta }).distance,
       curveWeight: getEdgeCurveData({ meta }).weight,
       meta,
+      version: typeof edge.version === 'number' ? edge.version : 0,
     },
   });
 }
@@ -304,6 +316,7 @@ async function fetchGraph() {
         status: node.status || 'todo',
         color: (node.meta && node.meta.color) || DEFAULT_NODE_COLOR,
         meta: node.meta || {},
+        version: typeof node.version === 'number' ? node.version : 0,
       },
     });
   }
@@ -320,6 +333,7 @@ async function fetchGraph() {
         curveDistance: getEdgeCurveData(link).distance,
         curveWeight: getEdgeCurveData(link).weight,
         meta: link.meta || {},
+        version: typeof link.version === 'number' ? link.version : 0,
       },
     });
   }
@@ -622,7 +636,7 @@ function setSettingTheme(theme) {
 
 // Toast UI Editor instance — built once at startup, recreated on theme switch.
 function createRichEditor() {
-  return new toastui.Editor({
+  const editor = new toastui.Editor({
     el: document.getElementById('rich-editor'),
     height: '100%',
     initialEditType: 'wysiwyg',
@@ -636,6 +650,30 @@ function createRichEditor() {
       ['ul', 'ol'],
     ],
   });
+  // Toast UI only adds `.active` to toolbar buttons when the cursor sits
+  // inside text that already carries the mark. It doesn't reflect
+  // "armed" state — when you click Bold without a selection, ProseMirror
+  // records bold in `storedMarks` (apply to next char), but the toolbar
+  // stays visually idle. Sync the class ourselves from the underlying
+  // ProseMirror state so the visual cue reflects what will happen if the
+  // user starts typing.
+  editor.on('caretChange', () => syncToolbarActiveMarks(editor));
+  return editor;
+}
+function syncToolbarActiveMarks(editor) {
+  const inner = editor.getCurrentModeEditor && editor.getCurrentModeEditor();
+  if (!inner || !inner.view) return;
+  const state = inner.view.state;
+  const marks = state.storedMarks || state.selection.$from.marks();
+  const names = new Set(marks.map((m) => m.type.name));
+  const tb = document.querySelector('.toastui-editor-defaultUI-toolbar');
+  if (!tb) return;
+  const toggle = (cls, on) => {
+    const btn = tb.querySelector(`.${cls}.toastui-editor-toolbar-icons`);
+    if (btn) btn.classList.toggle('active', on);
+  };
+  toggle('bold', names.has('strong'));
+  toggle('italic', names.has('emph') || names.has('em'));
 }
 
 function recreateRichEditorForTheme() {
@@ -916,21 +954,30 @@ async function persistNodeColor(node, color) {
   if (!taskId) return;
 
   let content;
+  let base = null;
   if (String(editingTaskId) === String(taskId)) {
     const titleVal = document.getElementById('field-title').value.trim();
     if (!titleVal) throw new Error('Title required');
     const statusVal = document.getElementById('field-status').value;
     content = buildContent({ ...panelLoadedMeta, title: titleVal, status: statusVal, color }, readEditorBody());
+    if (panelLoadedVersion !== null && panelLoadedContent !== null) {
+      base = { version: panelLoadedVersion, content: panelLoadedContent };
+    }
   } else {
     const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
     if (!taskRes.ok) throw new Error('load failed');
     const task = await taskRes.json();
     const parsed = parseFrontmatter(task.content);
     content = buildContent({ ...(parsed.meta || {}), color }, parsed.body);
+    base = task;
   }
 
-  const res = await updateTask(taskId, content);
+  const res = await updateTask(taskId, content, base);
   if (!res.ok) {
+    if (handleConflictStatus(res, 'task')) {
+      await fetchGraph();
+      return;
+    }
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Could not update color');
   }
@@ -938,6 +985,8 @@ async function persistNodeColor(node, color) {
   updateGraphNode(saved);
   if (String(editingTaskId) === String(taskId)) {
     panelLoadedMeta = { ...panelLoadedMeta, color };
+    panelLoadedVersion = saved.version ?? panelLoadedVersion;
+    panelLoadedContent = saved.content ?? panelLoadedContent;
     lastSavedContent = content;
   }
 }
@@ -952,6 +1001,7 @@ async function persistEdgeColor(edge, color) {
   const meta = saved.meta || {};
   edge.data('meta', meta);
   edge.data('color', meta.color || DEFAULT_EDGE_COLOR);
+  if (typeof saved.version === 'number') edge.data('version', saved.version);
 }
 
 async function applySelectionColor(color) {
@@ -1191,8 +1241,14 @@ function handleSettingsKey(e) {
 
 // --- Panel ---
 let panelLoadedMeta = {};
+// Base for OCC three-way merge on PATCH: the version + content the panel
+// last loaded from the server. Sent as `base_version` / `base_content` so
+// the server can reconcile a concurrent edit instead of clobbering it.
+// Refreshed on every load and after every successful save.
+let panelLoadedVersion = null;
+let panelLoadedContent = null;
 
-function loadIntoEditor(content) {
+function loadIntoEditor(content, task = null) {
   // richEditor.setMarkdown below fires a synthetic 'change' event, which
   // would normally schedule a save. That save would PATCH the task with
   // editor-roundtripped content (lossy whitespace), which fires a fresh
@@ -1202,6 +1258,8 @@ function loadIntoEditor(content) {
   _editorSaveSuppressedUntil = Date.now() + 200;
   const { meta, body } = parseFrontmatter(content);
   panelLoadedMeta = meta;
+  panelLoadedVersion = task && typeof task.version === 'number' ? task.version : null;
+  panelLoadedContent = task && typeof task.content === 'string' ? task.content : null;
   document.getElementById('field-title').value = meta.title || '';
   document.getElementById('field-status').value = meta.status || 'todo';
   document.getElementById('raw-editor').value = body;
@@ -1289,11 +1347,10 @@ function showPanel(task) {
     title.textContent = 'Edit Task';
     fetch(`${apiBase()}/tasks/${editingTaskId}`)
       .then((r) => r.json())
-      .then((full) => { loadIntoEditor(full.content); });
+      .then((full) => { loadIntoEditor(full.content, full); });
   } else {
     title.textContent = 'New Task';
     loadIntoEditor('---\ntitle: \nstatus: todo\n---\n');
-    if (status) { status.textContent = 'Add a title to create'; status.dataset.kind = 'hint'; }
   }
 
   setEditorMode('rich');
@@ -1466,7 +1523,7 @@ async function startEditingNode(node) {
   try {
     const res = await fetch(`${apiBase()}/tasks/${editingTaskId}`);
     const full = await res.json();
-    loadIntoEditor(full.content);
+    loadIntoEditor(full.content, full);
   } catch (err) {
     console.error('Failed to load task for editing:', err);
     return;
@@ -1510,8 +1567,8 @@ async function createNodeAt(pos, options = {}) {
   document.getElementById('panel-title').textContent = 'New Task';
   const status = document.getElementById('save-status');
   if (status) {
-    status.textContent = 'Add a title to create';
-    status.dataset.kind = 'hint';
+    status.textContent = '';
+    status.dataset.kind = '';
     status.classList.remove('saved-fade');
   }
   loadIntoEditor(`---\ntitle: \nstatus: todo\nx: ${pos.x}\ny: ${pos.y}\n---\n`);
@@ -1833,14 +1890,25 @@ async function commitEdgeTypeEdit() {
   if (edge && !edge.removed()) edge.removeClass('edge-type-editing');
   const rawId = String(edgeId).replace(/^e/, '');
   try {
-    const res = await fetch(`${apiBase()}/edges/${rawId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_id: newSourceId, target_id: newTargetId, type: newType }),
-    });
+    const baseRow = edge && !edge.removed() ? edgeBaseRow(edge) : null;
+    const res = await patchWithRetry(
+      `${apiBase()}/edges/${rawId}`,
+      (base) => {
+        const body = { source_id: newSourceId, target_id: newTargetId, type: newType };
+        if (base) {
+          body.base_row = base;
+          body.base_version = base.version;
+        }
+        return body;
+      },
+      baseRow,
+      'edge',
+    );
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showHint(err.error || 'Could not update edge');
+      if (!handleConflictStatus(res, 'edge')) {
+        const err = await res.json().catch(() => ({}));
+        showHint(err.error || 'Could not update edge');
+      }
       await fetchGraph();
       return;
     }
@@ -1930,6 +1998,7 @@ async function commitStatusEdit() {
 
   try {
     let content;
+    let base = null;
     if (String(editingTaskId) === String(taskId)) {
       const titleVal = document.getElementById('field-title').value.trim();
       if (!titleVal) {
@@ -1940,6 +2009,9 @@ async function commitStatusEdit() {
       }
       const meta = { ...panelLoadedMeta, title: titleVal, status: currentStatus };
       content = buildContent(meta, readEditorBody());
+      if (panelLoadedVersion !== null && panelLoadedContent !== null) {
+        base = { version: panelLoadedVersion, content: panelLoadedContent };
+      }
     } else {
       const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
       if (!taskRes.ok) throw new Error('fetch failed');
@@ -1947,12 +2019,15 @@ async function commitStatusEdit() {
       const parsed = parseFrontmatter(task.content);
       const meta = { ...(parsed.meta || {}), status: currentStatus };
       content = buildContent(meta, parsed.body);
+      base = task;
     }
 
-    const res = await updateTask(taskId, content);
+    const res = await updateTask(taskId, content, base);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showHint(err.error || 'Could not update status');
+      if (!handleConflictStatus(res, 'task')) {
+        const err = await res.json().catch(() => ({}));
+        showHint(err.error || 'Could not update status');
+      }
       if (node && !node.removed()) node.data('status', originalStatus);
       await fetchGraph();
       return;
@@ -1963,6 +2038,8 @@ async function commitStatusEdit() {
       const statusField = document.getElementById('field-status');
       statusField.value = currentStatus;
       panelLoadedMeta = { ...panelLoadedMeta, status: currentStatus };
+      panelLoadedVersion = saved.version ?? panelLoadedVersion;
+      panelLoadedContent = saved.content ?? panelLoadedContent;
       lastSavedContent = content;
     }
     showHint(`Status: ${STATUS_LABELS[currentStatus]}`);
@@ -2003,20 +2080,99 @@ function createNodeAtCenter() {
   createNodeAt({ x: (screenX - pan.x) / z, y: (screenY - pan.y) / z });
 }
 
+// Map a non-OK write response to a user-facing toast for the two OCC
+// outcomes the server can return: 409 version_conflict (concurrent write
+// occurred and the server couldn't auto-merge) and 410 Gone (row was
+// deleted while we were editing). Returns true if the status was handled
+// here, false to let the caller fall back to a generic failure message.
+// Callers should refetch graph state after a true return.
+function handleConflictStatus(res, label = 'item') {
+  if (res.status === 410) {
+    showHint(`This ${label} was deleted elsewhere`);
+    return true;
+  }
+  if (res.status === 409) {
+    showHint(`${label} changed elsewhere — refreshing`);
+    return true;
+  }
+  return false;
+}
+
+// Snapshot helpers — produce the `base_row` the server uses to do a
+// three-way merge against concurrent writes. Values come from local state
+// (cytoscape data for edges, currentGraph / the closure's `graph` for
+// graphs) so they reflect what the user was looking at when they made
+// the edit.
+function edgeBaseRow(edge) {
+  if (!edge || edge.removed()) return null;
+  const v = edge.data('version');
+  return {
+    source_id: parseInt(edge.data('source'), 10),
+    target_id: parseInt(edge.data('target'), 10),
+    type: edge.data('edgeType'),
+    meta: edge.data('meta') || {},
+    version: typeof v === 'number' ? v : 0,
+  };
+}
+function graphBaseRow(graph) {
+  if (!graph) return null;
+  return {
+    name: graph.name,
+    description: graph.description ?? null,
+    is_public: !!graph.is_public,
+    settings: graph.settings || {},
+    version: typeof graph.version === 'number' ? graph.version : 0,
+  };
+}
+
+// Defensive 409 retry: server resolves disjoint cases itself, so this only
+// fires when the merge can't be auto-resolved (e.g. validation fails on the
+// merged result). Retry once with the server-supplied `current` as the new
+// base — if THAT still 409s, surface the toast.
+async function patchWithRetry(url, buildBody, baseRow, label = 'item') {
+  let res = await fetch(url, {
+    method: 'PATCH',
+    headers: WRITE_HEADERS,
+    body: JSON.stringify(buildBody(baseRow)),
+  });
+  if (res.status !== 409) return res;
+  const cloned = res.clone();
+  let body;
+  try { body = await cloned.json(); } catch { return res; }
+  if (body?.error !== 'version_conflict' || !body.current) return res;
+  const freshBase = { ...body.current, version: body.current.version };
+  const retry = await fetch(url, {
+    method: 'PATCH',
+    headers: WRITE_HEADERS,
+    body: JSON.stringify(buildBody(freshBase)),
+  });
+  return retry;
+}
+
 // --- API calls ---
 async function createTask(content) {
   return fetch(`${apiBase()}/tasks`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: WRITE_HEADERS,
     body: JSON.stringify({ content }),
   });
 }
 
-async function updateTask(id, content) {
+// `base` is { version, content } from the most recent server read of this
+// task. When supplied, the server can three-way merge a concurrent edit
+// instead of clobbering it. Omitted on writes that don't have a base
+// available (e.g. first PATCH after a fresh-page race) — the server falls
+// back to last-write-wins for those.
+async function updateTask(id, content, base = null) {
+  const body = { content };
+  if (base && typeof base.version === 'number' && typeof base.content === 'string') {
+    body.base_version = base.version;
+    body.base_content = base.content;
+  }
   return fetch(`${apiBase()}/tasks/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    headers: WRITE_HEADERS,
+    body: JSON.stringify(body),
   });
 }
 
@@ -2066,7 +2222,7 @@ async function persistNodePosition(node) {
     const task = await taskRes.json();
     const parsed = parseFrontmatter(task.content);
     const content = buildContent({ ...(parsed.meta || {}), x, y }, parsed.body);
-    const updateRes = await updateTask(taskId, content);
+    const updateRes = await updateTask(taskId, content, task);
     if (!updateRes.ok) throw new Error('save failed');
     const saved = await updateRes.json();
     updateGraphNode(saved);
@@ -2085,18 +2241,28 @@ async function deleteTask(id) {
 async function createEdge(source_id, target_id, type) {
   return fetch(`${apiBase()}/edges`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: WRITE_HEADERS,
     body: JSON.stringify({ source_id, target_id, type }),
   });
 }
 
 async function updateEdgeMeta(edge, metaPatch) {
   const rawId = String(edge.id()).replace(/^e/, '');
-  return fetch(`${apiBase()}/edges/${rawId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ meta: metaPatch }),
-  });
+  const url = `${apiBase()}/edges/${rawId}`;
+  const baseRow = edgeBaseRow(edge);
+  return patchWithRetry(
+    url,
+    (base) => {
+      const body = { meta: metaPatch };
+      if (base) {
+        body.base_row = base;
+        body.base_version = base.version;
+      }
+      return body;
+    },
+    baseRow,
+    'edge',
+  );
 }
 
 // --- Hint toast ---
@@ -2395,6 +2561,7 @@ async function persistEdgeCurve(edge) {
     const next = getEdgeCurveData(saved);
     edge.data('curveDistance', next.distance);
     edge.data('curveWeight', next.weight);
+    if (typeof saved.version === 'number') edge.data('version', saved.version);
     updateCurveHandlePosition();
   } catch {
     showHint('Could not save curve');
@@ -2631,10 +2798,6 @@ function renderSidebar() {
   if (!list) return;
   list.innerHTML = '';
 
-  // The "+ New graph" item is always the first row, directly under the GRAPHS
-  // header — it replaced the old top-right `+` button.
-  list.appendChild(makeNewGraphItem());
-
   const publicGraphs = sidebar.graphs;
   const publicIds = new Set(publicGraphs.map((g) => g.id));
   // Recents section excludes anything already shown in Public.
@@ -2651,22 +2814,6 @@ function renderSidebar() {
   updateEmptyStates();
 }
 
-function makeNewGraphItem() {
-  const item = document.createElement('div');
-  item.className = 'sb-item sb-new-item';
-  item.title = 'Create a new graph';
-  const plus = document.createElement('span');
-  plus.className = 'sb-new-plus';
-  plus.textContent = '+';
-  item.appendChild(plus);
-  const label = document.createElement('span');
-  label.className = 'sb-new-label';
-  label.textContent = 'New graph';
-  item.appendChild(label);
-  item.addEventListener('click', () => { createGraphFromUI(); });
-  return item;
-}
-
 function makeSectionHeader(text) {
   const h = document.createElement('div');
   h.className = 'sb-section';
@@ -2680,17 +2827,14 @@ function makeSidebarItem(graphLike, { source }) {
   item.dataset.graphId = String(graphLike.id);
   if (graphLike.description) item.title = graphLike.description;
 
+  // Status dot in the left gutter, on the title row. Orange when this is the
+  // active graph, grey otherwise (orange comes from the .active class).
+  const dot = document.createElement('span');
+  dot.className = 'sb-dot';
+  item.appendChild(dot);
+
   const name = document.createElement('div');
   name.className = 'sb-name';
-  // Lock icon for any row currently known to be private. Recents cache
-  // is_public; the public list never gets one (it only contains is_public=true).
-  if (source === 'recent' && !graphLike.is_public) {
-    const lock = document.createElement('span');
-    lock.className = 'sb-lock';
-    lock.textContent = '🔒';
-    lock.title = 'Private — only people with the URL can see this graph';
-    name.appendChild(lock);
-  }
   name.appendChild(document.createTextNode(graphLike.name));
   item.appendChild(name);
 
@@ -2699,6 +2843,16 @@ function makeSidebarItem(graphLike, { source }) {
   const stamp = graphLike.updated_at || graphLike.last_visited_at;
   meta.textContent = stamp ? relativeTime(stamp) : '';
   item.appendChild(meta);
+
+  // Lock icon for any row currently known to be private. Absolutely positioned
+  // in the row's left gutter so the title and timestamp share the same X.
+  // Recents cache is_public; the public list never gets one.
+  if (source === 'recent' && !graphLike.is_public) {
+    const lock = document.createElement('i');
+    lock.className = 'ph ph-lock-simple sb-lock';
+    lock.title = 'Private — only people with the URL can see this graph';
+    item.appendChild(lock);
+  }
 
   const menuBtn = document.createElement('button');
   menuBtn.className = 'sb-menu-btn';
@@ -2966,18 +3120,32 @@ function openGraphEditModal(graph) {
       return;
     }
     try {
-      const res = await fetch(`/api/graphs/${graph.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: next }),
-      });
+      const baseRow = graphBaseRow(graph);
+      const res = await patchWithRetry(
+        `/api/graphs/${graph.id}`,
+        (base) => {
+          const body = { name: next };
+          if (base) {
+            body.base_row = base;
+            body.base_version = base.version;
+          }
+          return body;
+        },
+        baseRow,
+        'graph',
+      );
       if (!res.ok) {
+        if (handleConflictStatus(res, 'graph')) {
+          await fetchGraphsList();
+          return;
+        }
         const e = await res.json().catch(() => ({}));
         showNameError(e.error || 'Could not save name.');
         return;
       }
       const updated = await res.json();
       graph.name = updated.name;
+      graph.version = updated.version;
       nameInput.textContent = updated.name;
       clearNameError();
       if (graph.id === activeGraphId) currentGraph = updated;
@@ -3075,12 +3243,26 @@ function openGraphEditModal(graph) {
 
     if (Object.keys(body).length === 0) { close(); return; }
     try {
-      const res = await fetch(`/api/graphs/${graph.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const baseRow = graphBaseRow(graph);
+      const res = await patchWithRetry(
+        `/api/graphs/${graph.id}`,
+        (base) => {
+          const out = { ...body };
+          if (base) {
+            out.base_row = base;
+            out.base_version = base.version;
+          }
+          return out;
+        },
+        baseRow,
+        'graph',
+      );
       if (!res.ok) {
+        if (handleConflictStatus(res, 'graph')) {
+          close();
+          await fetchGraphsList();
+          return;
+        }
         const e = await res.json().catch(() => ({}));
         alert(e.error || 'Save failed');
         return;
@@ -3169,7 +3351,7 @@ function ensureActiveGraph() {
       const name = i === 1 ? 'Untitled' : `Untitled ${i}`;
       const res = await fetch('/api/graphs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: WRITE_HEADERS,
         body: JSON.stringify({ name }),
       });
       if (res.ok) { created = await res.json(); break; }
@@ -3312,7 +3494,7 @@ function promptNewGraphName() {
       try {
         const res = await fetch('/api/graphs', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: WRITE_HEADERS,
           body: JSON.stringify({ name: trimmed }),
         });
         if (!res.ok) {
@@ -3420,10 +3602,42 @@ function openGraphEventStream(id) {
 
 async function refreshFromEvent(payload) {
   if (!cy) return;
-  // Don't disturb a pending creation flow — fetchGraph wipes the canvas.
-  if (pendingNode && !pendingNode.removed()) return;
-  // Don't disturb an inline title edit either.
-  if (cy.$('.inline-title-edit').length > 0) return;
+  // Two scenarios are unsafe for a full fetchGraph (which wipes & rebuilds):
+  //   - The creation ghost is on the canvas — its row doesn't exist in the DB
+  //     yet, so a refresh would wipe it.
+  //   - An inline title overlay is bound to a cy node — wiping that node leaves
+  //     the overlay anchored to a removed reference.
+  // In both cases we still want the canvas data for OTHER nodes/edges to stay
+  // in sync with concurrent edits. Fall back to a surgical update for the
+  // single affected element instead of a full refresh.
+  const ghostActive = pendingNode && !pendingNode.removed() && pendingNode.id() === '__pending__';
+  const titleOverlayActive = cy.$('.inline-title-edit').length > 0;
+  if (ghostActive || titleOverlayActive) {
+    if (payload && payload.id != null) {
+      if (payload.kind === 'tasks' && payload.op === 'UPDATE') {
+        try {
+          const r = await fetch(`${apiBase()}/tasks/${payload.id}`);
+          if (r.ok) updateGraphNode(await r.json());
+        } catch {}
+      } else if (payload.kind === 'edges' && payload.op === 'UPDATE') {
+        try {
+          const r = await fetch(`${apiBase()}/edges`);
+          if (r.ok) {
+            const edges = await r.json();
+            const fresh = edges.find((e) => e.id === payload.id);
+            const cyEdge = cy.getElementById(`e${payload.id}`);
+            if (fresh && cyEdge && !cyEdge.empty()) {
+              cyEdge.data('edgeType', fresh.type);
+              cyEdge.data('meta', fresh.meta || {});
+              cyEdge.data('color', (fresh.meta && fresh.meta.color) || DEFAULT_EDGE_COLOR);
+              if (typeof fresh.version === 'number') cyEdge.data('version', fresh.version);
+            }
+          }
+        } catch {}
+      }
+    }
+    return;
+  }
 
   // Capture pre-refresh status so we can tell whether this UPDATE was a
   // status change (flash with status color) vs body-only edit (purple).
@@ -3440,7 +3654,25 @@ async function refreshFromEvent(payload) {
 
   const selectedNodeIds = cy.nodes('.selected').map((n) => n.id());
   const selectedEdgeIds = cy.edges('.selected').map((e) => e.id());
+  // pendingNode's cy reference goes stale after fetchGraph wipes elements;
+  // remember its id so we can re-bind to the new node below.
+  const pendingNodeId =
+    pendingNode && !pendingNode.removed() && pendingNode.id() !== '__pending__'
+      ? pendingNode.id()
+      : null;
   await fetchGraph();
+  if (pendingNodeId) {
+    const refreshed = cy.getElementById(pendingNodeId);
+    if (refreshed && !refreshed.empty()) {
+      pendingNode = refreshed;
+    } else {
+      // The row the panel was editing was deleted elsewhere — close the panel
+      // rather than leave the user staring at a dangling form.
+      pendingNode = null;
+      hidePanel();
+      showHint('This task was deleted elsewhere');
+    }
+  }
   selectedNodeIds.forEach((id) => {
     const n = cy.getElementById(id);
     if (n && !n.empty()) n.addClass('selected');
@@ -3586,6 +3818,7 @@ function cytoscapeStyleDark() {
     { selector: 'node.edge-hover-target', style: { 'border-color': '#ff4700', 'border-width': 2 } },
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
+    { selector: 'node:active, edge:active, core:active', style: { 'overlay-opacity': 0 } },
   ];
 }
 function cytoscapeStyleLight() {
@@ -3648,6 +3881,7 @@ function cytoscapeStyleLight() {
     { selector: 'node.edge-hover-target', style: { 'border-color': '#a45fff', 'border-width': 2 } },
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
+    { selector: 'node:active, edge:active, core:active', style: { 'overlay-opacity': 0 } },
   ];
 }
 function cytoscapeStyle(theme) {
@@ -4145,14 +4379,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const wasNew = !editingTaskId;
+      const base = (panelLoadedVersion !== null && panelLoadedContent !== null)
+        ? { version: panelLoadedVersion, content: panelLoadedContent }
+        : null;
       const res = wasNew
         ? await createTask(content)
-        : await updateTask(editingTaskId, content);
+        : await updateTask(editingTaskId, content, base);
       if (!res.ok) {
+        if (handleConflictStatus(res, 'task')) {
+          showSaveStatus('', '');
+          await fetchGraph();
+          return;
+        }
         showSaveStatus('Save failed', 'error');
         return;
       }
       const saved = await res.json();
+      // Refresh the OCC base so the next edit is anchored to what just landed.
+      if (saved && typeof saved.version === 'number') {
+        panelLoadedVersion = saved.version;
+        panelLoadedContent = saved.content;
+      }
       if (wasNew && saved && saved.id) {
         // Lazy graph just got real content — don't auto-clean it.
         if (_lazyCreatedGraphId === activeGraphId) _lazyCreatedGraphId = null;
@@ -4342,14 +4589,18 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   applySettings();
 
-  // Sidebar wiring. The "+ New graph" item is rendered inside the list by
-  // renderSidebar (see makeNewGraphItem); the header button is now the
-  // collapse control. The bottom-pinned gear opens app-level Defaults.
+  // Sidebar wiring. The "+ New Graph" header button creates graphs; the
+  // collapsed-only `+` button does the same from the skinny strip. The
+  // bottom-pinned gear opens app-level Defaults.
   const collapseBtn = document.getElementById('sidebar-collapse-btn');
   const expandBtn = document.getElementById('sidebar-expand-btn');
+  const newBtn = document.getElementById('sidebar-new-btn');
+  const newBtnCollapsed = document.getElementById('sidebar-new-btn-collapsed');
   const appSettingsBtn = document.getElementById('app-settings-btn');
   if (collapseBtn) collapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
   if (expandBtn) expandBtn.addEventListener('click', () => setSidebarCollapsed(false));
+  if (newBtn) newBtn.addEventListener('click', () => { createGraphFromUI(); });
+  if (newBtnCollapsed) newBtnCollapsed.addEventListener('click', () => { createGraphFromUI(); });
   if (appSettingsBtn) appSettingsBtn.addEventListener('click', () => {
     if (isSidebarCollapsed()) setSidebarCollapsed(false);
     openSettings();

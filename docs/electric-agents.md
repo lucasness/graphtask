@@ -1,5 +1,46 @@
 # Plan — Electric Agents for graphtask
 
+## Status: deferred (2026-05-04)
+
+After investigation we decided **not to migrate to Electric at this time**. The plan below remains a useful blueprint for later. This section records why we deferred.
+
+### What we'd gain
+
+| Claimed win | Honest assessment |
+|---|---|
+| Race-free concurrent human+Claude editing | Real, but small — the same-instant collision is rare for graphtask's profile, and Postgres-level optimistic concurrency solves the lost-update problem with ~100 LOC and no new infra. |
+| Cross-device execution resume | **Not delivered by the migration.** Cross-device *viewing* already works via SSE. Real "resume the agent from another device" needs a server-side Claude runtime, which can write directly to Postgres. The migration is at best a future prerequisite. |
+| Reconnect-from-offset on disconnect | Modest — closing the laptop and re-opening triggers a full state fetch today, which is fine for a notetaking tool. |
+
+### What we'd pay
+
+- Process count goes 2 → 4 (Postgres, Electric Elixir sync service, projection worker, agent runtime).
+- Local dev becomes multi-process orchestration; Docker becomes multi-service compose.
+- Debugging path lengthens: "read row from `tasks`" → "trace event through stream offset, projection state, materialization."
+- Onboarding: Postgres knowledge → Postgres + stream model + projection idempotency + offset tracking.
+- Refactor surface: `src/sse.js`, all routes, `db/schema.sql`, `public/app.js`, plus two new long-lived workers.
+
+### What the current architecture is good at
+
+One server, one DB, one language. State queryable in `psql`. Failure modes are 30 years of well-understood Postgres folklore. `pg_notify` → SSE is dumb but works for one-writer-many-readers.
+
+### Cheaper alternative we are adopting
+
+Postgres-level optimistic concurrency: add a `version` column to `tasks`/`edges`/`graphs`, conditional UPDATE with version check, 409 on conflict, client retries with fresh state. Solves the actual lost-update bug currently latent in `src/routes/tasks.js:117` (full-row replacement on PATCH) without any new infrastructure.
+
+### When to revisit this plan
+
+Reconsider Electric adoption when **any** of these become true:
+
+1. We commit to building a server-side Claude runtime (hosted agent sessions) and want stream-as-truth as its substrate.
+2. Real-time multi-user collaboration (more than one human editing the same graph live) becomes a product requirement.
+3. The lost-update / merge story under OCC starts producing user-visible friction (e.g., frequent 409 retries that hurt UX).
+4. Electric ships a managed runtime that genuinely removes the operational cost we'd otherwise eat.
+
+The technical content below is preserved as the blueprint for that future migration.
+
+---
+
 ## Context
 
 graphtask today: Postgres holds `graphs` / `tasks` / `edges`; row triggers emit `pg_notify('graph_change')`; `src/sse.js` LISTENs and fans out to per-graph SSE subscribers; the browser reconnects via `EventSource`. URL = bearer token (16-char random graph IDs); no auth.

@@ -191,11 +191,11 @@ describe('Graph CRUD', () => {
       expect(res.status).toBe(400);
     });
 
-    it('should 404 on non-existent', async () => {
+    it('should 410 Gone on non-existent', async () => {
       const res = await request(app)
         .patch('/api/graphs/zzzzzzzz')
         .send({ name: 'new' });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(410);
     });
 
     it('should allow renaming to a colliding name', async () => {

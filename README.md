@@ -678,6 +678,31 @@ doesn't cause a round-trip-PATCH echo loop.
   per node process; clients fan out via an in-memory `Map<graphId, Set<Response>>`.
   Connection cap (default 8888 via `SSE_MAX_CONNECTIONS`) sits below the
   per-process fd limit.
+- **Three-way merge for concurrent edits.** Tasks, edges, and graphs each
+  carry a `version` and `last_modified_by` column. PATCH handlers do a
+  field-level merge in `src/merge.js` so two writers (human + agent, or
+  two tabs) touching different fields both land even when one is on a
+  stale base. JSONB columns (`tasks.meta`, `edges.meta`, `graphs.settings`)
+  are one-level flattened so different sub-keys count as disjoint fields.
+  The `X-Writer-Type: human | agent` header drives the policy table —
+  defaults to `human` when missing so an unidentified write never silently
+  wins as an agent:
+
+  | Scenario | Resolution |
+  |---|---|
+  | Two writers, different fields | Silent merge — both edits land. |
+  | Same field, one is human | Human wins, always. |
+  | Same field, both human | Last-write-wins per field. |
+  | Same field, both agent | Last-write-wins per field. |
+  | Delete vs edit | Delete wins. |
+  | Edit on a deleted row | 410 Gone. |
+
+  Client (`public/app.js`) tracks per-row `version`, sends
+  `base_version` + `base_content` (tasks) or `base_row` (edges/graphs) on
+  every PATCH, and `patchWithRetry()` retries once on 409 using the
+  server-supplied `current` as the new base. The 409 path is defensive —
+  the server resolves every documented scenario itself, so it normally
+  returns 200 with the merged row.
 
 ---
 

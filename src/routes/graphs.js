@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import pool from '../db.js';
+import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 
 const router = Router();
 
@@ -72,8 +73,8 @@ router.post('/', async (req, res) => {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const result = await pool.query(
-        'INSERT INTO graphs (name, description) VALUES ($1, $2) RETURNING *',
-        [name.trim(), description ?? null]
+        'INSERT INTO graphs (name, description, last_modified_by) VALUES ($1, $2, $3) RETURNING *',
+        [name.trim(), description ?? null, req.writerType]
       );
       return res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -90,7 +91,18 @@ router.get('/:id', async (req, res) => {
 });
 
 router.patch('/:id', async (req, res) => {
-  const { name, description, is_public, settings } = req.body;
+  const { name, description, is_public, settings, base_version, base_row } = req.body;
+
+  // Caller has to ask for at least one field change. base_row / base_version
+  // don't count — they describe intent for the merge, not the write itself.
+  if (
+    name === undefined &&
+    description === undefined &&
+    is_public === undefined &&
+    settings === undefined
+  ) {
+    return res.status(400).json({ error: 'nothing to update' });
+  }
 
   if (name !== undefined) {
     const err = validateName(name);
@@ -108,37 +120,73 @@ router.patch('/:id', async (req, res) => {
     if (err) return res.status(400).json({ error: err });
   }
 
-  const sets = [];
-  const params = [];
-  if (name !== undefined) {
-    params.push(name.trim());
-    sets.push(`name = $${params.length}`);
-  }
-  if (description !== undefined) {
-    params.push(description);
-    sets.push(`description = $${params.length}`);
-  }
-  if (is_public !== undefined) {
-    params.push(is_public);
-    sets.push(`is_public = $${params.length}`);
-  }
+  const curRes = await pool.query('SELECT * FROM graphs WHERE id = $1', [req.params.id]);
+  if (curRes.rows.length === 0) return res.status(410).json({ error: 'graph no longer exists' });
+  const existing = curRes.rows[0];
+
+  // Build the writer's intended full row from their base view + partial
+  // changes. Settings is a shallow merge so writers can patch individual
+  // appearance keys without overwriting the rest; explicit `null` clears
+  // a key back to the app default.
+  const base = base_row || existing;
+  let writerSettings = { ...(base.settings || {}) };
   if (settings !== undefined) {
-    // Merge with existing settings; jsonb_strip_nulls drops keys whose
-    // patch value was null, which is the "revert to app default" signal.
-    params.push(JSON.stringify(settings));
-    sets.push(`settings = jsonb_strip_nulls(settings || $${params.length}::jsonb)`);
+    for (const [k, v] of Object.entries(settings)) {
+      if (v === null) delete writerSettings[k];
+      else writerSettings[k] = v;
+    }
   }
-  if (sets.length === 0) {
-    return res.status(400).json({ error: 'nothing to update' });
+  const writerRow = {
+    name: name !== undefined ? name.trim() : base.name,
+    description: description !== undefined ? description : base.description,
+    is_public: is_public !== undefined ? is_public : base.is_public,
+    settings: writerSettings,
+  };
+
+  // Three-way merge fires only when the client opted in (base_row +
+  // base_version) AND a concurrent write happened. Otherwise the writer's
+  // row is the final row (backward compat for older clients).
+  let finalRow;
+  if (base_row && base_version !== undefined && base_version !== existing.version) {
+    const { merged } = mergeFields(
+      flattenJsonb(base, 'settings'),
+      flattenJsonb(writerRow, 'settings'),
+      flattenJsonb(existing, 'settings'),
+      req.writerType,
+      existing.last_modified_by,
+    );
+    const unflat = unflattenJsonb(merged, 'settings');
+    finalRow = {
+      name: unflat.name,
+      description: unflat.description,
+      is_public: unflat.is_public,
+      settings: unflat.settings || {},
+    };
+  } else {
+    finalRow = writerRow;
   }
-  sets.push('updated_at = NOW()');
-  params.push(req.params.id);
 
   const result = await pool.query(
-    `UPDATE graphs SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
-    params
+    `UPDATE graphs
+        SET name = $1,
+            description = $2,
+            is_public = $3,
+            settings = $4::jsonb,
+            version = version + 1,
+            last_modified_by = $5,
+            updated_at = NOW()
+      WHERE id = $6
+    RETURNING *`,
+    [
+      finalRow.name,
+      finalRow.description,
+      finalRow.is_public,
+      JSON.stringify(finalRow.settings || {}),
+      req.writerType,
+      req.params.id,
+    ],
   );
-  if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
+  if (result.rows.length === 0) return res.status(410).json({ error: 'graph no longer exists' });
   res.json(result.rows[0]);
 });
 

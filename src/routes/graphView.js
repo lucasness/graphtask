@@ -58,12 +58,12 @@ router.get('/', async (req, res) => {
   const { gid } = req.params;
   const nodes = await pool.query(
     `SELECT id, meta->>'title' AS title, meta->>'description' AS description,
-            meta->>'status' AS status, meta
+            meta->>'status' AS status, meta, version
      FROM tasks WHERE graph_id = $1 ORDER BY id`,
     [gid]
   );
   const links = await pool.query(
-    `SELECT id, source_id AS source, target_id AS target, type, meta
+    `SELECT id, source_id AS source, target_id AS target, type, meta, version
      FROM edges WHERE graph_id = $1 ORDER BY id`,
     [gid]
   );

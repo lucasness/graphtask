@@ -200,6 +200,33 @@ UPDATE edges
        )
  WHERE jsonb_typeof(meta->'curve') = 'number';
 
+-- Optimistic concurrency + writer provenance. `version` is bumped on every
+-- write; clients send the version they read so the server can detect and
+-- merge concurrent edits. `last_modified_by` records whether the most recent
+-- write came from a human (browser) or an agent (skill / API client) — used
+-- for conflict resolution (human wins on same-field collision) and for
+-- future audit / UI affordances. Both default to safe values for existing
+-- rows: version=0 means "no write tracked yet", last_modified_by=NULL means
+-- "unknown".
+ALTER TABLE tasks  ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks  ADD COLUMN IF NOT EXISTS last_modified_by VARCHAR(16);
+ALTER TABLE edges  ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE edges  ADD COLUMN IF NOT EXISTS last_modified_by VARCHAR(16);
+ALTER TABLE graphs ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE graphs ADD COLUMN IF NOT EXISTS last_modified_by VARCHAR(16);
+
+DO $$ BEGIN
+  ALTER TABLE tasks  DROP CONSTRAINT IF EXISTS tasks_last_modified_by_valid;
+  ALTER TABLE tasks  ADD  CONSTRAINT tasks_last_modified_by_valid
+    CHECK (last_modified_by IS NULL OR last_modified_by IN ('human', 'agent'));
+  ALTER TABLE edges  DROP CONSTRAINT IF EXISTS edges_last_modified_by_valid;
+  ALTER TABLE edges  ADD  CONSTRAINT edges_last_modified_by_valid
+    CHECK (last_modified_by IS NULL OR last_modified_by IN ('human', 'agent'));
+  ALTER TABLE graphs DROP CONSTRAINT IF EXISTS graphs_last_modified_by_valid;
+  ALTER TABLE graphs ADD  CONSTRAINT graphs_last_modified_by_valid
+    CHECK (last_modified_by IS NULL OR last_modified_by IN ('human', 'agent'));
+END $$;
+
 -- One-time backfill: any pre-existing graphs with shorter IDs (e.g. the old
 -- 8-char format) get rotated to a fresh 16-char ID. Safe to re-run; on a
 -- fresh DB it's a no-op. The cascade above carries tasks/edges along.

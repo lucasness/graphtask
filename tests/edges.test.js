@@ -331,7 +331,7 @@ describe('Edge CRUD', () => {
       expect(res.body.error).toMatch(/color/i);
     });
 
-    it('should return 404 when patching an edge from another graph', async () => {
+    it('should return 410 Gone when patching an edge from another graph', async () => {
       const otherGid = (
         await pool.query("INSERT INTO graphs (name) VALUES ('other') RETURNING id")
       ).rows[0].id;
@@ -351,7 +351,7 @@ describe('Edge CRUD', () => {
       const res = await request(app)
         .patch(`${edgesUrl()}/${oE.rows[0].id}`)
         .send({ meta: { curve: 5 } });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(410);
     });
   });
 

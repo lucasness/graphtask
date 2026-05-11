@@ -1,7 +1,22 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
+import { mergeFields } from '../merge.js';
 import { requireIntegerParam } from './_validate.js';
+
+// Tasks store frontmatter (meta) + body in a single markdown blob. To do
+// field-level three-way merge, we flatten {meta, body} into one object.
+// Using a non-conventional key for body to avoid colliding with any meta key.
+const BODY_KEY = '__body__';
+function flattenTask(meta, body) {
+  return { ...meta, [BODY_KEY]: body };
+}
+function unflattenTask(flat) {
+  const meta = { ...flat };
+  const body = meta[BODY_KEY] || '';
+  delete meta[BODY_KEY];
+  return { meta, body };
+}
 
 // mergeParams so :gid from the parent mount is visible here.
 const router = Router({ mergeParams: true });
@@ -24,8 +39,9 @@ router.post('/', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3) RETURNING *`,
-      [gid, normalized, JSON.stringify(meta)]
+      `INSERT INTO tasks (graph_id, content, meta, last_modified_by)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [gid, normalized, JSON.stringify(meta), req.writerType]
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
@@ -103,23 +119,77 @@ router.get('/:id', validateId, async (req, res) => {
 
 router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const { content } = req.body;
+  const { content, base_version, base_content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
 
-  const { meta: rawMeta, body } = parseMarkdown(content);
-  const meta = applyDefaults(rawMeta);
+  const writerParsed = parseMarkdown(content);
+  const writerMeta = applyDefaults(writerParsed.meta);
+  const writerBody = writerParsed.body;
+  const validationErr = validateMeta(writerMeta);
+  if (validationErr) return res.status(400).json({ error: validationErr });
 
-  const err = validateMeta(meta);
-  if (err) return res.status(400).json({ error: err });
-
-  const normalized = serializeMarkdown(meta, body);
-
-  const result = await pool.query(
-    `UPDATE tasks SET content = $1, meta = $2, updated_at = NOW()
-     WHERE id = $3 AND graph_id = $4 RETURNING *`,
-    [normalized, JSON.stringify(meta), id, gid]
+  const currentRes = await pool.query(
+    'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2',
+    [id, gid]
   );
-  if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
+  if (currentRes.rows.length === 0) {
+    return res.status(410).json({ error: 'task no longer exists' });
+  }
+  const cur = currentRes.rows[0];
+
+  let mergedMeta = writerMeta;
+  let mergedBody = writerBody;
+
+  // Three-way merge only when the client opts in (sends both base_version
+  // and base_content) AND there has been a concurrent write since they read.
+  // Without base fields, fall back to simple replace — backward compat for
+  // clients that don't yet send the base.
+  const concurrentWrite =
+    base_version !== undefined &&
+    base_content !== undefined &&
+    base_version !== cur.version;
+
+  if (concurrentWrite) {
+    const baseParsed = parseMarkdown(base_content);
+    const baseMeta = applyDefaults(baseParsed.meta);
+    const currentParsed = parseMarkdown(cur.content);
+    const currentMeta = applyDefaults(currentParsed.meta);
+
+    const { merged } = mergeFields(
+      flattenTask(baseMeta, baseParsed.body),
+      flattenTask(writerMeta, writerBody),
+      flattenTask(currentMeta, currentParsed.body),
+      req.writerType,
+      cur.last_modified_by,
+    );
+    const out = unflattenTask(merged);
+    const mergedErr = validateMeta(out.meta);
+    if (mergedErr) {
+      return res.status(409).json({
+        error: 'version_conflict',
+        detail: `merged result invalid: ${mergedErr}`,
+        current: cur,
+      });
+    }
+    mergedMeta = out.meta;
+    mergedBody = out.body;
+  }
+
+  const normalized = serializeMarkdown(mergedMeta, mergedBody);
+  const result = await pool.query(
+    `UPDATE tasks
+        SET content = $1,
+            meta = $2,
+            version = version + 1,
+            last_modified_by = $3,
+            updated_at = NOW()
+      WHERE id = $4 AND graph_id = $5
+    RETURNING *`,
+    [normalized, JSON.stringify(mergedMeta), req.writerType, id, gid]
+  );
+  if (result.rows.length === 0) {
+    return res.status(410).json({ error: 'task no longer exists' });
+  }
   res.json(result.rows[0]);
 });
 

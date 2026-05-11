@@ -219,11 +219,14 @@ describe('Task CRUD', () => {
       expect(updated.getTime()).toBeGreaterThan(created.getTime());
     });
 
-    it('should return 404 for non-existent id', async () => {
+    it('should return 410 Gone for a task that no longer exists', async () => {
+      // The route can't distinguish "never existed" from "was deleted" without
+      // an audit table. 410 is correct for the deleted case (the actual concern
+      // for OCC clients) and acceptable for never-existed.
       const res = await request(app)
         .patch(`${tasksUrl()}/9999`)
         .send({ content: md('Nope') });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(410);
     });
   });
 

@@ -6,10 +6,12 @@ import tasksRouter from './routes/tasks.js';
 import edgesRouter from './routes/edges.js';
 import graphViewRouter from './routes/graphView.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot } from './sse.js';
+import { writerType } from './writerType.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
+app.use(writerType);
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Server-sent events for live graph updates. Pushes one event per task/edge
