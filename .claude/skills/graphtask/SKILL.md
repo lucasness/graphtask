@@ -9,51 +9,32 @@ allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *
 
 graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface — you create graphs, add tasks (markdown with frontmatter), wire dependency or related edges between them, and update status as you work. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
 
-## Deployment context (resolve before any other work)
+The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, viewer_user_id}` and tells you which access model is active.
 
-The skill runs against whatever instance `GRAPHTASK_BASE_URL` points at. Two shapes you'll see:
+## Access model
 
-| Where it runs | Example `GRAPHTASK_BASE_URL` | Auth |
-|---|---|---|
-| Hosted | `https://graphtask.dev.wafer.works` | usually `clerk` |
-| Local (Docker or `npm start`) | `http://127.0.0.1:3000` (default fallback) | usually `none` |
-
-Always probe `GET $GRAPHTASK_BASE_URL/api/config` first — it returns `{auth_enabled, provider, viewer_user_id}`. If `auth_enabled: false`, every graph URL is bearer-token equivalent and you can read/write freely. If `auth_enabled: true`, see the access model below.
-
-## Access model (auth-enabled instances)
-
-Phase B adds ownership + sharing on top of URL-bearer access. Three layers in order of strictness:
+Three layers in order of strictness. When `auth_enabled: false`, only the third layer matters — every URL is bearer-token equivalent.
 
 1. **Owner** (`graphs.owner_user_id`) — set when a signed-in user creates the graph. Full read/write/manage.
-2. **Members** (`graph_members.role`) — `viewer` or `editor`, per user. Granted by the owner via the in-app Access panel (or `POST /api/graphs/:gid/members {email, role}`). If the invitee has no account yet, the row sits in `pending_members` until they sign in.
+2. **Members** (`graph_members.role`) — `viewer` or `editor`, per user. Granted by the owner via the in-app Access panel (or `POST /api/graphs/:gid/members {email, role}`). If the invitee has no account yet, the row sits in `pending_members` until they sign in for the first time, when it auto-claims into a real member row.
 3. **Anonymous tier** (`graphs.anon_role`) — what someone hitting the URL gets if they aren't the owner or a member. Values: `none` (URL → 403), `viewer` (read only), `editor` (read+write, attributed anonymously). Default `viewer`. Owner changes it via `PATCH /api/graphs/:id {anon_role}`.
 
 Legacy graphs (`owner_user_id IS NULL`, created before Phase B or on a no-auth instance) always behave as URL-bearer regardless of mode.
 
-**For this skill specifically:** without an agent token, your writes look anonymous. On owned graphs with `anon_role=none`, those writes 403. Have the user generate a token (in-app: user pill → key icon → Generate) and export it as `GRAPHTASK_AGENT_TOKEN`. The identity block below picks it up automatically and attributes every write to that user. Tokens start with the prefix `gt_`.
+**Your writes need attribution.** Without an agent token, you look anonymous to the server — fine for `anon_role=editor` graphs, blocked on owned graphs with `anon_role=none`. To attribute writes to a specific user, the user generates a token from the in-app key-icon panel and exports it as `GRAPHTASK_AGENT_TOKEN`. The identity block below picks it up automatically. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
 
-## Installation (if not already installed)
+### Why am I getting 401 / 403?
 
-If your user is asking you to install graphtask, run `install.sh` from the repo root — it copies this skill to the user's `~/.claude/skills/graphtask/` and merges the Stop + SessionStart hooks below into `~/.claude/settings.json` (idempotent, with a timestamped settings backup).
+When the user reports an auth error from the canvas or asks you to debug one, work through these in order:
 
-```bash
-# From a cloned repo:
-bash install.sh
-
-# Or directly from GitHub:
-bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
-```
-
-The script honors two env overrides if the default paths don't match the user's setup:
-- `CLAUDE_HOME` — defaults to `~/.claude`. Override if the user's Claude Code config lives elsewhere (e.g. a managed wafer at `/data/claude-home/.claude`).
-- `GRAPHTASK_SKILL_URL` — defaults to the GitHub raw URL. Override to install from a fork or mirror.
-
-After install, remind the user to:
-1. Restart Claude Code so the hooks load.
-2. Set `GRAPHTASK_BASE_URL` if they're using a hosted instance (not `http://127.0.0.1:3000`).
-3. Install `jq` if missing (`brew install jq` / `apt install jq` / `apk add jq`).
-
-If `install.sh` doesn't fit (e.g., shared multi-user host, locked-down `settings.json`, custom hook manager), fall back to: copy `SKILL.md` to the user's skills directory manually, then add the hook snippet in "Agent presence cleanup (hooks)" below.
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| 401 on any `/api/*` write | Sent an `Authorization: Bearer …` that doesn't start with `gt_` and isn't a valid Clerk session | Drop the header (anon) or re-export a real `gt_…` token. The server's strict 401 path only triggers for malformed `gt_` lookups, so this usually means a token got truncated or revoked. |
+| 401 on `/api/me` or `/api/me/agent_tokens` | Endpoint requires a real user; the caller is anon or has only an agent token without the right scope | These are user-facing — direct the user to the in-app modal instead of calling them as the agent. |
+| 403 on `GET /api/graphs/:id` or `/graph` | Owned graph with `anon_role=none` and you aren't a member | Owner must either flip `anon_role` to `viewer`/`editor` or add the user (or your token's owner) as a member. |
+| 403 on `POST/PATCH/DELETE` but `GET` works | `anon_role=viewer` lets you read; writes need editor+ | Owner flips `anon_role=editor` or grants the writer member-editor explicitly. |
+| 403 specifically on `/members` or `PATCH {anon_role}` | These require `manage` — owner only | Only the owner can change sharing. Other roles cannot, even editors. |
+| Worked a second ago, suddenly 403 on everything | Owner just kicked you (member removed) | An SSE `members/DELETE` frame should arrive and downgrade the browser. You'll need to be re-added. |
 
 ## Agent identity (do this once per session)
 
@@ -108,7 +89,7 @@ After any write to a graph, record the gid so the optional cleanup hook (below) 
 grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
 ```
 
-See [Agent presence cleanup (hooks)](#agent-presence-cleanup-hooks) for the optional Claude Code lifecycle hooks. Without the hook, the server's idle reaper removes you after 30 minutes of no writes.
+See [Presence lifecycle](#presence-lifecycle) below for how your avatar gets cleaned up between turns.
 
 ## Listing graphs and naming
 
@@ -304,9 +285,12 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
 - **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
 - **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤50), `description` length (≤150), or `status` value.
-- **400 on `PATCH /graphs/:id`** with `is_public must be a boolean` — pass `true` / `false`, not strings.
+- **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
 - **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 8 for valid `settings` shape.
+- **403 on any graph route** — access denied for this caller. See the "Why am I getting 401 / 403?" table near the top to triage by route + verb.
 - **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
+- **409 on a write** — three-way merge fell through (rare; server handles most conflicts silently). Retry once with the `current` row from the 409 body as your new base.
+- **410 on a `PATCH /tasks/:id`** — the task was deleted between your read and write. Refetch `GET /graph` and decide whether to recreate or skip.
 
 ## 7. What you must not touch
 
@@ -314,46 +298,14 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - The `done` status on tasks — never write it; that's the human's call.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
 
-## Agent presence cleanup (hooks)
+## Presence lifecycle
 
-**Already handled by `install.sh`** — if the user ran the installer, both hooks below are already in their `~/.claude/settings.json`. The rest of this section documents what those hooks do and what the manual install looks like for environments where `install.sh` doesn't fit.
+Your writes drop `🤖 <owner>'s Claude` into the canvas avatar bar. Two things can clear it:
 
-The "Agent identity" headers at the top of this skill make you visible on the canvas while you work. Without cleanup, the avatar lingers between turns (and across your whole Claude Code session) until the 30-minute server-side reaper sweeps it.
+- **Claude Code lifecycle hooks** (set up at install time, outside this skill): a `Stop` hook departs your presence on every graph you've touched at the end of each turn, and `SessionStart` clears stale identity files. With hooks installed, the avatar blinks in on your first write and out the moment you finish responding.
+- **Server-side idle reaper** — sweeps inactive presence after ~30 minutes. The safety net if hooks aren't installed or a session ends ungracefully.
 
-Two Claude Code hooks handle cleanup. `SessionStart` clears stale state from a previous session; `Stop` fires at the end of every agent response and departs your presence on every graph you touched — so the avatar disappears the instant you stop working and reappears on your next write. (`Stop` is the per-turn lifecycle event; for ungraceful session ends, the server's idle reaper is the safety net.)
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rm -f .graphtask/agent-session.json .graphtask/agent-session-graphs"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "GT_BASE=\"${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}\"; if [ -f .graphtask/agent-session.json ] && [ -f .graphtask/agent-session-graphs ]; then AID=$(jq -r .id .graphtask/agent-session.json); while IFS= read -r g; do [ -n \"$g\" ] && curl -sS -X DELETE \"$GT_BASE/api/graphs/$g/presence/$AID\" -o /dev/null || true; done < .graphtask/agent-session-graphs; : > .graphtask/agent-session-graphs; fi"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-The `Stop` script truncates `.graphtask/agent-session-graphs` (rather than deleting the identity file) so the next write within the same Claude Code session re-uses the same agent uuid — collaborators see the same `🤖 <owner>'s Claude` blink in and out, not a parade of fresh agents.
-
-The hook is optional. The skill itself works without it; the cost of skipping it is just lingering avatars until the 30-minute reaper catches them or you end the Claude Code session.
+You don't manage the hooks yourself. The thing you DO need to do — keep doing — is appending touched gids to `.graphtask/agent-session-graphs` after every write so the hook (if present) knows which graphs to depart from.
 
 ## 8. Per-graph appearance settings (do not touch unless asked)
 
