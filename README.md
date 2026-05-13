@@ -170,16 +170,129 @@ local dev and single-user self-hosted installs.
 | `none` _(default)_ | — | No sign-in UI. Every graph id is a bearer token, exactly as before. |
 | `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. |
 
-On a Clerk-enabled instance, owners share a graph by either flipping
-`anon_role` (link-shared access) or adding members by email — invitees
-without an account yet sit in a pending list and auto-claim on first
-sign-in. Agents authenticate with a `gt_*` bearer token minted from the
-in-app key-icon panel.
+**The access model in one paragraph.** A graph belongs to at most one
+`owner_user_id`. The owner can add `viewer` or `editor` members by
+email; rows for emails without a Clerk account yet sit in
+`pending_members` until that email signs in and auto-claims them. On
+top of that, every graph carries an `anon_role` tier (`none` / `viewer`
+/ `editor`) that decides what someone holding the URL but neither the
+owner nor a member gets — `none` returns 403, `viewer` is read-only,
+`editor` is read+write attributed anonymously. Legacy graphs
+(`owner_user_id IS NULL`) always behave as URL-bearer regardless of
+mode; flipping a no-auth deployment to Clerk doesn't retroactively
+lock them down. Agents authenticate with a `gt_*` bearer token minted
+from the in-app key-icon panel; the server discriminates them from
+Clerk session JWTs (which start with `eyJ`) by prefix-checking the
+`Authorization` header.
 
-Graphs created with `AUTH_PROVIDER=none`, or by anonymous users on a
-Clerk-enabled instance, have `owner_user_id=NULL` and remain URL-bearer
-access forever — flipping a no-auth deployment to Clerk doesn't
-retroactively lock those down.
+**Sharing flows**
+
+Four common cases are worth walking through, since the boundary
+between anonymous and signed-in is fuzzier than most "who owns this"
+models.
+
+- **Anon creates a graph on a no-auth instance.** `owner_user_id`
+  stays `NULL` and `anon_role` defaults to `viewer`. The creating
+  browser stores the gid in `localStorage` under `graphtask:recent`
+  with `created: true`. Anyone with the URL can read it; writes are
+  also allowed because there's no auth layer at all.
+
+- **Signed-in user creates a graph.** `owner_user_id` is set on
+  insert. `anon_role` still defaults to `viewer` so a URL share Just
+  Works without the owner thinking about access. Server-truth places
+  the graph under **My graphs** in the owner's sidebar; everyone else
+  hitting the URL sees it land under **Shared with me** in their
+  `localStorage` cache.
+
+- **Owner shares by flipping `anon_role`.** `PATCH /api/graphs/:id`
+  with `{anon_role: 'editor' | 'viewer' | 'none'}` updates the graph
+  row. The route emits an SSE `{kind: 'graphs', op: 'UPDATE'}` frame,
+  so any live viewer's browser refetches the row + canvas within ~1
+  second. Going to `none` evicts non-members in real time
+  (`fetchGraph`'s 403 path swaps the canvas for an "Access denied"
+  state); going back up to `viewer`/`editor` re-grants via either an
+  SSE `onopen` rescue (if the browser retried the closed stream) or
+  the 10-second `accessDenied` poll fallback.
+
+- **Owner shares by adding a member.** `POST
+  /api/graphs/:gid/members` with `{email, role}`. If the email
+  matches an existing `users` row, the route inserts directly into
+  `graph_members`; otherwise it stashes the row in `pending_members`.
+  When that email later signs in, `verifyAuth`'s
+  `claimPendingByEmail` promotes the pending row into a real member
+  row on the spot. Kicking a member (`DELETE
+  /api/graphs/:gid/members/:userId`) emits an SSE frame so the
+  kicked browser evicts in real time, matching the `anon_role → none`
+  path.
+
+- **Anon creates a graph, then signs in later.** This is the auto-
+  claim flow. On any sign-in (or sign-in after a fresh page load on
+  an already-authed browser), the client walks `localStorage`
+  recents for entries with `created: true` and `POST`s
+  `/api/graphs/:id/claim` for each. The server-side `claim` route
+  succeeds only when `owner_user_id IS NULL` (legacy), idempotently
+  assigning the graph to the signed-in user. Already-owned graphs
+  return 403 and the claim is skipped. Other-device-created graphs
+  the user visited but didn't create locally won't get the `created:
+  true` flag and therefore won't auto-claim — that's by design,
+  since the URL alone doesn't prove ownership intent.
+
+**Client-side storage**
+
+Everything the browser persists is namespaced under `graphtask:`.
+Wipe these to reset client state without touching the database.
+
+`localStorage` (persists across tab closes):
+
+- `graphtask:lastGraphId` — gid of the last graph the user viewed in
+  this browser. Drives the auto-open-last-graph boot path when the
+  URL doesn't carry a gid.
+- `graphtask:recent` — JSON array (capped at 20) of recently visited
+  graphs: `{id, name, last_visited_at, created}`. Used for the
+  signed-out sidebar bucketing (Phase A behavior) and the
+  `created: true` flag is the input to the auto-claim flow above.
+- `graphtask:hide-private-warn` — flag remembering that the user
+  dismissed the "this graph is private; share with care" first-write
+  toast.
+- `graphtask:sidebarCollapsed` — boolean for the sidebar's
+  collapsed/expanded state.
+
+`sessionStorage` (clears on tab close):
+
+- `graphtask:readonly-banner-dismissed:<gid>` — set when the user
+  clicks Dismiss on the orange read-only banner. Per-tab and per-gid
+  so a hard reload remembers the dismissal, but a fresh tab brings
+  the banner back as a reminder.
+
+No auth tokens live in localStorage. Clerk's session cookies are
+managed by the Clerk frontend on its own host (not the app origin),
+so they aren't accessible from our JS. `gt_*` agent tokens are
+shown plaintext exactly once in the mint modal and never persisted
+client-side — the user copy-pastes them into their own shell.
+
+**Live updates when access changes**
+
+Two layers of plumbing keep open browsers in sync without manual
+reload.
+
+- **The kick / revoke path** (`anon_role → none` or
+  `DELETE /members/:userId`) emits an SSE frame on the graph's
+  channel. Every subscribed viewer's `refreshFromEvent` runs,
+  hits the 403, and downgrades to the access-denied state inside
+  ~1 second.
+- **The re-grant path** (`anon_role` back up to `viewer`/`editor`,
+  or a new member being added) is harder because the now-denied
+  viewer's `EventSource` is itself 403'd at the read gate and
+  may or may not retry depending on the browser. Two safety nets
+  cover this: an `onopen` rescue that probes `fetchGraph` the
+  moment a denied-then-reopened stream succeeds, and a 10-second
+  poll that calls `fetchGraph` while `accessDenied` is true and
+  clears itself once the probe passes.
+
+For paths where the server crashes / SSE drops / the user closes the
+tab, the worst case is a manual reload — never a stale-write-against-
+revoked-access leak, because every API write is gated server-side by
+`requireGraph` regardless of what the browser thinks.
 
 **Setting up Clerk**
 
