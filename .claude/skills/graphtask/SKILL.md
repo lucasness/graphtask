@@ -396,3 +396,18 @@ free-form markdown body
 
 `type` ∈ `dependency | related`. Dependency edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk).
 
+## Setup (only if the user asks)
+
+If the user says something like "set up graphtask" / "install the skill" / "I followed your steps but the canvas isn't updating":
+
+1. **Skill + hooks** — run the project's installer, which copies this `SKILL.md` to `~/.claude/skills/graphtask/` and merges presence-cleanup hooks (Stop + SessionStart) into `~/.claude/settings.json` with a timestamped backup:
+   ```bash
+   bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
+   ```
+   Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
+2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
+3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.dev.wafer.works`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`.
+4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances only) — tell them to open the in-app key-icon panel, generate a token, copy the `gt_…` string, and `export GRAPHTASK_AGENT_TOKEN=gt_…` so your writes attribute to their account.
+
+If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
+
