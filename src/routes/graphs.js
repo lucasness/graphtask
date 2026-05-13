@@ -3,6 +3,7 @@ import pool from '../db.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 import { requireGraph } from '../auth/require.js';
 import { canEdit, canManage } from '../auth/access.js';
+import { broadcastGraphEvent } from '../sse.js';
 
 const router = Router();
 
@@ -207,6 +208,16 @@ router.patch('/:id', requireGraph('manage'), async (req, res) => {
     ],
   );
   if (result.rows.length === 0) return res.status(410).json({ error: 'graph no longer exists' });
+  // Push an SSE frame so live viewers refetch — without this, an anon_role
+  // flip (e.g. viewer → none) doesn't reach an open incognito tab until the
+  // viewer manually reloads. Same pattern as graph_members.DELETE; the
+  // graphs table itself has no DB trigger.
+  broadcastGraphEvent(result.rows[0].id, {
+    graph_id: result.rows[0].id,
+    kind: 'graphs',
+    op: 'UPDATE',
+    id: result.rows[0].id,
+  });
   res.json(result.rows[0]);
 });
 

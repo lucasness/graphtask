@@ -1006,6 +1006,28 @@ let currentGraph = null;
 // access-denied empty state and locks edit affordances. Reset on every
 // graph switch and on successful fetchGraph.
 let accessDenied = false;
+// While accessDenied is true the EventSource is also being rejected by the
+// server's read gate, so there's no live channel for the owner's "I just
+// re-granted you access" event to arrive on. Poll every 10s as a safety
+// net — fetchGraph clears the flag the moment access flips back. The poll
+// is cheap (one GET per viewer per 10s) and stops itself.
+let _accessDeniedPollTimer = null;
+function startAccessDeniedPoll() {
+  if (_accessDeniedPollTimer) return;
+  _accessDeniedPollTimer = setInterval(() => {
+    if (!accessDenied || activeGraphId == null) {
+      stopAccessDeniedPoll();
+      return;
+    }
+    fetchGraph().catch(() => {});
+  }, 10000);
+}
+function stopAccessDeniedPoll() {
+  if (_accessDeniedPollTimer) {
+    clearInterval(_accessDeniedPollTimer);
+    _accessDeniedPollTimer = null;
+  }
+}
 // Read-only mode mirror — viewer has read but not edit/manage. Used to
 // gate edit-path event handlers so they early-out instead of producing
 // "Save failed" toasts on every interaction.
@@ -1306,10 +1328,12 @@ function addGraphEdge(edge) {
 }
 
 async function fetchGraph() {
+  const wasAccessDenied = accessDenied;
   const res = await fetch(`${apiBase()}/graph`);
   if (!res.ok) {
     if (res.status === 403) {
       accessDenied = true;
+      startAccessDeniedPoll();
       if (cy) cy.elements().remove();
       updateEmptyState();
       applyReadOnlyState();
@@ -1318,6 +1342,22 @@ async function fetchGraph() {
     throw new Error(`failed to load graph: ${res.status}`);
   }
   accessDenied = false;
+  stopAccessDeniedPoll();
+  // Leaving the accessDenied state: the graph-row metadata (viewer_can_edit,
+  // settings, name) is stale because the original /api/graphs/:id 403'd at
+  // boot. Refetch it before applyReadOnlyState so readonly/forbidden body
+  // classes + autoungrabify recompute against the real permissions.
+  if (wasAccessDenied) {
+    try {
+      const r = await fetch(`/api/graphs/${encodeURIComponent(activeGraphId)}`);
+      if (r.ok) {
+        currentGraph = await r.json();
+        applySettings();
+        renderSidebar();
+      }
+    } catch {}
+    applyReadOnlyState();
+  }
   const data = await res.json();
 
   const elements = [];
@@ -4626,6 +4666,7 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
     presenceDepart(activeGraphId);
   }
   stopPresenceHeartbeat();
+  stopAccessDeniedPoll();
   presenceState = new Map();
   accessDenied = false;
   activeGraphId = id;
@@ -4927,6 +4968,14 @@ function openGraphEventStream(id) {
   }
   if (!id) return;
   const es = new EventSource(`/api/graphs/${id}/events`);
+  es.onopen = () => {
+    // Successful (re)connect after a stretch of being denied means access
+    // was just re-granted. Probe the graph to leave the accessDenied state
+    // instead of waiting for the 10-second poll.
+    if (accessDenied && id === activeGraphId) {
+      fetchGraph().catch(() => {});
+    }
+  };
   es.onmessage = (e) => {
     if (id !== activeGraphId) return;
     let payload;
@@ -4954,6 +5003,23 @@ function openGraphEventStream(id) {
 
 async function refreshFromEvent(payload) {
   if (!cy) return;
+  // Graph-row UPDATE (anon_role / settings / name / description). Refetch
+  // the row first so currentGraph + viewer_can_edit are fresh, then run a
+  // normal canvas refresh — fetchGraph's 403 branch handles access
+  // revocation by switching us into the accessDenied state.
+  if (payload && payload.kind === 'graphs') {
+    try {
+      const r = await fetch(`/api/graphs/${encodeURIComponent(activeGraphId)}`);
+      if (r.ok) {
+        currentGraph = await r.json();
+        applySettings();
+        renderSidebar();
+      }
+    } catch {}
+    applyReadOnlyState();
+    await fetchGraph();
+    return;
+  }
   // Two scenarios are unsafe for a full fetchGraph (which wipes & rebuilds):
   //   - The creation ghost is on the canvas — its row doesn't exist in the DB
   //     yet, so a refresh would wipe it.
