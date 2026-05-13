@@ -32,7 +32,9 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query('TRUNCATE graphs, tasks, edges RESTART IDENTITY CASCADE');
+  await pool.query(
+    'TRUNCATE graphs, tasks, edges, users, graph_members, invite_tokens, agent_tokens, pending_members RESTART IDENTITY CASCADE',
+  );
 });
 
 afterAll(async () => {

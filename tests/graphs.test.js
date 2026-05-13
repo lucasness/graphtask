@@ -87,42 +87,20 @@ describe('Graph CRUD', () => {
       expect(b.status).toBe(201);
     });
 
-    it('should default new graphs to private', async () => {
-      const res = await request(app).post('/api/graphs').send({ name: 'private by default' });
+    it('should default new graphs to anon_role=viewer (anyone with link can view)', async () => {
+      const res = await request(app).post('/api/graphs').send({ name: 'viewer by default' });
       expect(res.status).toBe(201);
-      expect(res.body.is_public).toBe(false);
+      expect(res.body.anon_role).toBe('viewer');
     });
   });
 
   describe('GET /api/graphs', () => {
-    it('should return empty array when no graphs', async () => {
+    it('should return empty array when not signed in', async () => {
+      // Anonymous viewers no longer get a public-directory listing — graphs
+      // are discoverable only via membership or direct URL after Phase B5c.
       const res = await request(app).get('/api/graphs');
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
-    });
-
-    // The list endpoint is the home-page directory; only public graphs are
-    // listed. Private graphs are still reachable by URL.
-    it('should return only public graphs ordered by updated_at DESC', async () => {
-      const a = await request(app).post('/api/graphs').send({ name: 'first' });
-      const b = await request(app).post('/api/graphs').send({ name: 'second' });
-      const c = await request(app).post('/api/graphs').send({ name: 'third' });
-      for (const id of [a.body.id, b.body.id, c.body.id]) {
-        await request(app).patch(`/api/graphs/${id}`).send({ is_public: true });
-      }
-      const res = await request(app).get('/api/graphs');
-      expect(res.body.map((g) => g.name)).toEqual(['third', 'second', 'first']);
-    });
-
-    it('should exclude private graphs from the list', async () => {
-      const priv = await request(app).post('/api/graphs').send({ name: 'private' });
-      const pub = await request(app).post('/api/graphs').send({ name: 'public' });
-      await request(app).patch(`/api/graphs/${pub.body.id}`).send({ is_public: true });
-      const res = await request(app).get('/api/graphs');
-      expect(res.body.map((g) => g.id)).toEqual([pub.body.id]);
-      // Private graph still reachable by id (URL bearer-token model).
-      const direct = await request(app).get(`/api/graphs/${priv.body.id}`);
-      expect(direct.status).toBe(200);
     });
   });
 
@@ -191,11 +169,17 @@ describe('Graph CRUD', () => {
       expect(res.status).toBe(400);
     });
 
-    it('should 410 Gone on non-existent', async () => {
+    it('should 404 on non-existent', async () => {
+      // Phase B: the requireGraph('manage') guard rejects an unknown :id with
+      // 404 before the handler runs, so the legacy 410 ("graph no longer
+      // exists") for an id that never existed is now 404 ("not found"). 410
+      // is still possible if a concurrent DELETE removes a row between the
+      // guard's lookup and the UPDATE — that path is exercised in concurrency
+      // tests.
       const res = await request(app)
         .patch('/api/graphs/zzzzzzzz')
         .send({ name: 'new' });
-      expect(res.status).toBe(410);
+      expect(res.status).toBe(404);
     });
 
     it('should allow renaming to a colliding name', async () => {
@@ -208,29 +192,75 @@ describe('Graph CRUD', () => {
       expect(res.body.name).toBe('TAKEN');
     });
 
-    it('should toggle is_public', async () => {
+    it('should set anon_role through PATCH', async () => {
       const create = await request(app).post('/api/graphs').send({ name: 'toggle' });
-      expect(create.body.is_public).toBe(false);
-      const flipOn = await request(app)
+      expect(create.body.anon_role).toBe('viewer'); // default
+      const r1 = await request(app)
         .patch(`/api/graphs/${create.body.id}`)
-        .send({ is_public: true });
-      expect(flipOn.status).toBe(200);
-      expect(flipOn.body.is_public).toBe(true);
-      const list = await request(app).get('/api/graphs');
-      expect(list.body.map((g) => g.id)).toContain(create.body.id);
-      const flipOff = await request(app)
+        .send({ anon_role: 'editor' });
+      expect(r1.status).toBe(200);
+      expect(r1.body.anon_role).toBe('editor');
+      const r2 = await request(app)
         .patch(`/api/graphs/${create.body.id}`)
-        .send({ is_public: false });
-      expect(flipOff.body.is_public).toBe(false);
-      const listAfter = await request(app).get('/api/graphs');
-      expect(listAfter.body.map((g) => g.id)).not.toContain(create.body.id);
+        .send({ anon_role: 'none' });
+      expect(r2.body.anon_role).toBe('none');
+      const r3 = await request(app)
+        .patch(`/api/graphs/${create.body.id}`)
+        .send({ anon_role: 'viewer' });
+      expect(r3.body.anon_role).toBe('viewer');
     });
 
-    it('should 400 when is_public is not a boolean', async () => {
+    it('claim transfers a legacy graph to a signed-in user', async () => {
+      // Need a signed-in caller for this — use the test header adapter so the
+      // claim attributes to a real users row.
+      const { _setAdapterForTests } = await import('../src/auth/index.js');
+      const { makeHeaderAuthAdapter } = await import('./__support__/test_auth.js');
+      _setAdapterForTests(makeHeaderAuthAdapter());
+      const pool = (await import('./setup.js')).getTestPool();
+      await pool.query(
+        `INSERT INTO users (provider, provider_user_id, email, display_name)
+         VALUES ('test-header', 'claimant', 'claimant@test.local', 'claimant')`,
+      );
+      const created = await request(app).post('/api/graphs').send({ name: 'legacy' });
+      const gid = created.body.id;
+      expect(created.body.owner_user_id).toBeNull();
+
+      const claim1 = await request(app)
+        .post(`/api/graphs/${gid}/claim`)
+        .set('X-Test-User-Id', 'claimant');
+      expect(claim1.status).toBe(200);
+      expect(claim1.body.claimed).toBe(true);
+      expect(claim1.body.graph.owner_user_id).toBeTruthy();
+
+      // Idempotent for the same claimant.
+      const claim2 = await request(app)
+        .post(`/api/graphs/${gid}/claim`)
+        .set('X-Test-User-Id', 'claimant');
+      expect(claim2.status).toBe(200);
+      expect(claim2.body.already_owner).toBe(true);
+
+      // A second user tries → 403.
+      await pool.query(
+        `INSERT INTO users (provider, provider_user_id, email, display_name)
+         VALUES ('test-header', 'other', 'other@test.local', 'other')`,
+      );
+      const claim3 = await request(app)
+        .post(`/api/graphs/${gid}/claim`)
+        .set('X-Test-User-Id', 'other');
+      expect(claim3.status).toBe(403);
+    });
+
+    it('claim refuses an unauthed request with 401', async () => {
+      const created = await request(app).post('/api/graphs').send({ name: 'legacy2' });
+      const res = await request(app).post(`/api/graphs/${created.body.id}/claim`);
+      expect(res.status).toBe(401);
+    });
+
+    it('should 400 when anon_role is not in the enum', async () => {
       const create = await request(app).post('/api/graphs').send({ name: 'g' });
       const res = await request(app)
         .patch(`/api/graphs/${create.body.id}`)
-        .send({ is_public: 'yes' });
+        .send({ anon_role: 'admin' });
       expect(res.status).toBe(400);
     });
 
@@ -349,8 +379,11 @@ describe('Graph CRUD', () => {
       expect(edges.status).toBe(200);
       expect(edges.body.length).toBe(1);
 
+      // Phase B: the old id no longer points to any graph; the requireGraph
+      // guard returns 404 instead of the Phase A "graph absent → empty list"
+      // permissive behavior.
       const oldTasks = await request(app).get(`/api/graphs/${oldId}/tasks`);
-      expect(oldTasks.body).toEqual([]);
+      expect(oldTasks.status).toBe(404);
     });
 
     it('should 404 on non-existent graph', async () => {

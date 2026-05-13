@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
+import { requireGraph } from '../auth/require.js';
+import { canEdit, canManage } from '../auth/access.js';
 
 const router = Router();
 
 const NAME_MAX = 80;
 const DESCRIPTION_MAX = 500;
 const ALLOWED_SETTINGS_KEYS = ['font', 'font_color', 'bg_color'];
+const ALLOWED_ANON_ROLES = ['none', 'viewer', 'editor'];
 const ALLOWED_FONT_IDS = ['inter', 'garamond', 'roboto'];
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 
@@ -51,11 +54,19 @@ function validateDescription(description) {
   return null;
 }
 
-// Home-page list: only public graphs. Private graphs are reachable by URL but
-// must not be enumerable — that's the privacy model.
-router.get('/', async (_req, res) => {
+// Listing endpoint. Post-Phase-B5c there's no public-directory concept —
+// `anon_role` controls who can access a graph via its URL, not whether
+// strangers can discover it. So the listing simply returns:
+//   - authed:    graphs you own + graphs you're a member of
+//   - anonymous: empty (legacy un-owned graphs remain reachable by URL only)
+router.get('/', async (req, res) => {
+  if (!req.user) return res.json([]);
   const result = await pool.query(
-    'SELECT * FROM graphs WHERE is_public = TRUE ORDER BY updated_at DESC, id DESC'
+    `SELECT * FROM graphs
+      WHERE owner_user_id = $1
+         OR id IN (SELECT graph_id FROM graph_members WHERE user_id = $1)
+      ORDER BY updated_at DESC, id DESC`,
+    [req.user.id],
   );
   res.json(result.rows);
 });
@@ -69,12 +80,16 @@ router.post('/', async (req, res) => {
 
   // graphs.id has a Postgres DEFAULT that generates a random string. On the
   // negligible chance of an id collision, retry with a fresh DEFAULT. New
-  // graphs default to is_public=false at the schema level.
+  // graphs default to is_public=false at the schema level. Anonymous create
+  // is still allowed — those rows land with owner_user_id = NULL and behave
+  // as legacy URL-bearer graphs forever, even on an auth-on deployment.
+  const ownerUserId = req.user?.id ?? null;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const result = await pool.query(
-        'INSERT INTO graphs (name, description, last_modified_by) VALUES ($1, $2, $3) RETURNING *',
-        [name.trim(), description ?? null, req.writerType]
+        `INSERT INTO graphs (name, description, owner_user_id, last_modified_by)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [name.trim(), description ?? null, ownerUserId, req.writerType]
       );
       return res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -84,22 +99,27 @@ router.post('/', async (req, res) => {
   res.status(500).json({ error: 'failed to allocate graph id' });
 });
 
-router.get('/:id', async (req, res) => {
-  const result = await pool.query('SELECT * FROM graphs WHERE id = $1', [req.params.id]);
-  if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
-  res.json(result.rows[0]);
+router.get('/:id', requireGraph('read'), async (req, res) => {
+  // requireGraph already loaded the row into req.graph; no second query.
+  // Annotate with the viewer's capabilities so the frontend can toggle
+  // read-only mode without a second roundtrip.
+  res.json({
+    ...req.graph,
+    viewer_can_edit: canEdit(req.user, req.graph, req.graphMember),
+    viewer_can_manage: canManage(req.user, req.graph),
+  });
 });
 
-router.patch('/:id', async (req, res) => {
-  const { name, description, is_public, settings, base_version, base_row } = req.body;
+router.patch('/:id', requireGraph('manage'), async (req, res) => {
+  const { name, description, settings, anon_role, base_version, base_row } = req.body;
 
   // Caller has to ask for at least one field change. base_row / base_version
   // don't count — they describe intent for the merge, not the write itself.
   if (
     name === undefined &&
     description === undefined &&
-    is_public === undefined &&
-    settings === undefined
+    settings === undefined &&
+    anon_role === undefined
   ) {
     return res.status(400).json({ error: 'nothing to update' });
   }
@@ -112,12 +132,12 @@ router.patch('/:id', async (req, res) => {
     const err = validateDescription(description);
     if (err) return res.status(400).json({ error: err });
   }
-  if (is_public !== undefined && typeof is_public !== 'boolean') {
-    return res.status(400).json({ error: 'is_public must be a boolean' });
-  }
   if (settings !== undefined) {
     const err = validateSettings(settings);
     if (err) return res.status(400).json({ error: err });
+  }
+  if (anon_role !== undefined && !ALLOWED_ANON_ROLES.includes(anon_role)) {
+    return res.status(400).json({ error: `anon_role must be one of ${ALLOWED_ANON_ROLES.join(', ')}` });
   }
 
   const curRes = await pool.query('SELECT * FROM graphs WHERE id = $1', [req.params.id]);
@@ -139,8 +159,8 @@ router.patch('/:id', async (req, res) => {
   const writerRow = {
     name: name !== undefined ? name.trim() : base.name,
     description: description !== undefined ? description : base.description,
-    is_public: is_public !== undefined ? is_public : base.is_public,
     settings: writerSettings,
+    anon_role: anon_role !== undefined ? anon_role : base.anon_role,
   };
 
   // Three-way merge fires only when the client opted in (base_row +
@@ -159,8 +179,8 @@ router.patch('/:id', async (req, res) => {
     finalRow = {
       name: unflat.name,
       description: unflat.description,
-      is_public: unflat.is_public,
       settings: unflat.settings || {},
+      anon_role: writerRow.anon_role,
     };
   } else {
     finalRow = writerRow;
@@ -170,8 +190,8 @@ router.patch('/:id', async (req, res) => {
     `UPDATE graphs
         SET name = $1,
             description = $2,
-            is_public = $3,
-            settings = $4::jsonb,
+            settings = $3::jsonb,
+            anon_role = $4,
             version = version + 1,
             last_modified_by = $5,
             updated_at = NOW()
@@ -180,8 +200,8 @@ router.patch('/:id', async (req, res) => {
     [
       finalRow.name,
       finalRow.description,
-      finalRow.is_public,
       JSON.stringify(finalRow.settings || {}),
+      finalRow.anon_role,
       req.writerType,
       req.params.id,
     ],
@@ -190,7 +210,36 @@ router.patch('/:id', async (req, res) => {
   res.json(result.rows[0]);
 });
 
-router.delete('/:id', async (req, res) => {
+// Claim a legacy (un-owned) graph as the signed-in user. Only succeeds when
+// `owner_user_id IS NULL` — owned graphs are off-limits regardless of who
+// requests. Idempotent if the requester is already the owner (no-op 200).
+// The localStorage `created: true` flag in the browser drives auto-claim on
+// sign-in (see public/app.js); this endpoint trusts URL-bearer access for
+// legacy graphs since that was Phase A's model anyway.
+router.post('/:id/claim', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'sign in required' });
+  const cur = await pool.query('SELECT owner_user_id FROM graphs WHERE id = $1', [req.params.id]);
+  if (cur.rows.length === 0) return res.status(404).json({ error: 'not found' });
+  const ownerId = cur.rows[0].owner_user_id;
+  if (ownerId === req.user.id) {
+    return res.json({ claimed: false, already_owner: true });
+  }
+  if (ownerId !== null) {
+    return res.status(403).json({ error: 'already claimed by another user' });
+  }
+  const r = await pool.query(
+    `UPDATE graphs SET owner_user_id = $1, updated_at = NOW()
+      WHERE id = $2 AND owner_user_id IS NULL RETURNING *`,
+    [req.user.id, req.params.id],
+  );
+  if (r.rows.length === 0) {
+    // Lost the race to another claimer in the milliseconds since the SELECT.
+    return res.status(403).json({ error: 'already claimed by another user' });
+  }
+  res.json({ claimed: true, graph: r.rows[0] });
+});
+
+router.delete('/:id', requireGraph('manage'), async (req, res) => {
   const result = await pool.query(
     'DELETE FROM graphs WHERE id = $1 RETURNING id',
     [req.params.id]
@@ -202,7 +251,7 @@ router.delete('/:id', async (req, res) => {
 // Rotate a graph's ID. The URL is the bearer token in the no-auth privacy
 // model — rotating invalidates any previously shared link. ON UPDATE CASCADE
 // on tasks/edges FKs propagates the new id automatically.
-router.post('/:id/rotate-id', async (req, res) => {
+router.post('/:id/rotate-id', requireGraph('manage'), async (req, res) => {
   const oldId = req.params.id;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {

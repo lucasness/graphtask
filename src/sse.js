@@ -98,3 +98,17 @@ export function unsubscribe(graphId, res) {
   set.delete(res);
   if (set.size === 0) subscribers.delete(graphId);
 }
+
+// Push a non-Postgres event to every browser subscribed to this graph.
+// Used by the presence module (in-memory, not DB-backed) to broadcast
+// announce/depart/rename, and by membership-change routes (graph_members
+// has no DB trigger). Payload is sent as the JSON body of one SSE frame.
+export function broadcastGraphEvent(graphId, payload) {
+  const set = subscribers.get(graphId);
+  if (!set || set.size === 0) return;
+  const frame = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const res of set) {
+    try { res.write(frame); } catch {}
+  }
+}
+export { broadcastGraphEvent as broadcastPresence };

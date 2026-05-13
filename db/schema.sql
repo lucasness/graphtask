@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS graphs (
   id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
   name TEXT NOT NULL,
   description TEXT,
-  is_public BOOLEAN NOT NULL DEFAULT FALSE,
   -- Per-graph overrides for font / font_color / bg_color. Missing keys
   -- fall back to the viewer's app-level Defaults at render time. Stored
   -- as JSONB so future per-graph settings can be added without a schema
@@ -47,16 +46,11 @@ CREATE TABLE IF NOT EXISTS graphs (
     CHECK (jsonb_typeof(settings) = 'object')
 );
 
--- Migration for DBs created before is_public / settings existed.
-ALTER TABLE graphs ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE graphs ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb;
 DO $$ BEGIN
   ALTER TABLE graphs DROP CONSTRAINT IF EXISTS graph_settings_object;
   ALTER TABLE graphs ADD CONSTRAINT graph_settings_object CHECK (jsonb_typeof(settings) = 'object');
 END $$;
-
--- Partial index for the home-page list query (only public graphs are listed).
-CREATE INDEX IF NOT EXISTS graphs_is_public_idx ON graphs(is_public) WHERE is_public = TRUE;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id SERIAL PRIMARY KEY,
@@ -226,6 +220,137 @@ DO $$ BEGIN
   ALTER TABLE graphs ADD  CONSTRAINT graphs_last_modified_by_valid
     CHECK (last_modified_by IS NULL OR last_modified_by IN ('human', 'agent'));
 END $$;
+
+-- Pluggable auth (Phase B1): users + graph ownership. Both are opt-in at
+-- runtime — `AUTH_PROVIDER=none` (the default) never writes to `users` and
+-- leaves `graphs.owner_user_id` NULL. Legacy graphs (owner NULL) preserve the
+-- URL-bearer access semantics from Phase A forever — see docs/auth.md.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider TEXT NOT NULL,
+  provider_user_id TEXT NOT NULL,
+  email TEXT,
+  display_name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (provider, provider_user_id)
+);
+CREATE INDEX IF NOT EXISTS users_email_idx ON users (lower(email));
+
+ALTER TABLE graphs
+  ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS graphs_owner_idx ON graphs (owner_user_id)
+  WHERE owner_user_id IS NOT NULL;
+
+-- Phase B5c (Google-Docs-faithful refactor): the graph's general-access tier.
+-- 'none' = Restricted (only owner + explicit members); 'viewer' = anyone with
+-- the URL can read; 'editor' = anyone with the URL can edit. The graph URL
+-- /g/<gid> IS the share link — there is no separate invite-token URL.
+-- Default is 'viewer' (friendlier-by-default for a collaboration tool); the
+-- owner can lock it down via the Access section in the graph-modal.
+ALTER TABLE graphs
+  ADD COLUMN IF NOT EXISTS anon_role TEXT NOT NULL DEFAULT 'viewer';
+DO $$ BEGIN
+  ALTER TABLE graphs DROP CONSTRAINT IF EXISTS graphs_anon_role_check;
+  ALTER TABLE graphs ADD CONSTRAINT graphs_anon_role_check
+    CHECK (anon_role IN ('none', 'viewer', 'editor'));
+  -- Update the column default too in case the table was created with the
+  -- earlier 'none' default. Idempotent.
+  ALTER TABLE graphs ALTER COLUMN anon_role SET DEFAULT 'viewer';
+END $$;
+
+-- Phase B5c also drops the old `is_public` column. Its two jobs (anonymous
+-- read access, home-page directory listing) collapse into `anon_role` — see
+-- the discussion in feedback_graphtask_auth_gotchas.md. Idempotent: existing
+-- DBs lose the column on next boot; fresh DBs never had it.
+DO $$ BEGIN
+  -- Drop the partial index first so the column drop succeeds.
+  DROP INDEX IF EXISTS graphs_is_public_idx;
+  ALTER TABLE graphs DROP COLUMN IF EXISTS is_public;
+END $$;
+
+-- Phase B2/B5c: graph membership. The Share modal's "Add by email" form
+-- inserts here directly when the invitee already has a Clerk account;
+-- otherwise their row sits in `pending_members` until they sign in.
+CREATE TABLE IF NOT EXISTS graph_members (
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (graph_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS graph_members_user_idx ON graph_members (user_id);
+-- Loosen the legacy CHECK to allow 'viewer' on existing DBs that already
+-- have the 'editor'-only constraint.
+DO $$ BEGIN
+  ALTER TABLE graph_members DROP CONSTRAINT IF EXISTS graph_members_role_check;
+  ALTER TABLE graph_members ADD CONSTRAINT graph_members_role_check
+    CHECK (role IN ('viewer', 'editor'));
+END $$;
+
+-- Phase B5c: pending invites by email. Owner adds an email + role in the
+-- Share modal; when that email signs in via Clerk, verifyAuth auto-converts
+-- the pending row into a real `graph_members` row.
+-- Email is stored lower-cased and matched case-insensitively against Clerk's
+-- primary email address.
+CREATE TABLE IF NOT EXISTS pending_members (
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  email TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (graph_id, email)
+);
+CREATE INDEX IF NOT EXISTS pending_members_email_idx ON pending_members (email);
+
+-- Phase B3: invite tokens (Pattern B — GitHub-style click-to-claim links).
+-- Owner POSTs to mint one; the plaintext token is returned ONCE and stored as
+-- SHA-256 only. Recipient hits /api/invites/:token/claim, which becomes a
+-- graph_members row and deletes the invite (single-use). Revocation is a
+-- soft-delete via revoked_at so a leaked token can be killed without losing
+-- audit context.
+CREATE TABLE IF NOT EXISTS invite_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('editor')),
+  -- anon_role: what holders WITHOUT a Clerk session get when they click the
+  -- link. Default 'viewer' mirrors Google Docs' "Anyone with the link can
+  -- view". Set to 'none' for strict "must sign in to view" mode, 'editor'
+  -- for fully-open collaboration. `role` is what signed-in claimers become.
+  anon_role TEXT NOT NULL DEFAULT 'viewer'
+    CHECK (anon_role IN ('none', 'viewer', 'editor')),
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE invite_tokens
+  ADD COLUMN IF NOT EXISTS anon_role TEXT NOT NULL DEFAULT 'viewer';
+DO $$ BEGIN
+  ALTER TABLE invite_tokens DROP CONSTRAINT IF EXISTS invite_tokens_anon_role_check;
+  ALTER TABLE invite_tokens
+    ADD CONSTRAINT invite_tokens_anon_role_check
+    CHECK (anon_role IN ('none', 'viewer', 'editor'));
+END $$;
+CREATE INDEX IF NOT EXISTS invite_tokens_graph_idx ON invite_tokens (graph_id)
+  WHERE revoked_at IS NULL;
+
+-- Phase B4: app-issued agent tokens. Lets a Claude Code agent (or any
+-- non-browser client) authenticate as a specific user without going through
+-- Clerk. The plaintext token is returned once at mint and never again;
+-- token_hash is the only thing persisted. Revoking sets `revoked_at` and the
+-- next bearer-auth attempt returns 401 immediately — no grace period.
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  label TEXT,
+  last_used_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS agent_tokens_user_idx ON agent_tokens (user_id)
+  WHERE revoked_at IS NULL;
 
 -- One-time backfill: any pre-existing graphs with shorter IDs (e.g. the old
 -- 8-char format) get rotated to a fresh 16-char ID. Safe to re-run; on a

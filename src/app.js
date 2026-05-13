@@ -5,19 +5,52 @@ import graphsRouter from './routes/graphs.js';
 import tasksRouter from './routes/tasks.js';
 import edgesRouter from './routes/edges.js';
 import graphViewRouter from './routes/graphView.js';
-import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot } from './sse.js';
+import presenceRouter from './routes/presence.js';
+import membersRouter from './routes/members.js';
+import meRouter from './routes/me.js';
+import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
+import { getAdapter } from './auth/index.js';
+import { verifyAuth } from './auth/middleware.js';
+import { requireGraph, requireGraphForMethod } from './auth/require.js';
+import * as presence from './presence.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
 app.use(writerType);
+
+// Auth wiring. The adapter is selected once at boot from AUTH_PROVIDER; its
+// middlewares (e.g. Clerk's session reader) run before verifyAuth so that
+// verifyAuth can attribute the request to a user row. With AUTH_PROVIDER=none
+// (the default) verifyAuth itself is a no-op: req.user stays null.
+const authAdapter = await getAdapter();
+for (const mw of authAdapter.middlewares()) app.use(mw);
+app.use(verifyAuth);
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+// Frontend bootstrap: tells the browser whether to load Clerk JS and which
+// publishable key to use. Auth-off deployments get `{auth_enabled: false}` and
+// render no sign-in chrome.
+app.get('/api/config', (req, res) => {
+  const provider = authAdapter.provider;
+  res.json({
+    auth_enabled: provider !== 'none',
+    provider,
+    publishable_key: authAdapter.publishableKey?.() ?? null,
+    // The frontend needs the internal user UUID (not Clerk's user_xxx id)
+    // to partition the sidebar by `graph.owner_user_id`. Exposed only when
+    // the request resolved to a signed-in user; null otherwise.
+    viewer_user_id: req.user?.id ?? null,
+  });
+});
 
 // Server-sent events for live graph updates. Pushes one event per task/edge
 // mutation, payload `{ graph_id, kind, op }`. Browser subscribes via
-// EventSource and refetches the graph on each event.
-app.get('/api/graphs/:gid/events', (req, res) => {
+// EventSource and refetches the graph on each event. canRead-gated so that
+// auth-on instances don't leak private graph traffic to anonymous viewers.
+app.get('/api/graphs/:gid/events', requireGraph('read'), (req, res) => {
   const { gid } = req.params;
   // Cap concurrent SSE connections to stay below the process fd ceiling.
   // Browsers using EventSource will retry automatically after Retry-After.
@@ -44,13 +77,25 @@ app.get('/api/graphs/:gid/events', (req, res) => {
 });
 
 // :gid is an opaque short string; no format validation here. A bad id just
-// won't match any row and the route handlers will return 404.
+// won't match any row and the guard returns 404. Each sub-router carries the
+// guard that matches its access shape: tasks/edges use the method-pick
+// (GET=read, write=edit); the graph view + presence are read-only surfaces;
+// the graphs router applies per-route guards internally because PATCH/DELETE
+// require `manage`, not `edit`.
 app.use('/api/graphs', graphsRouter);
-app.use('/api/graphs/:gid/tasks', tasksRouter);
-app.use('/api/graphs/:gid/edges', edgesRouter);
-app.use('/api/graphs/:gid/graph', graphViewRouter);
+app.use('/api/graphs/:gid/tasks', requireGraphForMethod, tasksRouter);
+app.use('/api/graphs/:gid/edges', requireGraphForMethod, edgesRouter);
+app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
+app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
+app.use('/api/graphs/:gid/members', membersRouter);
+app.use('/api/me', meRouter);
 
 startSse();
+presence.startReaper();
+presence.startActiveSweep();
+presence.onChange((graphId, op, writer) => {
+  broadcastPresence(graphId, { graph_id: graphId, kind: 'presence', op, writer });
+});
 
 // SPA fallback: client-side routes like /g/:gid only exist in the frontend.
 // On a fresh page load (paste URL, refresh, bookmark) the browser does a real

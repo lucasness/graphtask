@@ -48,12 +48,24 @@
       <p>No graphs yet</p>
     </div>
     <div id="sidebar-bottom">
+      <!-- Auth chrome (Phase B). Populated by app.js after /api/config tells us
+           whether auth is enabled; empty when AUTH_PROVIDER=none so the sidebar
+           looks identical to Phase A. -->
+      <div id="sidebar-auth"></div>
       <button id="app-settings-btn" class="sb-bottom-btn" title="App-level Defaults" aria-label="Settings">
         <i class="ph ph-gear" aria-hidden="true"></i>
         <span class="sb-bottom-label">Settings</span>
       </button>
     </div>
   </aside>
+
+  <!-- Read-only banner (Phase B5f). Shown when the viewer has read access
+       but not edit access (anon on public graph, anon-via-invite viewer cookie,
+       etc.). Hidden by default; toggled by applyReadOnlyState() in app.js. -->
+  <div id="readonly-banner" class="readonly-banner hidden">
+    <span>Read-only</span>
+    <button type="button" id="readonly-signin-btn" class="readonly-signin-btn hidden">Sign in to edit</button>
+  </div>
 
   <div id="cy"></div>
 
@@ -126,12 +138,62 @@
         </div>
       </div>
 
-      <div class="modal-field">
-        <span>Visibility</span>
-        <label class="visibility-row">
-          <input type="checkbox" id="graph-modal-private">
-          <span id="graph-modal-visibility-label"></span>
-        </label>
+      <!-- Access (Phase B5c). Inline replacement for the old Private/Public
+           toggle. Hidden for legacy graphs (URL = full access) and shown for
+           owned graphs where the viewer can manage.
+
+           Layout: Mode picker first (font-picker style, three options).
+           Email + role + Add and the members list are only revealed when
+           Mode = "Invited members only" (anon_role='none'). -->
+      <div class="modal-field modal-field-access hidden" id="graph-modal-access">
+        <span>Access</span>
+        <div class="access-controls">
+
+          <!-- Mode picker — replaces the old <select> with the font-picker
+               custom button + popup pattern so it matches the rest of the
+               modal's typography. -->
+          <div class="access-row">
+            <span class="access-row-label">Mode</span>
+            <div class="font-picker access-picker" id="graph-modal-anon-picker">
+              <button type="button" class="font-picker-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <span class="font-picker-value" id="graph-modal-anon-label">Anyone with invite can view</span>
+                <span class="font-picker-caret" aria-hidden="true">
+                  <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+                </span>
+              </button>
+              <div class="font-picker-menu hidden" role="listbox">
+                <button type="button" class="font-picker-option" role="option" data-value="viewer">Anyone with invite can view</button>
+                <button type="button" class="font-picker-option" role="option" data-value="editor">Anyone with invite can edit</button>
+                <button type="button" class="font-picker-option" role="option" data-value="none">Invited members only</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Members section — only visible when Mode = Invited members only. -->
+          <div id="graph-modal-members-section" class="access-members-section hidden">
+            <div class="access-invite-row">
+              <input type="email" id="graph-modal-invite-email" placeholder="Invite by email" autocomplete="off" spellcheck="false">
+              <div class="font-picker access-picker-inline" id="graph-modal-invite-role-picker">
+                <button type="button" class="font-picker-trigger" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="font-picker-value" id="graph-modal-invite-role-label">Editor</span>
+                  <span class="font-picker-caret" aria-hidden="true">
+                    <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+                  </span>
+                </button>
+                <div class="font-picker-menu hidden" role="listbox">
+                  <button type="button" class="font-picker-option" role="option" data-value="editor">Editor</button>
+                  <button type="button" class="font-picker-option" role="option" data-value="viewer">Viewer</button>
+                </div>
+              </div>
+              <button id="graph-modal-invite-submit" type="button" class="primary">Add</button>
+            </div>
+            <p id="graph-modal-invite-error" class="modal-error hidden"></p>
+            <div id="graph-modal-members-list" class="access-members-list">
+              <p class="modal-hint">Just you so far.</p>
+            </div>
+          </div>
+
+        </div>
       </div>
 
       <div class="modal-field">
@@ -343,8 +405,79 @@
     <span id="hotkey-hint-text"></span>
   </div>
 
+  <div id="presence-bar" class="hidden" aria-label="Active collaborators"></div>
+
+  <!-- Generic in-app confirm modal (Phase B5d). Used in place of the
+       browser-native confirm() prompt. Driven via showConfirm() in app.js. -->
+  <div id="app-confirm-modal" class="modal hidden">
+    <div class="modal-content modal-content-form">
+      <h3 id="app-confirm-title">Confirm</h3>
+      <p id="app-confirm-body" class="modal-body-text"></p>
+      <div class="modal-actions modal-actions-center">
+        <button id="app-confirm-cancel" type="button">Cancel</button>
+        <button id="app-confirm-ok" class="primary" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent tokens panel (Phase B5d). Opened from the user pill in the sidebar
+       bottom when signed in. -->
+  <div id="agent-tokens-modal" class="modal hidden">
+    <div class="modal-content modal-content-form">
+      <h3>Agent tokens</h3>
+      <p class="modal-hint modal-hint-intro">
+        Tokens let Claude Code/Codex use 
+        <a href="https://github.com/lucasness/graphtask/blob/main/.claude/skills/graphtask/SKILL.md" target="_blank" rel="noopener noreferrer">skill</a>
+        to act as you. Save it as <code>GRAPHTASK_AGENT_TOKEN</code> in your env.
+      </p>
+
+      <div class="modal-field">
+        <span>New token</span>
+        <div class="input-with-buttons">
+          <input type="text" id="agent-tokens-label" maxlength="64" placeholder="Label (optional, e.g. laptop)" autocomplete="off" spellcheck="false">
+          <button id="agent-tokens-mint" type="button" class="primary">Generate</button>
+        </div>
+        <div id="agent-tokens-just-minted" class="agent-tokens-minted hidden">
+          <p class="agent-tokens-minted-warning">
+            <i class="ph ph-warning-circle" aria-hidden="true"></i>
+            Copy now — this token won't be shown again.
+          </p>
+          <div class="input-with-buttons">
+            <input type="text" id="agent-tokens-plaintext" readonly>
+            <button id="agent-tokens-copy" type="button" title="Copy"><i class="ph ph-copy"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-field">
+        <span>Your tokens</span>
+        <div id="agent-tokens-list" class="agent-tokens-list">
+          <p class="modal-hint" id="agent-tokens-empty">No tokens yet.</p>
+        </div>
+      </div>
+
+      <div class="modal-actions modal-actions-center">
+        <button id="agent-tokens-close" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="rename-modal" class="modal hidden">
+    <div class="modal-content modal-content-form">
+      <h3>Your name on this graph</h3>
+      <label class="modal-field modal-field-flush">
+        <input type="text" id="rename-modal-input" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Display name">
+      </label>
+      <p class="modal-hint">Only visible to people on this graph. Stored in your browser.</p>
+      <div class="modal-actions modal-actions-center">
+        <button id="rename-modal-cancel" type="button">Cancel</button>
+        <button id="rename-modal-save" class="primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/cytoscape@3/dist/cytoscape.min.js"></script>
   <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
   <script src="/app.js"></script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9fb48c35da61281b',t:'MTc3ODcwNTU1NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

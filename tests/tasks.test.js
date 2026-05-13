@@ -264,10 +264,11 @@ describe('Task CRUD', () => {
     });
 
     it('returns 404 for an unknown :gid', async () => {
+      // Phase B: requireGraphForMethod returns 404 for missing graphs before
+      // the handler runs (was 200 + [] under Phase A's "graph absent → empty
+      // list" permissive behavior).
       const res = await request(app).get('/api/graphs/zzzzzzzz/tasks');
-      // GET /tasks for a nonexistent graph just returns an empty list — no graph exists, no tasks for it.
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual([]);
+      expect(res.status).toBe(404);
     });
   });
 });

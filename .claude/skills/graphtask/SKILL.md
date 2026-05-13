@@ -2,20 +2,119 @@
 name: graphtask
 description: Materialize any multi-step plan as a graphtask graph, then drive execution from the graph. The graph IS your execution scaffold — not a side tracker. Tasks move todo → in_progress → review (never done; that's a human gate). Includes status-aware traversal, transactional bulk edges, and live canvas updates the user can watch.
 when_to_use: Use IMMEDIATELY after exiting Plan mode, after the user approves a plan, or any time you're about to execute multi-step work — turn the plan into a graph FIRST, then walk the graph task-by-task. Also fires on explicit triggers: "turn this plan into a graph", "track this in graphtask", "what should I work on next?", "what's blocking X?".
-allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *)
+allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *)
 ---
 
 # graphtask
 
-graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` (default `http://127.0.0.1:3000`) is the agent surface — you create graphs, add tasks (markdown with frontmatter), wire dependency or related edges between them, and update status as you work. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
+graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface — you create graphs, add tasks (markdown with frontmatter), wire dependency or related edges between them, and update status as you work. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
 
-There's no auth. Each graph's id is a random 16-char string and is bearer-token equivalent — anyone with the URL can read or modify the graph.
+## Deployment context (resolve before any other work)
 
-## Privacy / visibility model
+The skill runs against whatever instance `GRAPHTASK_BASE_URL` points at. Two shapes you'll see:
 
-Graphs have an `is_public` boolean (default `false`). New graphs are private. `GET /api/graphs` returns **only public graphs** — it's the home-page directory, not an enumeration. Private graphs are reachable only by their id (URL bearer token). Graphs you create through this skill default to private; the human can flip them via the in-app modal or by `PATCH /api/graphs/:id {"is_public":true}` if they want them on the home page.
+| Where it runs | Example `GRAPHTASK_BASE_URL` | Auth |
+|---|---|---|
+| Hosted | `https://graphtask.dev.wafer.works` | usually `clerk` |
+| Local (Docker or `npm start`) | `http://127.0.0.1:3000` (default fallback) | usually `none` |
 
-Graph names are no longer globally unique — duplicate-name `POST` and `PATCH` both succeed (200/201). Don't expect 409 on name conflicts.
+Always probe `GET $GRAPHTASK_BASE_URL/api/config` first — it returns `{auth_enabled, provider, viewer_user_id}`. If `auth_enabled: false`, every graph URL is bearer-token equivalent and you can read/write freely. If `auth_enabled: true`, see the access model below.
+
+## Access model (auth-enabled instances)
+
+Phase B adds ownership + sharing on top of URL-bearer access. Three layers in order of strictness:
+
+1. **Owner** (`graphs.owner_user_id`) — set when a signed-in user creates the graph. Full read/write/manage.
+2. **Members** (`graph_members.role`) — `viewer` or `editor`, per user. Granted by the owner via the in-app Access panel (or `POST /api/graphs/:gid/members {email, role}`). If the invitee has no account yet, the row sits in `pending_members` until they sign in.
+3. **Anonymous tier** (`graphs.anon_role`) — what someone hitting the URL gets if they aren't the owner or a member. Values: `none` (URL → 403), `viewer` (read only), `editor` (read+write, attributed anonymously). Default `viewer`. Owner changes it via `PATCH /api/graphs/:id {anon_role}`.
+
+Legacy graphs (`owner_user_id IS NULL`, created before Phase B or on a no-auth instance) always behave as URL-bearer regardless of mode.
+
+**For this skill specifically:** without an agent token, your writes look anonymous. On owned graphs with `anon_role=none`, those writes 403. Have the user generate a token (in-app: user pill → key icon → Generate) and export it as `GRAPHTASK_AGENT_TOKEN`. The identity block below picks it up automatically and attributes every write to that user. Tokens start with the prefix `gt_`.
+
+## Installation (if not already installed)
+
+If your user is asking you to install graphtask, run `install.sh` from the repo root — it copies this skill to the user's `~/.claude/skills/graphtask/` and merges the Stop + SessionStart hooks below into `~/.claude/settings.json` (idempotent, with a timestamped settings backup).
+
+```bash
+# From a cloned repo:
+bash install.sh
+
+# Or directly from GitHub:
+bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
+```
+
+The script honors two env overrides if the default paths don't match the user's setup:
+- `CLAUDE_HOME` — defaults to `~/.claude`. Override if the user's Claude Code config lives elsewhere (e.g. a managed wafer at `/data/claude-home/.claude`).
+- `GRAPHTASK_SKILL_URL` — defaults to the GitHub raw URL. Override to install from a fork or mirror.
+
+After install, remind the user to:
+1. Restart Claude Code so the hooks load.
+2. Set `GRAPHTASK_BASE_URL` if they're using a hosted instance (not `http://127.0.0.1:3000`).
+3. Install `jq` if missing (`brew install jq` / `apt install jq` / `apk add jq`).
+
+If `install.sh` doesn't fit (e.g., shared multi-user host, locked-down `settings.json`, custom hook manager), fall back to: copy `SKILL.md` to the user's skills directory manually, then add the hook snippet in "Agent presence cleanup (hooks)" below.
+
+## Agent identity (do this once per session)
+
+Every write should carry three headers so the live canvas shows you as `🤖 <owner>'s Claude` in the top-right avatar bar alongside human collaborators:
+
+- `X-Writer-Type: agent`
+- `X-Writer-Id` — a session-stable uuid
+- `X-Writer-Name` — `<owner>'s Claude` (owner = `git config user.name`, fallback random animal)
+
+Persist the identity to `.graphtask/agent-session.json` so all writes within one Claude Code session look like the same agent. Run this once at the top of your bash work and reference `${WRITE_HEADERS[@]}` in every subsequent curl that writes:
+
+```bash
+mkdir -p .graphtask
+if [ ! -f .graphtask/agent-session.json ]; then
+  OWNER="$(git config --get user.name 2>/dev/null)"
+  if [ -z "$OWNER" ]; then
+    ANIMALS=(Otter Heron Fox Bison Lynx Owl Quokka Hare Falcon Newt Badger Pangolin Wren Marten Capybara Caracal)
+    ADJECTIVES=(Quiet Bright Swift Clever Bold Gentle Brave Wise Calm Eager Sharp Nimble Steady Hopeful Witty Vivid Daring Curious Lively Mellow Kind Keen)
+    OWNER="${ADJECTIVES[$((RANDOM % ${#ADJECTIVES[@]}))]} ${ANIMALS[$((RANDOM % ${#ANIMALS[@]}))]}"
+  fi
+  AGENT_ID="$(cat /proc/sys/kernel/random/uuid)"
+  echo "{\"id\":\"$AGENT_ID\",\"name\":\"${OWNER}'s Claude\"}" > .graphtask/agent-session.json
+fi
+AGENT_ID="$(jq -r .id .graphtask/agent-session.json)"
+AGENT_NAME="$(jq -r .name .graphtask/agent-session.json)"
+
+WRITE_HEADERS=(
+  -H 'Content-Type: application/json'
+  -H 'X-Writer-Type: agent'
+  -H "X-Writer-Id: $AGENT_ID"
+  -H "X-Writer-Name: $AGENT_NAME"
+)
+
+# Authed deployments (AUTH_PROVIDER=clerk): the user generates an agent token
+# in the in-app Settings → Agent tokens panel and exports it. If the env var
+# is set, send it as a bearer token on every write so the server can attribute
+# the request to the user. On no-auth deployments the var is unset and the
+# block below is a no-op.
+if [ -n "$GRAPHTASK_AGENT_TOKEN" ]; then
+  WRITE_HEADERS+=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
+  READ_HEADERS=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
+else
+  READ_HEADERS=()
+fi
+```
+
+**Every write `curl` below should use `"${WRITE_HEADERS[@]}"` in place of the bare `-H 'Content-Type: application/json'`.** Reads (`GET`) only need `"${READ_HEADERS[@]}"` when you're accessing a private graph owned by the authed user — public reads work without it.
+
+After any write to a graph, record the gid so the optional cleanup hook (below) can depart your presence on session end:
+
+```bash
+grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
+```
+
+See [Agent presence cleanup (hooks)](#agent-presence-cleanup-hooks) for the optional Claude Code lifecycle hooks. Without the hook, the server's idle reaper removes you after 30 minutes of no writes.
+
+## Listing graphs and naming
+
+`GET /api/graphs` returns the graphs the **current authenticated viewer** can see (owned + member-of), or all graphs when `auth_enabled: false`. It is not a public directory; private graphs only reachable by id stay reachable by id.
+
+Graph names are not globally unique — duplicate-name `POST` and `PATCH` both succeed (200/201). Don't expect 409 on name conflicts.
 
 ## When this skill applies
 
@@ -59,12 +158,13 @@ fi
 mkdir -p .graphtask
 if [ ! -f .graphtask/graph-id ]; then
   curl -sS -X POST "$GT_BASE/api/graphs" \
-    -H 'Content-Type: application/json' \
+    "${WRITE_HEADERS[@]}" \
     -d '{"name":"Project plan"}' \
     | jq -r .id > .graphtask/graph-id
   grep -qxF '.graphtask/' .gitignore 2>/dev/null || echo '.graphtask/' >> .gitignore
 fi
 GID="$(cat .graphtask/graph-id)"
+grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
 ```
 
 If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/rotate-id` to invalidate it and update the local file with the new id from the response.
@@ -80,21 +180,21 @@ For each task, write a real markdown body — title alone is not enough. The bod
 ```bash
 # Tasks. Body content tells the user what you intend to do, in plain markdown.
 T1=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: todo\n---\n## Approach\nGrep src/auth/** for token reads. List call sites that need to switch to cookie-based reads.\n"}' \
   | jq -r .id)
 T2=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Implement cookie-based session\nstatus: todo\n---\n## Approach\nWrap the existing session middleware so reads come from `Set-Cookie` (httpOnly + secure) instead of the auth header.\n"}' \
   | jq -r .id)
 T3=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Update auth tests\nstatus: todo\n---\n## Approach\nSwitch test fixtures from header-based to cookie-jar style. Update assertions for Set-Cookie response headers.\n"}' \
   | jq -r .id)
 
 # Bulk dependencies — transactional, all-or-nothing.
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d "{\"edges\":[
     {\"source_id\":$T1,\"target_id\":$T2,\"type\":\"dependency\"},
     {\"source_id\":$T2,\"target_id\":$T3,\"type\":\"dependency\"}
@@ -135,12 +235,12 @@ PATCH replaces the entire `content` blob (frontmatter + body). Re-serialize the 
 ```bash
 # Moving from todo → in_progress with running notes
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: in_progress\n---\n## Approach\nGrep src/auth/** for token reads.\n\n## Findings so far\n- 4 call sites in src/auth/middleware.js read req.headers.authorization\n- 2 call sites in src/api/* call those middleware functions directly\n"}'
 
 # Moving to review with a self-contained summary
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: review\n---\n## Findings\n6 call sites total — 4 in src/auth/middleware.js, 2 in src/api/users.js and src/api/projects.js.\n\n## Suggested next step\nReplace the middleware-internal reads with a cookie-aware helper, then keep the api/* call sites unchanged (they go through the middleware anyway).\n\n## Verify\nRun `rg -n \"req.headers.authorization\" src/` — should return zero results after T2 lands.\n"}'
 ```
 
@@ -193,7 +293,7 @@ Switch a `related` edge to `dependency` (or vice versa), or repoint an edge to a
 
 ```bash
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"type":"related"}'
 ```
 
@@ -214,6 +314,47 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - The `done` status on tasks — never write it; that's the human's call.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
 
+## Agent presence cleanup (hooks)
+
+**Already handled by `install.sh`** — if the user ran the installer, both hooks below are already in their `~/.claude/settings.json`. The rest of this section documents what those hooks do and what the manual install looks like for environments where `install.sh` doesn't fit.
+
+The "Agent identity" headers at the top of this skill make you visible on the canvas while you work. Without cleanup, the avatar lingers between turns (and across your whole Claude Code session) until the 30-minute server-side reaper sweeps it.
+
+Two Claude Code hooks handle cleanup. `SessionStart` clears stale state from a previous session; `Stop` fires at the end of every agent response and departs your presence on every graph you touched — so the avatar disappears the instant you stop working and reappears on your next write. (`Stop` is the per-turn lifecycle event; for ungraceful session ends, the server's idle reaper is the safety net.)
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rm -f .graphtask/agent-session.json .graphtask/agent-session-graphs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "GT_BASE=\"${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}\"; if [ -f .graphtask/agent-session.json ] && [ -f .graphtask/agent-session-graphs ]; then AID=$(jq -r .id .graphtask/agent-session.json); while IFS= read -r g; do [ -n \"$g\" ] && curl -sS -X DELETE \"$GT_BASE/api/graphs/$g/presence/$AID\" -o /dev/null || true; done < .graphtask/agent-session-graphs; : > .graphtask/agent-session-graphs; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `Stop` script truncates `.graphtask/agent-session-graphs` (rather than deleting the identity file) so the next write within the same Claude Code session re-uses the same agent uuid — collaborators see the same `🤖 <owner>'s Claude` blink in and out, not a parade of fresh agents.
+
+The hook is optional. The skill itself works without it; the cost of skipping it is just lingering avatars until the 30-minute reaper catches them or you end the Claude Code session.
+
 ## 8. Per-graph appearance settings (do not touch unless asked)
 
 Each graph carries a `settings` JSONB object with optional keys:
@@ -229,12 +370,12 @@ Missing keys fall back to the viewer's app-level Defaults. PATCH merges; sending
 ```bash
 # Override font + background for this graph
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"settings":{"font":"garamond","bg_color":"#100F0F"}}'
 
 # Clear the per-graph font override (revert to default)
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
-  -H 'Content-Type: application/json' \
+  "${WRITE_HEADERS[@]}" \
   -d '{"settings":{"font":null}}'
 ```
 
@@ -246,12 +387,19 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/graphs` | List **public** graphs only |
-| POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `is_public=false` and `settings={}` |
-| GET | `/api/graphs/:id` | One graph; URL is the bearer token, returns private graphs too |
-| PATCH | `/api/graphs/:id` | `{name?, description?, is_public?, settings?}` — see section 8 for `settings` shape |
+| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}` — probe first to learn the deployment mode |
+| GET | `/api/graphs` | Lists graphs the viewer owns + is a member of (auth on); all graphs (auth off) |
+| POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `anon_role='viewer'` and `settings={}` |
+| GET | `/api/graphs/:id` | One graph; also returns `viewer_can_edit` / `viewer_can_manage` based on the caller's role |
+| PATCH | `/api/graphs/:id` | `{name?, description?, anon_role?, settings?}` — `anon_role` ∈ `none | viewer | editor`; see section 8 for `settings` |
 | DELETE | `/api/graphs/:id` | Cascades to tasks + edges |
-| POST | `/api/graphs/:id/rotate-id` | Invalidates the URL; returns the new id |
+| POST | `/api/graphs/:id/rotate-id` | Issues a new id; old URL stops resolving |
+| GET | `/api/graphs/:gid/members` | `{members, pending}` — manage-gated read |
+| POST | `/api/graphs/:gid/members` | `{email, role}` — promotes to member if email matches a user, else stashes pending |
+| DELETE | `/api/graphs/:gid/members/:userId` | Kick a real member; emits SSE so the kicked browser evicts in real time |
+| DELETE | `/api/graphs/:gid/members/pending/:email` | Cancel a pending invite |
+| GET | `/api/me` | Caller's user row (auth-enabled instances) |
+| GET | `/api/me/agent_tokens` / POST / DELETE | Agent-token CRUD; user-facing, normally driven from the in-app modal |
 | GET | `/api/graphs/:gid/tasks` | List tasks |
 | POST | `/api/graphs/:gid/tasks` | `{content}` markdown |
 | GET | `/api/graphs/:gid/tasks/:id` | One task |

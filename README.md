@@ -27,22 +27,30 @@ settings (`⋮` → Rotate) to revoke.
 **Use it with a Claude Code agent**
 
 ```sh
-# 1. Install the skill (one-time; available in every project on your machine)
-mkdir -p ~/.claude/skills/graphtask
-curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
-  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
+# 1. One-shot install: copies the skill into ~/.claude/skills/graphtask/
+#    AND merges the presence-cleanup hooks into ~/.claude/settings.json.
+#    Idempotent; settings.json is backed up before any change.
+bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
 
-# 2. Install jq (the skill's recipes parse JSON with it)
+# 2. Install jq (the skill's recipes and the hooks parse JSON with it)
 brew install jq        # macOS — or: apt install jq / apk add jq
 
 # 3. Point the agent at the hosted instance
 export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
 
-# 4. Run Claude Code in any project you want to track
+# 4. Restart Claude Code so the new hooks load, then in any project:
 cd ~/projects/your-project
 claude
-# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
+# Prompt: "Turn this plan into a graph" or "Track this in graphtask"
 ```
+
+What `install.sh` does — also visible in the script itself:
+- copies `SKILL.md` to `~/.claude/skills/graphtask/`
+- merges two hooks into `~/.claude/settings.json` (with a `.bak.<timestamp>` backup):
+  - **SessionStart**: clears any stale agent-session files from a prior crash
+  - **Stop**: departs the agent's presence at the end of every response so the 🤖 avatar blinks out cleanly when the agent stops working
+
+Override `CLAUDE_HOME` if your Claude config lives somewhere other than `~/.claude`.
 
 The agent creates a graph on first use and writes its id to
 `.graphtask/graph-id` in the project. Open
@@ -140,6 +148,26 @@ from `.env` by `npm start`)
 - If neither is set, falls back to `postgresql://postgres@localhost/graphtask`.
 - `PORT` _(optional, default `3000`)_ — port the Express server binds to on
   `127.0.0.1`.
+- `AUTH_PROVIDER` _(optional, default `none`)_ — see "Auth modes" below.
+
+See `.env.example` for a fully-commented template.
+
+**Auth modes**
+
+graphtask supports three deployment shapes; pick one at process start via
+`AUTH_PROVIDER`. The default is no auth, and that's the recommended mode for
+local dev and single-user self-hosted installs.
+
+| `AUTH_PROVIDER` | Required env | Behavior |
+|---|---|---|
+| `none` _(default)_ | — | No sign-in UI. Every graph id is a bearer token, exactly as before. |
+| `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. Graphs created anonymously stay legacy URL-bearer forever. |
+
+Legacy (un-owned) graphs never lose URL-bearer access regardless of mode, so
+flipping a previously-no-auth deployment to `clerk` does not lock anyone out
+of their existing graphs. Owners share an owned graph by either flipping
+`anon_role` (link-shared) or adding members by email; agents authenticate
+with a `gt_*` bearer token minted from the in-app key-icon panel.
 
 **Setup**
 
@@ -179,6 +207,21 @@ caps concurrent viewers at the same number.
   equivalent in your supervisor's config so the **hard** limit is
   raised before the node process starts. A non-root process can only
   raise its soft limit up to the existing hard limit.
+
+**Presence assumes a single process**
+
+The collaborator avatars in the top-right of each graph are driven by
+in-memory per-process state. A single Node process can comfortably
+serve hundreds-to-thousands of concurrent SSE viewers, which is enough
+for any realistic graph. But if you fan the server across multiple Node
+processes behind a load balancer, viewers routed to different processes
+won't see each other's avatars — presence is partitioned per process.
+
+If you need horizontal scaling, either pin SSE traffic for a given
+graph to one process (e.g. consistent-hash sticky routing on the graph
+id) or fan presence events across processes via Postgres `LISTEN/NOTIFY`
+or Redis pub/sub. The single-server `docker compose` setup and the
+default `npm start` are not affected.
 
 **Use it with a Claude Code agent**
 
@@ -492,8 +535,9 @@ edges(
 - Cycle detection (POST + PATCH + bulk) runs inside a single transaction
   with `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers
   can't both pass the check.
-- Graph names are unique on a normalized form (lowercase + whitespace
-  stripped) — `graphs_name_norm_uniq` index. Name conflicts return 409.
+- Graph names are not globally unique — duplicate-name `POST` and `PATCH`
+  both succeed. The old `graphs_name_norm_uniq` index was dropped in
+  Phase B; rely on `id`, not `name`, for any lookup.
 
 ---
 
@@ -528,6 +572,9 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
+| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
+| GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
+| GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |
 
 `requireIntegerParam('id')` middleware on numeric `:id` segments returns 400
 on non-integer values (otherwise Postgres would raise a 500). `:gid` is an

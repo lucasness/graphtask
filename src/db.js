@@ -1,7 +1,22 @@
 import pg from 'pg';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function createPool(connectionString) {
   return new pg.Pool({ connectionString });
+}
+
+// Apply db/schema.sql against the live pool. Schema is idempotent (CREATE
+// TABLE IF NOT EXISTS, ADD COLUMN IF NOT EXISTS, DO $$ ... IF NOT EXISTS
+// guards) so this is safe to run on every server start. Without it, fresh
+// deploys or schema changes would silently fail at the first query — which
+// is exactly the trap that bit Phase B5d's auth-on rollout.
+export async function applySchema(targetPool) {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const schemaPath = path.join(here, '..', 'db', 'schema.sql');
+  const sql = fs.readFileSync(schemaPath, 'utf8');
+  await targetPool.query(sql);
 }
 
 function resolveConnectionString() {

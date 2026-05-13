@@ -2,14 +2,973 @@ let cy;
 let editingTaskId = null;
 let richEditor = null;
 
-// Identifies this client as a human writer for server-side conflict
-// resolution (see src/writerType.js + docs/optimistic-concurrency.md).
-// Sent on every write request so a concurrent agent edit can't silently
-// overwrite a human's same-field change.
-const WRITE_HEADERS = {
-  'Content-Type': 'application/json',
-  'X-Writer-Type': 'human',
+// --- Per-graph identity (presence + writer headers) ---
+// Each graph gets its own {id, name} stored in localStorage. The id is a
+// random uuid; the name starts as a random animal and is user-renameable.
+// Sent on every write so the server can attribute conflicts (see
+// src/writerType.js) AND surface live presence (see src/presence.js).
+const IDENTITY_KEY_PREFIX = 'graphtask:identity:';
+const PRESENCE_ANIMALS = [
+  'Otter', 'Heron', 'Fox', 'Bison', 'Lynx', 'Owl', 'Quokka', 'Hare',
+  'Falcon', 'Newt', 'Badger', 'Pangolin', 'Salamander', 'Tapir', 'Wren',
+  'Marten', 'Capybara', 'Civet', 'Dormouse', 'Caracal', 'Mongoose',
+];
+const PRESENCE_ADJECTIVES = [
+  'Quiet', 'Bright', 'Swift', 'Clever', 'Bold', 'Gentle', 'Brave', 'Wise',
+  'Calm', 'Eager', 'Sharp', 'Nimble', 'Steady', 'Hopeful', 'Witty', 'Vivid',
+  'Daring', 'Curious', 'Lively', 'Mellow', 'Kind', 'Keen',
+];
+function randomAnimalName() {
+  // Two-word default: "<Adjective> <Animal>". Pairing yields distinguishable
+  // initials (e.g. "QO" for Quiet Otter) and a friendlier read than a bare
+  // animal name. initialsFromName() already takes the first letter of the
+  // first and last word, so this just works downstream.
+  const adj = PRESENCE_ADJECTIVES[Math.floor(Math.random() * PRESENCE_ADJECTIVES.length)];
+  const animal = PRESENCE_ANIMALS[Math.floor(Math.random() * PRESENCE_ANIMALS.length)];
+  return `${adj} ${animal}`;
+}
+function newWriterId() {
+  try { return crypto.randomUUID(); } catch {}
+  return 'w-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+function getOrCreateIdentity(gid) {
+  if (!gid) return null;
+  const key = IDENTITY_KEY_PREFIX + gid;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.id === 'string' && typeof parsed.name === 'string') {
+        return parsed;
+      }
+    }
+  } catch {}
+  // Fresh identity defaults to `chosen: false` — i.e. the random animal name
+  // is a fallback, not a deliberate user choice. The rename modal flips this
+  // flag so a per-graph rename always wins over Clerk's display name.
+  const fresh = { id: newWriterId(), name: randomAnimalName(), chosen: false };
+  try { localStorage.setItem(key, JSON.stringify(fresh)); } catch {}
+  return fresh;
+}
+function setIdentityName(gid, name) {
+  const trimmed = (name || '').trim().slice(0, 64);
+  if (!trimmed) return null;
+  const existing = getOrCreateIdentity(gid);
+  if (!existing) return null;
+  // chosen: true means "user explicitly set this name on this graph" — gets
+  // priority over the signed-in Clerk identity in effectiveIdentity below.
+  const updated = { ...existing, name: trimmed, chosen: true };
+  try { localStorage.setItem(IDENTITY_KEY_PREFIX + gid, JSON.stringify(updated)); } catch {}
+  return updated;
+}
+// effectiveIdentity layers Clerk on top of the stored per-graph identity:
+//   per-graph rename (chosen: true) > Clerk display name > stored animal.
+// The writer `id` always comes from storage so presence stays stable across
+// sign-in / sign-out — only the display name changes.
+function effectiveIdentity(gid) {
+  const stored = getOrCreateIdentity(gid);
+  if (!stored) return null;
+  if (stored.chosen) return stored;
+  if (window.gtUser) {
+    return {
+      id: stored.id,
+      name: window.gtUser.displayName || window.gtUser.email || stored.name,
+      chosen: false,
+    };
+  }
+  return stored;
+}
+function colorForId(id) {
+  // Deterministic HSL hue from id. Saturation/lightness tuned for vibrancy
+  // so all 360 hues read as colorful (no muddy/dark slots) and contrast
+  // cleanly with the white initials text.
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 70%, 58%)`;
+}
+function initialsFromName(name) {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// ---- Auth bootstrap (Phase B) -----------------------------------------------
+//
+// On boot we GET /api/config. If `auth_enabled` is false (AUTH_PROVIDER=none)
+// nothing in the sidebar changes — Phase A behavior preserved. If true, we
+// dynamic-load @clerk/clerk-js, init with the publishable key, render
+// sign-in chrome at the bottom of the sidebar, and publish auth state via
+// `window.gtUser` + a `gtuserchange` event for other slices to consume.
+const gtAuth = {
+  enabled: false,
+  provider: null,
+  publishableKey: null,
+  clerk: null,
+  user: null,
+  ready: false,
 };
+window.gtUser = null;
+
+async function bootAuth() {
+  let cfg;
+  try {
+    cfg = await fetch('/api/config').then((r) => r.json());
+  } catch (err) {
+    console.error('failed to load /api/config:', err);
+    gtAuth.ready = true;
+    return;
+  }
+  gtAuth.enabled = !!cfg.auth_enabled;
+  gtAuth.provider = cfg.provider || 'none';
+  gtAuth.publishableKey = cfg.publishable_key || null;
+
+  if (!gtAuth.enabled || !gtAuth.publishableKey) {
+    gtAuth.ready = true;
+    return;
+  }
+
+  try {
+    // Clerk's browser SDK auto-initializes from a `data-clerk-publishable-key`
+    // attribute on its own script tag and exposes the resulting instance as
+    // `window.Clerk` once loaded. We don't construct it ourselves — calling
+    // `new Clerk(...)` on the already-initialized instance throws.
+    await loadClerkScript();
+    gtAuth.clerk = window.Clerk;
+    if (!gtAuth.clerk.loaded) {
+      await gtAuth.clerk.load();
+    }
+    syncUserFromClerk();
+    gtAuth.clerk.addListener(syncUserFromClerk);
+  } catch (err) {
+    console.error('Clerk init failed — auth chrome disabled:', err);
+  }
+  gtAuth.ready = true;
+  renderAuthChrome();
+}
+
+function loadClerkScript() {
+  return new Promise((resolve, reject) => {
+    // Clerk's CDN path is the per-instance hostname embedded in the
+    // publishable key (e.g. `discrete-mouse-59.clerk.accounts.dev`). Per
+    // Clerk's docs, the loader bootstraps itself from a
+    // `data-clerk-publishable-key` attribute on its own script tag and
+    // assigns the resulting instance to `window.Clerk` once everything is
+    // wired. We mirror that recommended pattern exactly.
+    const host = decodeFrontendHost(gtAuth.publishableKey);
+    const src = host
+      ? `https://${host}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`
+      : 'https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js';
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.crossOrigin = 'anonymous';
+    s.setAttribute('data-clerk-publishable-key', gtAuth.publishableKey);
+    s.onload = () => waitForClerkGlobal().then(resolve).catch(reject);
+    s.onerror = () => reject(new Error(`failed to load Clerk JS from ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+function waitForClerkGlobal(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    (function poll() {
+      // After auto-init, `window.Clerk` is the instance — has methods like
+      // `openSignIn`, `signOut`, `addListener`. Wait for one of those to
+      // exist before declaring ready.
+      if (window.Clerk && typeof window.Clerk.addListener === 'function') {
+        return resolve();
+      }
+      if (Date.now() > deadline) {
+        return reject(new Error('Clerk JS loaded but window.Clerk never appeared'));
+      }
+      setTimeout(poll, 50);
+    })();
+  });
+}
+
+// pk_test_<base64>$  — the base64 chunk encodes "<host>$" where host is the
+// frontend API hostname. We decode it once at boot to pick the per-instance
+// CDN path. Failure falls back to the generic CDN.
+function decodeFrontendHost(pk) {
+  try {
+    const b64 = pk.replace(/^pk_(test|live)_/, '');
+    const decoded = atob(b64);
+    const host = decoded.replace(/\$$/, '').trim();
+    return /^[a-z0-9.-]+$/.test(host) ? host : null;
+  } catch {
+    return null;
+  }
+}
+
+function syncUserFromClerk() {
+  const u = gtAuth.clerk?.user;
+  if (u) {
+    gtAuth.user = {
+      // Clerk's user_xxx id — used only for display + chrome. The internal
+      // users.id UUID needed for matching graph.owner_user_id is fetched
+      // separately via /api/config in refreshViewerUserId().
+      providerUserId: u.id,
+      id: gtAuth.viewerUserId || null,
+      email: u.primaryEmailAddress?.emailAddress ?? null,
+      displayName: u.fullName || u.username || u.primaryEmailAddress?.emailAddress || null,
+    };
+  } else {
+    gtAuth.user = null;
+    gtAuth.viewerUserId = null;
+  }
+  window.gtUser = gtAuth.user;
+  window.dispatchEvent(new CustomEvent('gtuserchange', { detail: gtAuth.user }));
+  renderAuthChrome();
+}
+
+// Re-fetch /api/config with the Clerk session attached so the server resolves
+// `req.user` and returns our internal `viewer_user_id`. Called after every
+// sign-in (gtuserchange) so the sidebar can partition by owner correctly.
+async function refreshViewerUserId() {
+  try {
+    const res = await authedFetch('/api/config');
+    if (!res.ok) return;
+    const cfg = await res.json();
+    gtAuth.viewerUserId = cfg.viewer_user_id || null;
+    if (gtAuth.user) {
+      gtAuth.user = { ...gtAuth.user, id: gtAuth.viewerUserId };
+      window.gtUser = gtAuth.user;
+    }
+  } catch (err) {
+    console.error('refreshViewerUserId failed', err);
+  }
+}
+
+// Toggle read-only mode based on the active graph's `viewer_can_edit` flag
+// (set by GET /api/graphs/:id on the server using canEdit). Body class
+// `readonly` drives the CSS that hides edit affordances; the banner offers
+// a sign-in shortcut when auth is enabled and the viewer is anonymous.
+function applyReadOnlyState() {
+  const banner = document.getElementById('readonly-banner');
+  const signinBtn = document.getElementById('readonly-signin-btn');
+  const canEdit = !accessDenied && currentGraph?.viewer_can_edit !== false; // null/undefined → allow (back-compat)
+  document.body.classList.toggle('forbidden', accessDenied);
+  document.body.classList.toggle('readonly', !accessDenied && !canEdit);
+  if (banner) banner.classList.toggle('hidden', accessDenied || canEdit);
+  if (signinBtn) {
+    // Only show "Sign in to edit" when auth is on AND the user isn't already
+    // signed in. If they're signed in and can't edit, the answer isn't
+    // signing in again.
+    const wantSignIn = gtAuth.enabled && !gtAuth.user;
+    signinBtn.classList.toggle('hidden', !wantSignIn);
+  }
+}
+
+// Wire the sign-in button in the read-only banner exactly once.
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('readonly-signin-btn')?.addEventListener('click', () => {
+    gtAuth.clerk?.openSignIn();
+  });
+});
+
+// When the Clerk session changes (sign-in or sign-out), re-announce presence
+// on the active graph so collaborators see the new display name immediately,
+// and re-render our own avatar bar. The stored writer id stays the same —
+// presence rows keyed on it just get their `name` field updated.
+window.addEventListener('gtuserchange', async () => {
+  // Pull the internal viewer_user_id first so the sidebar partition can
+  // match graph.owner_user_id correctly.
+  await refreshViewerUserId();
+  if (typeof activeGraphId !== 'undefined' && activeGraphId) {
+    presenceAnnounce(activeGraphId);
+    renderPresenceBar();
+  }
+  applyReadOnlyState();
+  // Reconcile locally-created graphs (created while anon, marked
+  // `created: true` in recents) with server ownership. Best-effort: each
+  // claim is independent. Errors silently skip the entry.
+  if (window.gtUser) {
+    await claimLocalCreatedGraphs();
+  }
+  try { await fetchGraphsList(); } catch (err) { console.error('refresh after auth change', err); }
+});
+
+// Walk localStorage recents and POST /api/graphs/:id/claim for every entry
+// the user locally marked as created. Server enforces "legacy only" — owned
+// graphs return 403 and we move on. Once successful, the graph appears in
+// the sidebar under "My graphs" on the next fetchGraphsList.
+async function claimLocalCreatedGraphs() {
+  const candidates = recentsRead().filter((r) => r.created === true);
+  for (const r of candidates) {
+    try {
+      await authedFetch(`/api/graphs/${encodeURIComponent(r.id)}/claim`, { method: 'POST' });
+      // Don't care about the response shape: success, already-owner, or 403
+      // (someone else claimed it first). All resolved by the next list fetch.
+    } catch (err) {
+      // Network/transient — skip; the next sign-in will retry.
+    }
+  }
+}
+
+// Generic in-app confirm. Replaces window.confirm() so prompts match the
+// rest of the app's modal styling instead of the browser's chrome.
+// Returns Promise<boolean> — resolves true on OK, false on Cancel/Escape/backdrop.
+function showConfirm({ title = 'Confirm', body = '', okText = 'OK', cancelText = 'Cancel', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('app-confirm-modal');
+    const titleEl = document.getElementById('app-confirm-title');
+    const bodyEl = document.getElementById('app-confirm-body');
+    const okBtn = document.getElementById('app-confirm-ok');
+    const cancelBtn = document.getElementById('app-confirm-cancel');
+    if (!modal) {
+      // Defensive fallback if the modal HTML didn't load — fall back to the
+      // native confirm rather than silently failing.
+      return resolve(window.confirm(body || title));
+    }
+    titleEl.textContent = title;
+    bodyEl.textContent = body;
+    okBtn.textContent = okText;
+    cancelBtn.textContent = cancelText;
+    okBtn.classList.toggle('danger', danger);
+    okBtn.classList.toggle('primary', !danger);
+    modal.classList.remove('hidden');
+
+    function cleanup(result) {
+      modal.classList.add('hidden');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onBackdrop(e) { if (e.target === modal) cleanup(false); }
+    function onKey(e) {
+      if (e.key === 'Escape') cleanup(false);
+      else if (e.key === 'Enter') cleanup(true);
+    }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+    // Give the OK button focus so Enter/Esc work immediately without forcing
+    // the user to tab in. Done in a microtask so the modal is paint-visible.
+    setTimeout(() => okBtn.focus(), 0);
+  });
+}
+
+// Authed fetch: same shape as global fetch, but attaches the Clerk session
+// JWT as a Bearer header when one is available. Use this for any `/api/*`
+// call from the browser that needs to be attributed to the signed-in user.
+// For now we call it from the agent-tokens UI (B5d) — later slices route
+// through here too. On auth-off deployments it's a passthrough.
+async function authedFetch(url, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (gtAuth.clerk?.session) {
+    try {
+      const token = await gtAuth.clerk.session.getToken();
+      if (token) headers.set('Authorization', `Bearer ${token}`);
+    } catch (err) {
+      console.error('failed to fetch Clerk session token', err);
+    }
+  }
+  return fetch(url, { ...init, headers, credentials: 'same-origin' });
+}
+
+function renderAuthChrome() {
+  const host = document.getElementById('sidebar-auth');
+  if (!host) return;
+  if (!gtAuth.enabled) {
+    host.innerHTML = '';
+    return;
+  }
+  if (gtAuth.user) {
+    const name = gtAuth.user.displayName || gtAuth.user.email || 'You';
+    host.innerHTML = `
+      <div class="sb-user-pill" title="${escapeHtml(gtAuth.user.email || '')}">
+        <span class="sb-user-avatar">${escapeHtml(initialsFromName(name))}</span>
+        <span class="sb-user-name">${escapeHtml(name)}</span>
+        <button type="button" class="sb-user-icon" id="sb-tokens-btn" title="Agent tokens" aria-label="Agent tokens">
+          <i class="ph ph-key" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="sb-user-icon" id="sb-signout-btn" title="Sign out" aria-label="Sign out">
+          <i class="ph ph-sign-out" aria-hidden="true"></i>
+        </button>
+      </div>
+    `;
+    document.getElementById('sb-signout-btn')?.addEventListener('click', async () => {
+      try { await gtAuth.clerk.signOut(); } catch (e) { console.error('sign out failed', e); }
+    });
+    document.getElementById('sb-tokens-btn')?.addEventListener('click', () => openAgentTokensModal());
+  } else {
+    host.innerHTML = `
+      <button type="button" class="sb-bottom-btn sb-signin-btn" id="sb-signin-btn">
+        <i class="ph ph-sign-in" aria-hidden="true"></i>
+        <span class="sb-bottom-label">Sign in</span>
+      </button>
+    `;
+    document.getElementById('sb-signin-btn')?.addEventListener('click', () => {
+      gtAuth.clerk?.openSignIn();
+    });
+  }
+}
+
+// ---- Agent tokens panel (Phase B5d) ----------------------------------------
+//
+// Opens from the key-icon button on the user pill. Talks to /api/me/agent_tokens.
+// The mint response is the only place the plaintext token is ever shown — kept
+// visible inside the modal until the modal closes, then never re-displayed.
+
+let agentTokensModalWired = false;
+
+async function openAgentTokensModal() {
+  if (!gtAuth.user) return;
+  const modal = document.getElementById('agent-tokens-modal');
+  if (!modal) return;
+  if (!agentTokensModalWired) wireAgentTokensModal();
+  // Clear any previously-displayed plaintext from a prior mint.
+  document.getElementById('agent-tokens-just-minted')?.classList.add('hidden');
+  document.getElementById('agent-tokens-label').value = '';
+  modal.classList.remove('hidden');
+  await refreshAgentTokensList();
+}
+
+function closeAgentTokensModal() {
+  document.getElementById('agent-tokens-modal')?.classList.add('hidden');
+  // Clear the plaintext block on close — it should never linger after the
+  // modal is dismissed.
+  document.getElementById('agent-tokens-plaintext').value = '';
+  document.getElementById('agent-tokens-just-minted')?.classList.add('hidden');
+  // Collapse any open per-row confirm expansion + tear down the
+  // outside-click listener so it doesn't leak across modal opens.
+  document
+    .querySelectorAll('#agent-tokens-list .agent-token-row')
+    .forEach((row) => {
+      const trash = row.querySelector('.agent-token-trash');
+      if (trash?.dataset.state === 'confirming') cancelRowRevoke(row);
+    });
+}
+
+function wireAgentTokensModal() {
+  agentTokensModalWired = true;
+  document.getElementById('agent-tokens-close')?.addEventListener('click', closeAgentTokensModal);
+  document.getElementById('agent-tokens-mint')?.addEventListener('click', mintAgentToken);
+  document.getElementById('agent-tokens-copy')?.addEventListener('click', () => {
+    const input = document.getElementById('agent-tokens-plaintext');
+    if (!input) return;
+    input.select();
+    try { navigator.clipboard.writeText(input.value); } catch {}
+  });
+  // Allow Enter in the label field to submit a mint.
+  document.getElementById('agent-tokens-label')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); mintAgentToken(); }
+  });
+}
+
+async function refreshAgentTokensList() {
+  const listEl = document.getElementById('agent-tokens-list');
+  if (!listEl) return;
+  try {
+    const res = await authedFetch('/api/me/agent_tokens');
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const tokens = await res.json();
+    // The API returns the full audit trail (active + revoked) so a future
+    // "history" toggle can surface revoked tokens. The active panel shows
+    // only unrevoked ones to keep the list clean.
+    const active = Array.isArray(tokens) ? tokens.filter((t) => !t.revoked_at) : [];
+    if (active.length === 0) {
+      // No tokens → drop the bordered list framing entirely; just show a
+      // muted "No tokens" hint under the eyebrow label.
+      listEl.classList.add('is-empty');
+      listEl.innerHTML = '<p class="agent-tokens-empty-hint">No tokens</p>';
+      return;
+    }
+    listEl.classList.remove('is-empty');
+    listEl.innerHTML = active.map((t) => renderTokenRow(t)).join('');
+    wireTokenRowEvents(listEl);
+  } catch (err) {
+    console.error('failed to load agent tokens', err);
+    listEl.innerHTML = '<p class="modal-hint">Failed to load tokens.</p>';
+  }
+}
+
+function formatUtcStamp(iso) {
+  return new Date(iso).toISOString().replace('T', ' ').replace(/\..+Z$/, ' UTC');
+}
+
+function renderTokenRow(t) {
+  // Confirm phrase: the user types the token's label (or 'revoke' if there's
+  // no label) to arm the destructive action. Matches GitHub's repo-delete
+  // pattern — typing forces a deliberate beat between intent and effect.
+  const label = t.label || '(unlabeled)';
+  const expected = (t.label || 'revoke').trim();
+  const usedLine = t.last_used_at
+    ? `Last used ${formatUtcStamp(t.last_used_at)}`
+    : 'Never used';
+  const createdLine = `Created ${formatUtcStamp(t.created_at)}`;
+  return `
+    <div class="agent-token-row" data-token-id="${escapeHtml(t.id)}" data-expected="${escapeHtml(expected)}">
+      <div class="agent-token-row-top">
+        <div class="agent-token-meta">
+          <div class="agent-token-label">${escapeHtml(label)}</div>
+          <div class="agent-token-times">
+            <div>${escapeHtml(createdLine)}</div>
+            <div>${escapeHtml(usedLine)}</div>
+          </div>
+        </div>
+        <button type="button" class="agent-token-trash" data-state="idle" title="Revoke" aria-label="Revoke">
+          <i class="ph ph-trash" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="agent-token-confirm hidden">
+        <p class="agent-token-warning">
+          <i class="ph ph-warning-circle" aria-hidden="true"></i>
+          Revoking will cause errors for agents using this token.
+        </p>
+        <div class="agent-token-confirm-row">
+          <input type="text" class="agent-token-confirm-input"
+                 placeholder='Type "${escapeHtml(expected)}" to confirm'
+                 autocomplete="off" spellcheck="false">
+          <button type="button" class="agent-token-confirm-btn danger" disabled data-state="pending">Revoke</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireTokenRowEvents(listEl) {
+  // Event-delegated handlers so we don't re-wire per row on every list refresh.
+  listEl.addEventListener('click', onTokenRowClick);
+  listEl.addEventListener('input', onTokenRowInput);
+  listEl.addEventListener('keydown', onTokenRowKeydown);
+}
+
+function onTokenRowClick(e) {
+  const row = e.target.closest('.agent-token-row');
+  if (!row) return;
+  const trash = e.target.closest('.agent-token-trash');
+  if (trash) {
+    // Trash icon toggles the confirm expansion. Idle → open. Confirming → cancel.
+    if (trash.dataset.state === 'idle') startRowRevoke(row);
+    else cancelRowRevoke(row);
+    return;
+  }
+  if (e.target.closest('.agent-token-confirm-btn')) {
+    const btn = e.target.closest('.agent-token-confirm-btn');
+    if (btn.dataset.state === 'armed') doRowRevoke(row);
+  }
+}
+
+// Cancel any open confirm expansion when the user clicks outside its row.
+// Registered lazily — only attached to document while a row is confirming,
+// torn down when none are.
+let _tokenConfirmOutsideHandler = null;
+function ensureOutsideClickHandler() {
+  if (_tokenConfirmOutsideHandler) return;
+  _tokenConfirmOutsideHandler = (e) => {
+    const listEl = document.getElementById('agent-tokens-list');
+    if (!listEl) return;
+    listEl.querySelectorAll('.agent-token-row').forEach((r) => {
+      const trash = r.querySelector('.agent-token-trash');
+      if (trash?.dataset.state === 'confirming' && !r.contains(e.target)) {
+        cancelRowRevoke(r);
+      }
+    });
+  };
+  document.addEventListener('mousedown', _tokenConfirmOutsideHandler, true);
+}
+function teardownOutsideClickHandlerIfIdle() {
+  const stillConfirming = document.querySelector(
+    '#agent-tokens-list .agent-token-trash[data-state="confirming"]',
+  );
+  if (!stillConfirming && _tokenConfirmOutsideHandler) {
+    document.removeEventListener('mousedown', _tokenConfirmOutsideHandler, true);
+    _tokenConfirmOutsideHandler = null;
+  }
+}
+
+function onTokenRowInput(e) {
+  if (!e.target.classList.contains('agent-token-confirm-input')) return;
+  const row = e.target.closest('.agent-token-row');
+  if (row) updateRowArmedState(row);
+}
+
+function onTokenRowKeydown(e) {
+  if (!e.target.classList.contains('agent-token-confirm-input')) return;
+  const row = e.target.closest('.agent-token-row');
+  if (!row) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelRowRevoke(row);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const btn = row.querySelector('.agent-token-confirm-btn');
+    if (btn?.dataset.state === 'armed') doRowRevoke(row);
+  }
+}
+
+function startRowRevoke(row) {
+  const trash = row.querySelector('.agent-token-trash');
+  const confirmBtn = row.querySelector('.agent-token-confirm-btn');
+  const confirmEl = row.querySelector('.agent-token-confirm');
+  const input = row.querySelector('.agent-token-confirm-input');
+  trash.dataset.state = 'confirming';
+  trash.classList.add('is-confirming');
+  confirmBtn.dataset.state = 'pending';
+  confirmBtn.disabled = true;
+  confirmEl.classList.remove('hidden');
+  input.value = '';
+  ensureOutsideClickHandler();
+  setTimeout(() => input.focus(), 0);
+}
+
+function cancelRowRevoke(row) {
+  const trash = row.querySelector('.agent-token-trash');
+  const confirmEl = row.querySelector('.agent-token-confirm');
+  trash.dataset.state = 'idle';
+  trash.classList.remove('is-confirming');
+  confirmEl.classList.add('hidden');
+  row.querySelector('.agent-token-confirm-input').value = '';
+  teardownOutsideClickHandlerIfIdle();
+}
+
+function updateRowArmedState(row) {
+  const btn = row.querySelector('.agent-token-confirm-btn');
+  const expected = row.dataset.expected;
+  const typed = row.querySelector('.agent-token-confirm-input').value.trim();
+  if (typed === expected) {
+    btn.dataset.state = 'armed';
+    btn.disabled = false;
+  } else {
+    btn.dataset.state = 'pending';
+    btn.disabled = true;
+  }
+}
+
+async function doRowRevoke(row) {
+  const id = row.dataset.tokenId;
+  if (!id) return;
+  try {
+    const res = await authedFetch(`/api/me/agent_tokens/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && res.status !== 404) throw new Error(`status ${res.status}`);
+    await refreshAgentTokensList();
+  } catch (err) {
+    console.error('revoke failed', err);
+    showHint('Failed to revoke — see console.', 'page');
+  }
+}
+
+async function mintAgentToken() {
+  const labelEl = document.getElementById('agent-tokens-label');
+  const label = labelEl ? labelEl.value.trim() : '';
+  try {
+    const res = await authedFetch('/api/me/agent_tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: label || null }),
+    });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const body = await res.json();
+    document.getElementById('agent-tokens-plaintext').value = body.token;
+    document.getElementById('agent-tokens-just-minted')?.classList.remove('hidden');
+    labelEl.value = '';
+    await refreshAgentTokensList();
+  } catch (err) {
+    console.error('mint failed', err);
+    showHint('Failed to mint token — see console.', 'page');
+  }
+}
+
+// Reusable picker — same trigger/menu shape as the font-picker but driven by
+// `data-value` per option and a callback. Returns a teardown function that
+// removes the bound listeners. Use this to replace ugly native <select>
+// dropdowns inside modals.
+function wirePicker(rootEl, options) {
+  const trigger = rootEl.querySelector('.font-picker-trigger');
+  const valueEl = rootEl.querySelector('.font-picker-value');
+  const menu = rootEl.querySelector('.font-picker-menu');
+  const optionEls = Array.from(menu.querySelectorAll('.font-picker-option'));
+  let current = options.initial;
+  const labelOf = (v) => optionEls.find((o) => o.dataset.value === v)?.textContent?.trim() || v;
+  function setActive(v) {
+    optionEls.forEach((o) => o.classList.toggle('active', o.dataset.value === v));
+    valueEl.textContent = labelOf(v);
+    current = v;
+  }
+  setActive(current);
+  function openMenu() {
+    menu.classList.remove('hidden');
+    trigger.setAttribute('aria-expanded', 'true');
+    document.addEventListener('mousedown', onDocClick, true);
+    document.addEventListener('keydown', onDocKey, true);
+  }
+  function closeMenu() {
+    menu.classList.add('hidden');
+    trigger.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('mousedown', onDocClick, true);
+    document.removeEventListener('keydown', onDocKey, true);
+  }
+  function onTriggerClick() {
+    if (menu.classList.contains('hidden')) openMenu();
+    else closeMenu();
+  }
+  function onDocClick(e) { if (!rootEl.contains(e.target)) closeMenu(); }
+  function onDocKey(e) { if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); } }
+  function onOptionClick(e) {
+    const v = e.currentTarget.dataset.value;
+    setActive(v);
+    closeMenu();
+    options.onChange?.(v);
+  }
+  trigger.addEventListener('click', onTriggerClick);
+  optionEls.forEach((o) => o.addEventListener('click', onOptionClick));
+  return () => {
+    trigger.removeEventListener('click', onTriggerClick);
+    optionEls.forEach((o) => o.removeEventListener('click', onOptionClick));
+    closeMenu();
+  };
+}
+
+// Wires up the inline Access section. Returns a cleanup function.
+function wireAccessSection(graph) {
+  const anonRolePicker = document.getElementById('graph-modal-anon-picker');
+  const inviteRolePicker = document.getElementById('graph-modal-invite-role-picker');
+  const membersSection = document.getElementById('graph-modal-members-section');
+  const inviteEmail = document.getElementById('graph-modal-invite-email');
+  const inviteSubmit = document.getElementById('graph-modal-invite-submit');
+  const inviteError = document.getElementById('graph-modal-invite-error');
+
+  let currentMode = graph.anon_role || 'viewer';
+  let currentInviteRole = 'editor';
+
+  function applyMode(mode) {
+    currentMode = mode;
+    // Members section is only meaningful in restricted mode — it's where you
+    // grant per-person access. The other two modes broadcast access via the
+    // URL so explicit per-user adds would be confusing.
+    membersSection.classList.toggle('hidden', mode !== 'none');
+    if (mode === 'none') {
+      loadAccessMembers(graph.id);
+    }
+  }
+
+  const modeTeardown = wirePicker(anonRolePicker, {
+    initial: currentMode,
+    onChange: async (v) => {
+      try {
+        await setGraphAnonRole(graph.id, v);
+        graph.anon_role = v;
+        applyMode(v);
+        showHint('Access updated', 'page');
+      } catch (err) {
+        console.error('anon_role change failed', err);
+        showHint('Failed to update access — see console.', 'page');
+      }
+    },
+  });
+
+  const inviteRoleTeardown = wirePicker(inviteRolePicker, {
+    initial: currentInviteRole,
+    onChange: (v) => { currentInviteRole = v; },
+  });
+
+  inviteEmail.value = '';
+  inviteError.classList.add('hidden');
+
+  async function submitInvite() {
+    inviteError.classList.add('hidden');
+    const email = inviteEmail.value.trim();
+    if (!email) {
+      inviteError.textContent = 'Enter an email address.';
+      inviteError.classList.remove('hidden');
+      return;
+    }
+    try {
+      const res = await authedFetch(
+        `/api/graphs/${encodeURIComponent(graph.id)}/members`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, role: currentInviteRole }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        inviteError.textContent = body.error || `Request failed (${res.status})`;
+        inviteError.classList.remove('hidden');
+        return;
+      }
+      inviteEmail.value = '';
+      await loadAccessMembers(graph.id);
+    } catch (err) {
+      console.error('invite failed', err);
+      inviteError.textContent = 'Network error — see console.';
+      inviteError.classList.remove('hidden');
+    }
+  }
+  function onInviteKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitInvite(); }
+  }
+  inviteSubmit.addEventListener('click', submitInvite);
+  inviteEmail.addEventListener('keydown', onInviteKey);
+
+  applyMode(currentMode);
+
+  return () => {
+    modeTeardown();
+    inviteRoleTeardown();
+    inviteSubmit.removeEventListener('click', submitInvite);
+    inviteEmail.removeEventListener('keydown', onInviteKey);
+  };
+}
+
+// ---- Access controls inside the graph-modal (Phase B5c) ---------------------
+//
+// One URL = the graph URL (already shown in the graph-modal). Two layers of
+// access control, both inlined into the graph-modal's Access section:
+//   - General access dropdown → PATCH graph.anon_role
+//   - Add by email → POST /api/graphs/:gid/members (creates member or pending row)
+// Owner-only; hidden entirely for legacy un-owned graphs and for non-owners.
+
+async function setGraphAnonRole(gid, anonRole) {
+  const res = await authedFetch(`/api/graphs/${encodeURIComponent(gid)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ anon_role: anonRole }),
+  });
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  const updated = await res.json();
+  if (typeof currentGraph !== 'undefined' && currentGraph?.id === gid) {
+    currentGraph = { ...currentGraph, anon_role: updated.anon_role };
+    if (typeof applyReadOnlyState === 'function') applyReadOnlyState();
+  }
+  return updated;
+}
+
+async function loadAccessMembers(gid) {
+  const listEl = document.getElementById('graph-modal-members-list');
+  if (!listEl) return;
+  try {
+    const res = await authedFetch(`/api/graphs/${encodeURIComponent(gid)}/members`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const { members = [], pending = [] } = await res.json();
+    const rows = [
+      ...members.map(renderAccessMemberRow),
+      ...pending.map(renderAccessPendingRow),
+    ];
+    if (rows.length === 0) {
+      listEl.innerHTML = '<p class="modal-hint">Just you so far.</p>';
+      return;
+    }
+    listEl.innerHTML = rows.join('');
+    listEl.querySelectorAll('[data-kick-user-id]').forEach((btn) => {
+      btn.addEventListener('click', () => kickMember(gid, btn.dataset.kickUserId));
+    });
+    listEl.querySelectorAll('[data-cancel-pending-email]').forEach((btn) => {
+      btn.addEventListener('click', () => cancelPending(gid, btn.dataset.cancelPendingEmail));
+    });
+  } catch (err) {
+    console.error('failed to load members', err);
+    listEl.innerHTML = '<p class="modal-hint">Failed to load members.</p>';
+  }
+}
+
+function renderAccessMemberRow(m) {
+  const name = m.display_name || m.email || 'Unknown';
+  const initials = initialsFromName(name);
+  return `
+    <div class="access-member-row">
+      <span class="access-member-avatar" style="background: ${colorForId(m.user_id)};">${escapeHtml(initials)}</span>
+      <div class="access-member-meta">
+        <div class="access-member-name">${escapeHtml(name)}</div>
+        <div class="access-member-email">${escapeHtml(m.email || '')}</div>
+      </div>
+      <span class="access-member-role">${escapeHtml(m.role)}</span>
+      <button type="button" class="access-member-kick" data-kick-user-id="${escapeHtml(m.user_id)}" title="Remove" aria-label="Remove member">&times;</button>
+    </div>
+  `;
+}
+
+function renderAccessPendingRow(p) {
+  const initials = initialsFromName(p.email);
+  return `
+    <div class="access-member-row access-member-row-pending">
+      <span class="access-member-avatar" style="background: ${colorForId(p.email)};">${escapeHtml(initials)}</span>
+      <div class="access-member-meta">
+        <div class="access-member-name">${escapeHtml(p.email)}</div>
+        <div class="access-member-email">Pending sign-in</div>
+      </div>
+      <span class="access-member-role">${escapeHtml(p.role)}</span>
+      <button type="button" class="access-member-kick" data-cancel-pending-email="${escapeHtml(p.email)}" title="Cancel invite" aria-label="Cancel invite">&times;</button>
+    </div>
+  `;
+}
+
+async function kickMember(gid, userId) {
+  if (!gid || !userId) return;
+  const ok = await showConfirm({
+    title: 'Remove this member?',
+    body: 'They will lose access immediately.',
+    okText: 'Remove',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const res = await authedFetch(
+      `/api/graphs/${encodeURIComponent(gid)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok && res.status !== 404) throw new Error(`status ${res.status}`);
+    await loadAccessMembers(gid);
+  } catch (err) {
+    console.error('kick failed', err);
+    showHint('Failed to remove member — see console.', 'page');
+  }
+}
+
+async function cancelPending(gid, email) {
+  if (!gid || !email) return;
+  const ok = await showConfirm({
+    title: 'Cancel this invite?',
+    body: `${email} will no longer be added on sign-in.`,
+    okText: 'Cancel invite',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const res = await authedFetch(
+      `/api/graphs/${encodeURIComponent(gid)}/members/pending/${encodeURIComponent(email)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok && res.status !== 404) throw new Error(`status ${res.status}`);
+    await loadAccessMembers(gid);
+  } catch (err) {
+    console.error('cancel pending failed', err);
+    showHint('Failed to cancel invite — see console.', 'page');
+  }
+}
+
+function writeHeaders() {
+  const h = {
+    'Content-Type': 'application/json',
+    'X-Writer-Type': 'human',
+  };
+  const id = (typeof activeGraphId === 'string' || typeof activeGraphId === 'number') ? activeGraphId : null;
+  if (id) {
+    const identity = effectiveIdentity(id);
+    if (identity) {
+      h['X-Writer-Id'] = identity.id;
+      h['X-Writer-Name'] = identity.name;
+    }
+  }
+  return h;
+}
 
 // --- Active graph (multi-graph support) ---
 let activeGraphId = null;
@@ -17,6 +976,20 @@ let activeGraphId = null;
 // timestamps). Populated by switchActiveGraph; null when no graph is active.
 // Used by getEffectiveSettings to compute per-graph overrides.
 let currentGraph = null;
+// Set when the active graph's `/graph` fetch returns 403 — drives the
+// access-denied empty state and locks edit affordances. Reset on every
+// graph switch and on successful fetchGraph.
+let accessDenied = false;
+// Reactive fallback: if any write returns 403 on the active graph (e.g.
+// SSE is wedged and the kick frame never landed), re-probe the graph so
+// fetchGraph's 403 branch downgrades us into the access-denied state.
+function maybeForbid(res) {
+  if (res && res.status === 403 && activeGraphId != null && !accessDenied) {
+    fetchGraph().catch(() => {});
+    return true;
+  }
+  return false;
+}
 const ACTIVE_GRAPH_STORAGE_KEY = 'graphtask:lastGraphId';
 const RECENT_GRAPHS_STORAGE_KEY = 'graphtask:recent';
 const RECENTS_CAP = 20;
@@ -301,6 +1274,17 @@ function addGraphEdge(edge) {
 
 async function fetchGraph() {
   const res = await fetch(`${apiBase()}/graph`);
+  if (!res.ok) {
+    if (res.status === 403) {
+      accessDenied = true;
+      if (cy) cy.elements().remove();
+      updateEmptyState();
+      applyReadOnlyState();
+      return;
+    }
+    throw new Error(`failed to load graph: ${res.status}`);
+  }
+  accessDenied = false;
   const data = await res.json();
 
   const elements = [];
@@ -396,6 +1380,11 @@ async function updateLeafHighlights() {
 function updateEmptyState() {
   const el = document.getElementById('empty-state');
   const p = el.querySelector('p');
+  if (accessDenied) {
+    p.textContent = 'Access denied. Contact graph owner.';
+    el.classList.remove('hidden');
+    return;
+  }
   const noGraph = activeGraphId == null;
   const noNodes = cy && cy.nodes().length === 0;
   if (noGraph || noNodes) {
@@ -1355,6 +2344,7 @@ function showPanel(task) {
 
   setEditorMode('rich');
   panel.classList.remove('hidden');
+  if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   if (task) centerNodeInVisibleArea(task);
   // Do NOT auto-focus a panel field — selection alone shouldn't redirect keystrokes.
   // The user enters edit mode by clicking into a field, or by double-clicking the node.
@@ -1370,6 +2360,7 @@ function hidePanel() {
   const wasOpen = !panel.classList.contains('hidden');
   const panelWidth = wasOpen ? panel.getBoundingClientRect().width : 0;
   panel.classList.add('hidden');
+  if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   editingTaskId = null;
   hideTitleOverlay();
   // If a ghost was never saved (no title), drop it now
@@ -2119,8 +3110,8 @@ function graphBaseRow(graph) {
   return {
     name: graph.name,
     description: graph.description ?? null,
-    is_public: !!graph.is_public,
     settings: graph.settings || {},
+    anon_role: graph.anon_role || 'none',
     version: typeof graph.version === 'number' ? graph.version : 0,
   };
 }
@@ -2132,7 +3123,7 @@ function graphBaseRow(graph) {
 async function patchWithRetry(url, buildBody, baseRow, label = 'item') {
   let res = await fetch(url, {
     method: 'PATCH',
-    headers: WRITE_HEADERS,
+    headers: writeHeaders(),
     body: JSON.stringify(buildBody(baseRow)),
   });
   if (res.status !== 409) return res;
@@ -2143,7 +3134,7 @@ async function patchWithRetry(url, buildBody, baseRow, label = 'item') {
   const freshBase = { ...body.current, version: body.current.version };
   const retry = await fetch(url, {
     method: 'PATCH',
-    headers: WRITE_HEADERS,
+    headers: writeHeaders(),
     body: JSON.stringify(buildBody(freshBase)),
   });
   return retry;
@@ -2153,7 +3144,7 @@ async function patchWithRetry(url, buildBody, baseRow, label = 'item') {
 async function createTask(content) {
   return fetch(`${apiBase()}/tasks`, {
     method: 'POST',
-    headers: WRITE_HEADERS,
+    headers: writeHeaders(),
     body: JSON.stringify({ content }),
   });
 }
@@ -2171,7 +3162,7 @@ async function updateTask(id, content, base = null) {
   }
   return fetch(`${apiBase()}/tasks/${id}`, {
     method: 'PATCH',
-    headers: WRITE_HEADERS,
+    headers: writeHeaders(),
     body: JSON.stringify(body),
   });
 }
@@ -2223,7 +3214,10 @@ async function persistNodePosition(node) {
     const parsed = parseFrontmatter(task.content);
     const content = buildContent({ ...(parsed.meta || {}), x, y }, parsed.body);
     const updateRes = await updateTask(taskId, content, task);
-    if (!updateRes.ok) throw new Error('save failed');
+    if (!updateRes.ok) {
+      if (maybeForbid(updateRes)) return;
+      throw new Error('save failed');
+    }
     const saved = await updateRes.json();
     updateGraphNode(saved);
     if (String(editingTaskId) === String(taskId)) {
@@ -2241,7 +3235,7 @@ async function deleteTask(id) {
 async function createEdge(source_id, target_id, type) {
   return fetch(`${apiBase()}/edges`, {
     method: 'POST',
-    headers: WRITE_HEADERS,
+    headers: writeHeaders(),
     body: JSON.stringify({ source_id, target_id, type }),
   });
 }
@@ -2266,11 +3260,30 @@ async function updateEdgeMeta(edge, metaPatch) {
 }
 
 // --- Hint toast ---
+// `anchor` defaults to 'canvas' (current behavior — graph-operation toasts
+// like Tidy, status changes, edge ops). Pass 'page' for toasts that aren't
+// about the graph itself (sharing/access, account, graph-options modal save
+// errors) so they center to the viewport instead of the canvas band.
 let hintTimeout;
-function showHint(text) {
+function showHint(text, anchor = 'canvas') {
   const el = document.getElementById('hotkey-hint');
   const inner = document.getElementById('hotkey-hint-text');
   inner.textContent = text;
+  if (anchor === 'page') {
+    el.dataset.anchor = 'page';
+    el.style.right = '';
+  } else {
+    delete el.dataset.anchor;
+    // Center over the visible canvas: the bar already starts at the sidebar's
+    // right edge (CSS), but its right edge follows the task panel when open
+    // so the toast doesn't drift behind the panel.
+    const panel = document.getElementById('panel');
+    if (panel && !panel.classList.contains('hidden')) {
+      el.style.right = `${Math.round(panel.getBoundingClientRect().width)}px`;
+    } else {
+      el.style.right = '';
+    }
+  }
   el.classList.remove('hidden');
   clearTimeout(hintTimeout);
   hintTimeout = setTimeout(() => el.classList.add('hidden'), 2000);
@@ -2316,7 +3329,10 @@ function nearestElementInDirection(current, candidates, direction) {
     if (!isDirectionalCandidate(from, to, direction)) return;
     const dx = to.x - from.x;
     const dy = to.y - from.y;
-    const score = dx * dx + dy * dy;
+    const horizontal = direction === 'ArrowLeft' || direction === 'ArrowRight';
+    const axial = horizontal ? dx : dy;
+    const perp = horizontal ? dy : dx;
+    const score = perp * perp * 4 + axial * axial;
     if (score < bestScore) {
       best = candidate;
       bestScore = score;
@@ -2644,8 +3660,8 @@ const sidebar = {
 
 // Recent-graphs persistence — purely client-side. The server does not know
 // which graphs you've visited; that's the privacy model. Each entry caches
-// {id, name, is_public, last_visited_at} so the sidebar can render without
-// a round-trip; entries are refreshed lazily by fetchGraphsList.
+// {id, name, last_visited_at} so the sidebar can render without a round-
+// trip; entries are refreshed lazily by fetchGraphsList.
 function recentsRead() {
   try {
     const raw = localStorage.getItem(RECENT_GRAPHS_STORAGE_KEY);
@@ -2665,15 +3681,21 @@ function recentsWrite(list) {
   } catch {}
 }
 
-function recentsUpsert(graph) {
+// `created` is the local "I made this graph" flag. Persisted in localStorage
+// so it survives reloads. Once true it stays true across re-visits — we only
+// flip false → true (when the user creates a new graph) or set fresh entries
+// to false (when they arrive via URL). Used by the sidebar to bucket
+// anon-mode entries into 'My graphs' vs 'Shared with me'.
+function recentsUpsert(graph, opts = {}) {
   if (!graph || typeof graph.id !== 'string') return;
   const list = recentsRead();
   const i = list.findIndex((r) => r.id === graph.id);
+  const prev = i >= 0 ? list[i] : null;
   if (i >= 0) list.splice(i, 1);
   list.unshift({
     id: graph.id,
     name: graph.name,
-    is_public: !!graph.is_public,
+    created: opts.created === true || (prev?.created === true),
     last_visited_at: new Date().toISOString(),
   });
   recentsWrite(list);
@@ -2758,8 +3780,8 @@ async function fetchGraphsList() {
   sidebar.graphs = await res.json();
   sidebar.recents = recentsRead();
   renderSidebar();
-  // Lazy refresh of recents: fetch each cached entry to update name/is_public
-  // and drop entries the user no longer has access to (404).
+  // Lazy refresh of recents: fetch each cached entry to update name and
+  // drop entries the user no longer has access to (404 / 403).
   refreshRecents();
 }
 
@@ -2778,11 +3800,11 @@ async function refreshRecents() {
       }
       if (!res.ok) continue;
       const row = await res.json();
-      if (row.name !== r.name || !!row.is_public !== !!r.is_public) {
+      if (row.name !== r.name) {
         const current = recentsRead();
         const i = current.findIndex((e) => e.id === r.id);
         if (i >= 0) {
-          current[i] = { ...current[i], name: row.name, is_public: !!row.is_public };
+          current[i] = { ...current[i], name: row.name };
           recentsWrite(current);
           sidebar.recents = current;
           changed = true;
@@ -2798,18 +3820,48 @@ function renderSidebar() {
   if (!list) return;
   list.innerHTML = '';
 
-  const publicGraphs = sidebar.graphs;
-  const publicIds = new Set(publicGraphs.map((g) => g.id));
-  // Recents section excludes anything already shown in Public.
-  const recentEntries = sidebar.recents.filter((r) => !publicIds.has(r.id));
+  // Sort key: prefer the user's last-visited time from the recents cache, fall
+  // back to the server's updated_at. Ensures both sections render in
+  // "recently visited" order regardless of when the graph was last touched
+  // on the server.
+  const recentMap = new Map(sidebar.recents.map((r) => [r.id, r.last_visited_at]));
+  const byVisit = (a, b) => {
+    const at = recentMap.get(a.id) || a.updated_at || a.last_visited_at || '';
+    const bt = recentMap.get(b.id) || b.updated_at || b.last_visited_at || '';
+    return bt.localeCompare(at);
+  };
 
-  if (publicGraphs.length > 0) {
-    list.appendChild(makeSectionHeader('Public'));
-    for (const g of publicGraphs) list.appendChild(makeSidebarItem(g, { source: 'public' }));
+  const viewerId = gtAuth?.viewerUserId || null;
+  let myGraphs = [];
+  let sharedGraphs = [];
+  const renderedIds = new Set();
+
+  if (viewerId) {
+    // Signed-in: server gave us owned + member-of in sidebar.graphs.
+    myGraphs = sidebar.graphs.filter((g) => g.owner_user_id === viewerId).sort(byVisit);
+    sharedGraphs = sidebar.graphs.filter((g) => g.owner_user_id !== viewerId).sort(byVisit);
+    for (const g of [...myGraphs, ...sharedGraphs]) renderedIds.add(g.id);
+  } else {
+    // Anonymous: server returns []. Bucket from localStorage recents instead,
+    // splitting by the `created` flag set in recentsUpsert.
+    const recents = sidebar.recents;
+    myGraphs = recents.filter((r) => r.created === true);
+    sharedGraphs = recents.filter((r) => r.created !== true);
+    for (const r of [...myGraphs, ...sharedGraphs]) renderedIds.add(r.id);
   }
-  if (recentEntries.length > 0) {
-    list.appendChild(makeSectionHeader('Recently visited'));
-    for (const r of recentEntries) list.appendChild(makeSidebarItem(r, { source: 'recent' }));
+
+  // Always source the "source" label so makeSidebarItem can branch on it
+  // (e.g. for future per-bucket affordances).
+  const myLabel = 'My graphs';
+  const sharedLabel = 'Shared with me';
+
+  if (myGraphs.length > 0) {
+    list.appendChild(makeSectionHeader(myLabel));
+    for (const g of myGraphs) list.appendChild(makeSidebarItem(g, { source: 'owned' }));
+  }
+  if (sharedGraphs.length > 0) {
+    list.appendChild(makeSectionHeader(sharedLabel));
+    for (const g of sharedGraphs) list.appendChild(makeSidebarItem(g, { source: 'shared' }));
   }
   updateEmptyStates();
 }
@@ -2844,15 +3896,9 @@ function makeSidebarItem(graphLike, { source }) {
   meta.textContent = stamp ? relativeTime(stamp) : '';
   item.appendChild(meta);
 
-  // Lock icon for any row currently known to be private. Absolutely positioned
-  // in the row's left gutter so the title and timestamp share the same X.
-  // Recents cache is_public; the public list never gets one.
-  if (source === 'recent' && !graphLike.is_public) {
-    const lock = document.createElement('i');
-    lock.className = 'ph ph-lock-simple sb-lock';
-    lock.title = 'Private — only people with the URL can see this graph';
-    item.appendChild(lock);
-  }
+  // Phase A's lock icon (driven by is_public=false) is gone — `anon_role`
+  // now carries the privacy semantic and isn't cached in recents. We can
+  // re-introduce a privacy indicator later by caching anon_role too.
 
   const menuBtn = document.createElement('button');
   menuBtn.className = 'sb-menu-btn';
@@ -2860,23 +3906,18 @@ function makeSidebarItem(graphLike, { source }) {
   menuBtn.title = 'Graph options';
   menuBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    // Public rows already carry full metadata (name, description, created_at,
-    // updated_at, is_public) from GET /api/graphs. Recents cache only the
-    // subset we need to render — fetch the full row so the modal can show
-    // description / created_at and produce a clean diff on Save.
-    if (source === 'public') {
-      openGraphEditModal(graphLike);
-      return;
-    }
+    // Sidebar entries (owned, member, or recent) carry only the subset
+    // needed to render. Fetch the full row so the modal can show description
+    // and the access controls without missing fields.
     try {
       const res = await fetch(`/api/graphs/${encodeURIComponent(graphLike.id)}`);
       if (!res.ok) {
-        alert('Could not open graph options');
+        showHint('Could not open graph options', 'page');
         return;
       }
       openGraphEditModal(await res.json());
     } catch {
-      alert('Could not open graph options');
+      showHint('Could not open graph options', 'page');
     }
   });
   item.appendChild(menuBtn);
@@ -2927,31 +3968,27 @@ function openGraphEditModal(graph) {
   const urlInput = document.getElementById('graph-modal-url');
   const copyBtn = document.getElementById('graph-modal-copy');
   const rotateBtn = document.getElementById('graph-modal-rotate');
-  const privateCheckbox = document.getElementById('graph-modal-private');
-  const visibilityLabel = document.getElementById('graph-modal-visibility-label');
   const fontPicker = document.getElementById('graph-modal-font');
   const fontSwatchesEl = document.getElementById('graph-modal-font-swatches');
   const bgSwatchesEl = document.getElementById('graph-modal-bg-swatches');
   const saveBtn = document.getElementById('graph-modal-save');
   const deleteBtn = document.getElementById('graph-modal-delete');
 
+  // Access section (Phase B5c): shown only for owned graphs the viewer can
+  // manage. Legacy un-owned graphs hide it (URL = full access already).
+  const accessSection = document.getElementById('graph-modal-access');
+  const showAccess = graph.owner_user_id != null && graph.viewer_can_manage !== false;
+  accessSection.classList.toggle('hidden', !showAccess);
+
+  let accessCleanup = null;
+  if (showAccess) {
+    accessCleanup = wireAccessSection(graph);
+  }
+
   nameInput.textContent = graph.name || '';
   nameError.textContent = '';
   nameError.classList.add('hidden');
   descInput.value = graph.description || '';
-  // Checkbox is now "Private" — checked = private, unchecked = public.
-  // Inverse of the wire-level `is_public` flag.
-  privateCheckbox.checked = !graph.is_public;
-  // Label copy reflects current state so toggling has an obvious visual
-  // effect beyond just the checkbox fill. Save-link warning rides along
-  // with the Private state since that's where it's relevant.
-  function syncVisibilityLabel() {
-    visibilityLabel.innerHTML = privateCheckbox.checked
-      ? 'Private <span class="visibility-hint">(save your link somewhere!)</span>'
-      : 'Public';
-  }
-  syncVisibilityLabel();
-  privateCheckbox.addEventListener('change', syncVisibilityLabel);
 
   // Created-at toggles between compact (default) and full UTC datetime.
   // Hover previews the full form; click sticks it. Modal always opens
@@ -3079,11 +4116,11 @@ function openGraphEditModal(graph) {
   function close() {
     _graphModalClose = null;
     modal.classList.add('hidden');
+    if (typeof accessCleanup === 'function') accessCleanup();
     saveBtn.removeEventListener('click', onSave);
     deleteBtn.removeEventListener('click', onDelete);
     copyBtn.removeEventListener('click', onCopy);
     rotateBtn.removeEventListener('click', onRotate);
-    privateCheckbox.removeEventListener('change', syncVisibilityLabel);
     createdEl.removeEventListener('mouseenter', onCreatedEnter);
     createdEl.removeEventListener('mouseleave', onCreatedLeave);
     createdEl.removeEventListener('click', onCreatedClick);
@@ -3189,7 +4226,7 @@ function openGraphEditModal(graph) {
       const res = await fetch(`/api/graphs/${graph.id}/rotate-id`, { method: 'POST' });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
-        alert(e.error || 'Rotate failed');
+        showHint(e.error || 'Rotate failed', 'page');
         return;
       }
       const updated = await res.json();
@@ -3207,7 +4244,7 @@ function openGraphEditModal(graph) {
       }
       await fetchGraphsList();
     } catch {
-      alert('Rotate failed');
+      showHint('Rotate failed', 'page');
     }
   }
   async function onSave() {
@@ -3222,8 +4259,8 @@ function openGraphEditModal(graph) {
     const trimmedDesc = nextDescRaw.trim();
     const newDesc = trimmedDesc === '' ? null : nextDescRaw;
     if (newDesc !== (graph.description ?? null)) body.description = newDesc;
-    const nextPublic = !privateCheckbox.checked;
-    if (nextPublic !== !!graph.is_public) body.is_public = nextPublic;
+    // anon_role is mutated via the inline access controls (live PATCH on
+    // change); the Save button only diffs name / description / appearance.
 
     // Per-graph appearance: send a partial settings patch when any of the
     // three changed. null means "revert to default" — server strips nulls
@@ -3264,7 +4301,7 @@ function openGraphEditModal(graph) {
           return;
         }
         const e = await res.json().catch(() => ({}));
-        alert(e.error || 'Save failed');
+        showHint(e.error || 'Save failed', 'page');
         return;
       }
       const updated = await res.json();
@@ -3278,7 +4315,7 @@ function openGraphEditModal(graph) {
       close();
       await fetchGraphsList();
     } catch {
-      alert('Save failed');
+      showHint('Save failed', 'page');
     }
   }
   async function onDelete() {
@@ -3296,6 +4333,7 @@ function openGraphEditModal(graph) {
       history.replaceState({}, '', '/');
       if (cy) cy.elements().remove();
       applySettings();
+      applyReadOnlyState();
     }
     await fetchGraphsList();
     if (!activeGraphId && sidebar.graphs.length > 0) {
@@ -3351,7 +4389,7 @@ function ensureActiveGraph() {
       const name = i === 1 ? 'Untitled' : `Untitled ${i}`;
       const res = await fetch('/api/graphs', {
         method: 'POST',
-        headers: WRITE_HEADERS,
+        headers: writeHeaders(),
         body: JSON.stringify({ name }),
       });
       if (res.ok) { created = await res.json(); break; }
@@ -3392,11 +4430,14 @@ function maybeCleanupLazyGraph() {
 async function createGraphFromUI() {
   const created = await promptNewGraphName();
   if (!created) return;
+  // Mark the new graph as locally-created so the sidebar can put it under
+  // 'My graphs' for anon users (signed-in users use server-side ownership).
+  // The flag persists across reloads via the recents cache.
+  recentsUpsert(created, { created: true });
   await fetchGraphsList();
   switchActiveGraph(created.id, { pushState: true });
-  // Fire only on explicit creation. New graphs default to private; the user
-  // needs to know they should bookmark the URL or flip to public. Honors the
-  // "Never show again" preference in localStorage.
+  // Fire only on explicit creation. New graphs default to anon_role='viewer';
+  // the user needs to know they should bookmark the URL or flip to restricted.
   showPrivateWarning(created);
 }
 
@@ -3494,7 +4535,7 @@ function promptNewGraphName() {
       try {
         const res = await fetch('/api/graphs', {
           method: 'POST',
-          headers: WRITE_HEADERS,
+          headers: writeHeaders(),
           body: JSON.stringify({ name: trimmed }),
         });
         if (!res.ok) {
@@ -3531,6 +4572,14 @@ function promptNewGraphName() {
 }
 
 async function switchActiveGraph(id, { pushState = false } = {}) {
+  // Depart presence on the previous graph before switching. Local state for
+  // the new graph is reset; the new SSE stream will re-hydrate it.
+  if (activeGraphId && activeGraphId !== id) {
+    presenceDepart(activeGraphId);
+  }
+  stopPresenceHeartbeat();
+  presenceState = new Map();
+  accessDenied = false;
   activeGraphId = id;
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
@@ -3551,8 +4600,14 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
     renderSidebar();
     applySettings();
   }
+  applyReadOnlyState();
   if (typeof updateToolbar === 'function') updateToolbar();
   openGraphEventStream(id);
+  // Presence: hydrate current snapshot, announce self, start heartbeat.
+  presenceHydrate(id);
+  presenceAnnounce(id);
+  startPresenceHeartbeat(id);
+  renderPresenceBar();
 }
 
 // Live-update plumbing: open one EventSource per active graph. When the
@@ -3574,6 +4629,249 @@ function userInteractedRecently() { return Date.now() - _lastUserInteractionAt <
   window.addEventListener(evt, noteUserInteraction, true);
 });
 
+// --- Presence (multiplayer avatars) ---
+// Per-graph map of writerId -> {id, name, type, lastSeen}. Updated by SSE
+// events from the server (other people joining/renaming/leaving) and our own
+// optimistic local writes. Re-rendered on every change.
+const VISIBLE_AVATARS = 4;
+// Hard cap on individually-rendered avatars (including own). Anything past
+// this collapses into a single "+N others" overflow chip at the far end of
+// the stack, hover-explained.
+const MAX_AVATARS = 11;
+const PRESENCE_HEARTBEAT_MS = 20000;
+let presenceState = new Map();
+let _presenceHeartbeatTimer = null;
+
+function presenceCurrentOwnId() {
+  if (!activeGraphId) return null;
+  const id = getOrCreateIdentity(activeGraphId);
+  return id ? id.id : null;
+}
+
+function adjustPresenceBarOffset() {
+  const bar = document.getElementById('presence-bar');
+  const panel = document.getElementById('panel');
+  if (!bar) return;
+  // When the task panel is open, shift the avatar bar left of the panel so
+  // the own avatar doesn't sit on top of the panel's close button.
+  if (panel && !panel.classList.contains('hidden')) {
+    const w = panel.getBoundingClientRect().width;
+    bar.style.right = `${Math.round(w) + 16}px`;
+  } else {
+    bar.style.right = '';
+  }
+}
+
+function renderPresenceBar() {
+  const bar = document.getElementById('presence-bar');
+  if (!bar) return;
+  const ownId = presenceCurrentOwnId();
+  if (!activeGraphId || !ownId) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  adjustPresenceBarOffset();
+  const ownIdentity = effectiveIdentity(activeGraphId);
+  const others = Array.from(presenceState.values())
+    .filter((w) => w.id !== ownId)
+    .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  const own = {
+    id: ownId,
+    name: ownIdentity.name,
+    type: 'human',
+    lastSeen: Date.now(),
+  };
+  const ordered = [own, ...others];
+
+  bar.classList.remove('hidden');
+  bar.innerHTML = '';
+  if (ordered.length < 5) {
+    // Row mode: every avatar fully visible, no overlap.
+    for (const w of ordered) {
+      bar.appendChild(presenceAvatarEl(w, w.id === ownId));
+    }
+  } else {
+    // Stack mode: all avatars overlap into one deck. We render in REVERSE
+    // of the items so own (originally at index 0) becomes the LAST DOM
+    // child — naturally painted on top, and visually rightmost.
+    // Past MAX_AVATARS, the oldest others fold into a single "+N others"
+    // overflow chip that lives at the leftmost (first DOM) position.
+    const deck = document.createElement('div');
+    deck.className = 'presence-stack-deck';
+    deck.setAttribute('aria-label', `${ordered.length} active`);
+
+    const overflowCount = Math.max(0, ordered.length - MAX_AVATARS);
+    const visible = overflowCount > 0 ? ordered.slice(0, MAX_AVATARS) : ordered;
+
+    // Render in reverse: leftmost (oldest) appended first, own appended last.
+    for (const w of visible.slice().reverse()) {
+      deck.appendChild(presenceAvatarEl(w, w.id === ownId));
+    }
+    if (overflowCount > 0) {
+      // Insert the "+N" chip at the very front of the deck (DOM-first =
+      // leftmost = painted underneath the visible avatars where they overlap).
+      deck.insertBefore(presenceOverflowEl(overflowCount), deck.firstChild);
+    }
+    bar.appendChild(deck);
+  }
+}
+
+function presenceOverflowEl(n) {
+  const el = document.createElement('div');
+  el.className = 'presence-avatar presence-avatar-overflow is-active';
+  el.setAttribute('data-tooltip', `+${n} others`);
+  el.textContent = `+${n}`;
+  return el;
+}
+
+function presenceAvatarEl(writer, isOwn) {
+  const el = document.createElement('div');
+  el.className = 'presence-avatar';
+  if (isOwn) el.classList.add('presence-avatar-own');
+  if (writer.type === 'agent') el.classList.add('presence-avatar-agent');
+  const color = colorForId(writer.id);
+  el.style.background = color;
+  el.style.setProperty('--avatar-glow', color);
+  // Server flips active/idle and broadcasts the transition. Treat missing
+  // field as active so an older server (no active flag) keeps everyone lit.
+  const isActive = isOwn || writer.active !== false;
+  el.classList.add(isActive ? 'is-active' : 'is-idle');
+  const suffix = isOwn ? ' (You)' : (writer.type === 'agent' ? ' (Agent)' : '');
+  el.setAttribute('data-tooltip', writer.name + suffix);
+  el.textContent = writer.type === 'agent' ? '🤖' : initialsFromName(writer.name);
+  if (isOwn) {
+    el.addEventListener('click', openRenameModal);
+  }
+  return el;
+}
+
+async function presenceHydrate(gid) {
+  try {
+    const r = await fetch(`/api/graphs/${encodeURIComponent(gid)}/presence`);
+    if (!r.ok) return;
+    const list = await r.json();
+    if (gid !== activeGraphId) return; // raced past a graph switch
+    presenceState = new Map(list.map((w) => [w.id, w]));
+    renderPresenceBar();
+  } catch {}
+}
+
+function presenceAnnounce(gid) {
+  if (!gid) return;
+  const identity = effectiveIdentity(gid);
+  if (!identity) return;
+  fetch(`/api/graphs/${encodeURIComponent(gid)}/presence`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: identity.id, name: identity.name, type: 'human' }),
+  }).catch(() => {});
+}
+
+function presenceDepart(gid) {
+  if (!gid) return;
+  const identity = getOrCreateIdentity(gid);
+  if (!identity) return;
+  const url = `/api/graphs/${encodeURIComponent(gid)}/presence/${encodeURIComponent(identity.id)}`;
+  // Prefer sendBeacon for unload reliability; fall back to fetch with keepalive.
+  if (navigator.sendBeacon) {
+    try {
+      const blob = new Blob([''], { type: 'text/plain' });
+      // sendBeacon only POSTs. Use a fetch with keepalive for DELETE.
+      // Browsers support fetch keepalive for unload events on most platforms.
+      navigator.sendBeacon; // referenced to satisfy strict mode in some tooling
+    } catch {}
+  }
+  try {
+    fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+  } catch {}
+}
+
+function startPresenceHeartbeat(gid) {
+  stopPresenceHeartbeat();
+  if (!gid) return;
+  _presenceHeartbeatTimer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (gid !== activeGraphId) return;
+    presenceAnnounce(gid);
+  }, PRESENCE_HEARTBEAT_MS);
+}
+function stopPresenceHeartbeat() {
+  if (_presenceHeartbeatTimer) {
+    clearInterval(_presenceHeartbeatTimer);
+    _presenceHeartbeatTimer = null;
+  }
+}
+
+function handlePresenceEvent(payload) {
+  if (!payload || payload.kind !== 'presence' || !payload.writer) return;
+  const ownId = presenceCurrentOwnId();
+  // The server includes the local user too. Skip applying their own write back
+  // to local state — render always synthesizes "own" from local identity.
+  if (payload.writer.id === ownId) return;
+  if (payload.op === 'depart') {
+    presenceState.delete(payload.writer.id);
+  } else {
+    presenceState.set(payload.writer.id, payload.writer);
+  }
+  renderPresenceBar();
+}
+
+function openRenameModal() {
+  if (!activeGraphId) return;
+  const identity = effectiveIdentity(activeGraphId);
+  if (!identity) return;
+  const modal = document.getElementById('rename-modal');
+  const input = document.getElementById('rename-modal-input');
+  const save = document.getElementById('rename-modal-save');
+  const cancel = document.getElementById('rename-modal-cancel');
+  if (!modal || !input || !save || !cancel) return;
+
+  input.value = identity.name;
+  modal.classList.remove('hidden');
+  setTimeout(() => { try { input.focus(); input.select(); } catch {} }, 0);
+
+  function close() {
+    modal.classList.add('hidden');
+    save.removeEventListener('click', onSave);
+    cancel.removeEventListener('click', close);
+    input.removeEventListener('keydown', onKey);
+    modal.removeEventListener('click', onBackdrop);
+  }
+  function onSave() {
+    const next = setIdentityName(activeGraphId, input.value);
+    if (next) {
+      presenceAnnounce(activeGraphId);
+      renderPresenceBar();
+    }
+    close();
+  }
+  function onKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); onSave(); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  }
+  function onBackdrop(e) {
+    if (e.target === modal) close();
+  }
+  save.addEventListener('click', onSave);
+  cancel.addEventListener('click', close);
+  input.addEventListener('keydown', onKey);
+  modal.addEventListener('click', onBackdrop);
+}
+
+// Best-effort depart on unload (page close, tab close, navigation away).
+window.addEventListener('pagehide', () => {
+  if (activeGraphId) presenceDepart(activeGraphId);
+});
+window.addEventListener('beforeunload', () => {
+  if (activeGraphId) presenceDepart(activeGraphId);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && activeGraphId) {
+    presenceAnnounce(activeGraphId);
+  }
+});
+
 function openGraphEventStream(id) {
   if (_graphEventSource) {
     try { _graphEventSource.close(); } catch {}
@@ -3583,14 +4881,20 @@ function openGraphEventStream(id) {
   const es = new EventSource(`/api/graphs/${id}/events`);
   es.onmessage = (e) => {
     if (id !== activeGraphId) return;
-    try { _graphEventLastPayload = JSON.parse(e.data); } catch { _graphEventLastPayload = null; }
+    let payload;
+    try { payload = JSON.parse(e.data); } catch { return; }
+    if (payload && payload.kind === 'presence') {
+      handlePresenceEvent(payload);
+      return;
+    }
+    _graphEventLastPayload = payload;
     // Coalesce bursts (e.g. a bulk-edges insert fires N notifications).
     if (_graphEventTimer) clearTimeout(_graphEventTimer);
     _graphEventTimer = setTimeout(() => {
       _graphEventTimer = null;
-      const payload = _graphEventLastPayload;
+      const next = _graphEventLastPayload;
       _graphEventLastPayload = null;
-      refreshFromEvent(payload);
+      refreshFromEvent(next);
     }, 150);
   };
   es.onerror = () => {
@@ -3759,6 +5063,7 @@ window.addEventListener('popstate', () => {
     // Falling back to /: clear per-graph appearance overrides.
     currentGraph = null;
     applySettings();
+    applyReadOnlyState();
     activeGraphId = null;
     if (cy) cy.elements().remove();
     renderSidebar();
@@ -3890,6 +5195,11 @@ function cytoscapeStyle(theme) {
 
 // --- Initialize ---
 document.addEventListener('DOMContentLoaded', () => {
+  // Fire-and-forget: auth chrome lights up when Clerk finishes loading.
+  // The sidebar list + cytoscape boot proceed in parallel so a slow Clerk
+  // CDN doesn't gate the rest of the UI. The cookie carries auth state
+  // server-side, so /api/graphs returns the right slice from the first call.
+  bootAuth();
   loadSettings();
   cy = cytoscape({
     container: document.getElementById('cy'),
@@ -3964,7 +5274,13 @@ document.addEventListener('DOMContentLoaded', () => {
   cy.on('cxttap', 'node', async (evt) => {
     const node = evt.target;
     if (node.id() === '__pending__') return;
-    if (confirm(`Delete task "${node.data('title')}"?`)) {
+    const ok = await showConfirm({
+      title: 'Delete task?',
+      body: `"${node.data('title')}" — this can't be undone.`,
+      okText: 'Delete',
+      danger: true,
+    });
+    if (ok) {
       await deleteTask(node.data('taskId'));
       clearSelection();
       await fetchGraph();
@@ -3974,6 +5290,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Click background — empty space click creates a node; otherwise clears selection
   cy.on('tap', (evt) => {
     if (evt.target !== cy) return;
+    if (accessDenied) return;
     if (isCmd(evt.originalEvent)) return; // cmd+click on bg is reserved for box-select start
 
     if (edgeCreation) {
@@ -4337,6 +5654,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const min = 320;
     const max = window.innerWidth * 0.95;
     panel.style.width = Math.min(max, Math.max(min, next)) + 'px';
+    if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   });
   document.addEventListener('mouseup', () => {
     if (!resizing) return;
@@ -4391,6 +5709,7 @@ document.addEventListener('DOMContentLoaded', () => {
           await fetchGraph();
           return;
         }
+        if (maybeForbid(res)) return;
         showSaveStatus('Save failed', 'error');
         return;
       }

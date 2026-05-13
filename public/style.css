@@ -389,7 +389,713 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Auth chrome — appears only when AUTH_PROVIDER=clerk and /api/config
+   reports auth_enabled. When empty (auth off), the slot collapses and the
+   sidebar bottom looks identical to Phase A. */
+#sidebar-auth {
+  width: 100%;
+  display: flex;
   justify-content: center;
+}
+#sidebar-auth:empty {
+  display: none;
+}
+
+.sb-signin-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.sb-user-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--tx);
+  min-width: 0;
+}
+.sb-user-pill:hover { background: var(--ui); }
+.sb-user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 600;
+  flex: 0 0 auto;
+  letter-spacing: 0.02em;
+}
+.sb-user-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-user-icon {
+  background: transparent;
+  border: none;
+  color: var(--tx-2);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.sb-user-icon:hover { color: var(--tx); background: var(--ui-2, var(--ui)); }
+.sb-user-icon .ph { font-size: 14px; line-height: 1; }
+
+/* Agent tokens modal — designed to match the same eyebrow rhythm as the
+   graph-modal's Access/Appearance sections. Section labels are styled by
+   the global .modal-field > span:first-child rule (ember uppercase). */
+.modal-hint-intro {
+  /* Slight breathing room between the intro paragraph and the first
+     field. Matches the gap from h3 to first field. */
+  margin-bottom: 20px;
+}
+.modal-hint a {
+  color: var(--color-cobalt-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.modal-hint a:hover { text-decoration-thickness: 2px; }
+.agent-tokens-minted {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-cards, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-tokens-minted-warning {
+  margin: 0;
+  font-size: 12px;
+  color: rgb(180, 83, 9);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-tokens-minted-warning .ph { font-size: 14px; line-height: 1; }
+.agent-tokens-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--color-mist, var(--border));
+  border-radius: var(--radius-cards, 8px);
+  padding: 4px;
+}
+/* Empty state: bare grey text under the section label, no list framing. */
+.agent-tokens-list.is-empty {
+  border: none;
+  padding: 0;
+  max-height: none;
+  overflow: visible;
+}
+.agent-tokens-empty-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-storm, var(--tx-2));
+  font-style: italic;
+}
+.agent-token-row {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-mist, var(--border));
+  transition: background-color 0.15s ease;
+}
+.agent-token-row:last-child { border-bottom: none; }
+.agent-token-row:hover { background: var(--color-blush-tint, transparent); }
+.agent-token-row-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.agent-token-meta { flex: 1 1 auto; min-width: 0; }
+.agent-token-label {
+  font-family: var(--font-ui, inherit);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-graphite-nav, var(--tx));
+  line-height: 1.3;
+}
+.agent-token-times {
+  font-size: 11px;
+  color: var(--color-storm, var(--tx-2));
+  margin-top: 4px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Inline revoke-confirm — expands below the row, no separate modal. The
+   revoke button on the right morphs into a Confirm button while this
+   section is open. Typing the token's label (or 'revoke' if unlabeled)
+   arms the button. */
+.agent-token-confirm {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* `.hidden` is a marker class in this codebase — each component declares its
+   own display:none override. Without these, the warning panel + minted-
+   plaintext block would be visible on first paint. */
+.agent-token-confirm.hidden { display: none; }
+.agent-tokens-minted.hidden { display: none; }
+
+/* Inline Access controls (Phase B5c) inside the graph-modal. Replaces the
+   old Private/Public checkbox + separate Share modal. */
+.modal-field-access {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-field-access > span:first-child {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tx-2);
+}
+.access-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* Mode row: label + picker, same layout as the Appearance section's
+   Font row so the two read as part of the same form. */
+.access-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.access-row-label {
+  /* Match the Appearance section's "Font" label so the two stack cleanly
+     and read as part of the same form. */
+  flex: 0 0 100px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-storm);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.access-picker .font-picker-menu {
+  /* The Mode menu is wider than the font menu because the options are long
+     descriptive labels ("Anyone with invite can view"). */
+  min-width: 260px;
+}
+.access-picker-inline .font-picker-menu {
+  min-width: 100px;
+}
+.access-members-section.hidden { display: none; }
+.access-members-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.access-invite-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.access-invite-row input[type="email"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.access-invite-row .font-picker-trigger {
+  /* Border + padding so the inline picker reads as an interactive element
+     in line with the email input and Add button. */
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.access-invite-row button.primary {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.access-members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+}
+.access-member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.access-member-row:hover { background: var(--ui); }
+.access-member-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.access-member-meta { flex: 1 1 auto; min-width: 0; }
+.access-member-name {
+  font-size: 13px;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.access-member-email {
+  font-size: 11px;
+  color: var(--tx-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.access-member-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tx-2);
+  flex: 0 0 auto;
+}
+.access-member-kick {
+  background: transparent;
+  border: none;
+  color: var(--tx-2);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.access-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
+.access-member-row-pending .access-member-name {
+  font-style: italic;
+  color: var(--tx-2);
+}
+.access-member-row-pending .access-member-avatar { opacity: 0.6; }
+
+/* Share modal (Phase B5c) — manages invite links + members for an owned
+   graph. Owner-only; hidden entirely for legacy graphs. */
+.share-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--ui);
+  color: var(--tx);
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.share-button:hover { background: var(--ui-2, var(--border)); }
+.share-button .ph { font-size: 16px; line-height: 1; }
+
+.share-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.share-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tx-2);
+}
+.share-select {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--tx);
+}
+.share-link-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.share-link-row.hidden { display: none; }
+.share-link-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+}
+.share-link-row button {
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--tx-2);
+}
+.share-link-row button:hover { color: var(--tx); background: var(--ui); }
+.share-link-hint {
+  font-size: 11px;
+  color: var(--tx-2);
+  margin: 0;
+}
+
+.share-invite-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.share-invite-row input[type="email"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.share-invite-row select {
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--tx);
+}
+.share-invite-row button {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.share-member-row-pending .share-member-name {
+  font-style: italic;
+  color: var(--tx-2);
+}
+.share-member-row-pending .share-member-avatar {
+  opacity: 0.6;
+}
+
+.share-members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+}
+.share-member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.share-member-row:hover { background: var(--ui); }
+.share-member-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.share-member-meta { flex: 1 1 auto; min-width: 0; }
+.share-member-name {
+  font-size: 13px;
+  color: var(--tx);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-member-email {
+  font-size: 11px;
+  color: var(--tx-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.share-member-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tx-2);
+  flex: 0 0 auto;
+}
+.share-member-kick {
+  background: transparent;
+  border: none;
+  color: var(--tx-2);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.share-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
+
+/* Read-only mode (Phase B5f) — applied when the viewer has read access but
+   not edit access on the active graph. Pinned banner at the top of the
+   canvas + the body.readonly class hides edit affordances. */
+.readonly-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: rgba(245, 158, 11, 0.95);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.readonly-banner.hidden { display: none; }
+.readonly-signin-btn {
+  background: white;
+  color: rgb(180, 83, 9);
+  border: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.readonly-signin-btn:hover { background: rgba(255, 255, 255, 0.85); }
+.readonly-signin-btn.hidden { display: none; }
+
+/* Hide edit affordances when in read-only mode. Leave Fit / Tidy / Settings
+   alone — they're navigation, not mutation. */
+body.readonly #btn-new-node,
+body.readonly #empty-state {
+  display: none !important;
+}
+
+/* Access-denied state — applied when the viewer is forbidden from the
+   active graph (anon_role=none and not a member). Stronger than readonly:
+   no banner (sign-in won't help), no edit affordances, canvas inert. */
+body.forbidden #btn-new-node,
+body.forbidden .readonly-banner {
+  display: none !important;
+}
+body.forbidden #cy {
+  pointer-events: none;
+}
+.agent-token-warning {
+  margin: 0;
+  font-size: 12px;
+  color: rgb(180, 83, 9);
+  line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.agent-token-warning .ph {
+  font-size: 14px;
+  line-height: 1.4;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.agent-token-confirm-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.agent-token-confirm-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.agent-token-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--tx-2);
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.agent-token-cancel:hover { color: var(--tx); background: var(--ui); }
+
+/* Trash icon button — replaces the previous "Revoke" text button. Sits on
+   the right of the row, vertically centered, red tint on hover. */
+.agent-token-trash {
+  flex: 0 0 auto;
+  align-self: center;
+  background: transparent;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--color-storm, var(--tx-2));
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.agent-token-trash .ph { font-size: 16px; line-height: 1; }
+.agent-token-trash:hover { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.agent-token-trash.is-confirming { color: var(--red); }
+
+/* Confirm row buttons: pill style matching .modal-actions pattern. */
+.agent-token-confirm-row .agent-token-cancel {
+  background: transparent;
+  border: 1px solid var(--color-slate, var(--border));
+  color: var(--color-slate, var(--tx-2));
+  width: auto;
+  height: auto;
+  padding: 6px 14px;
+  border-radius: var(--radius-buttons, 100px);
+  font-family: var(--font-label);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.053em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.agent-token-confirm-row .agent-token-cancel:hover {
+  color: var(--color-graphite-nav);
+  border-color: var(--color-graphite-nav);
+}
+.agent-token-confirm-btn {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--red);
+  color: var(--red);
+  border-radius: var(--radius-buttons, 100px);
+  font-family: var(--font-label);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.053em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.agent-token-confirm-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.agent-token-confirm-btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.input-with-buttons {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.input-with-buttons input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 260px;
+}
+
+/* Generate button — green outlined pill matching the .modal-actions
+   primary pattern. Same shape works for any in-form CTA outside of
+   the bottom action bar. */
+#agent-tokens-mint {
+  flex: 0 0 auto;
+  padding: 7px 18px;
+  background: transparent;
+  border: 1px solid var(--green-strong);
+  border-radius: var(--radius-buttons, 100px);
+  font-family: var(--font-label);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.053em;
+  text-transform: uppercase;
+  color: var(--green-strong);
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+#agent-tokens-mint:hover {
+  background: color-mix(in srgb, var(--green-strong) 10%, transparent);
+}
+
+/* Copy button next to the just-minted plaintext stays as a small icon
+   button — visually paired with the copy button on the graph URL row. */
+#agent-tokens-copy {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--color-mist, var(--border));
+  border-radius: var(--radius-buttons, 100px);
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--color-slate, var(--tx-2));
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+#agent-tokens-copy:hover {
+  color: var(--color-graphite-nav, var(--tx));
+  border-color: var(--color-graphite-nav, var(--tx));
+}
+#agent-tokens-copy .ph { font-size: 14px; line-height: 1; }
+
+#sidebar.collapsed .sb-user-name,
+#sidebar.collapsed .sb-bottom-label {
+  display: none;
+}
+#sidebar.collapsed .sb-user-pill {
+  justify-content: center;
+  padding: 6px 4px;
 }
 
 /* Bottom-row button — gear + "Settings" label centered when expanded;
@@ -777,12 +1483,21 @@ button {
   background-color: color-mix(in srgb, var(--color-cobalt-link) 14%, transparent) !important;
   border-color: var(--color-cobalt-link) !important;
 }
-/* Toast UI pins the bullet/number marker to `top: 0` of the li, so on a
-   ~21px line the 5px circle floats near the top instead of sitting next to
-   the text. Center it on the first line's text height using `1lh`. */
-.toastui-editor-contents ul > li::before,
-.toastui-editor-contents ol > li::before {
+/* Align the list marker with the first line of text rather than the
+   vertical center of the whole li (which drifts noticeably once an item
+   wraps to 2+ lines). Toast UI's defaults: ul ::before is 5px tall with
+   `margin-top: 6px` and no `top`; ol ::before is text with no `top` but a
+   computed 1lh-tall inline box.
+   - ul: pin top so the 5px dot is centered on line 1, and clear Toast UI's
+     margin-top so it doesn't stack on top of our centering math.
+   - ol: keep the 1lh-tall marker box anchored to the top of the li so its
+     inline baseline matches line 1's text baseline. */
+.toastui-editor-contents ul > li::before {
   top: calc((1lh - 5px) / 2) !important;
+  margin-top: 0 !important;
+}
+.toastui-editor-contents ol > li::before {
+  top: 0 !important;
 }
 
 /* Edge modal */
@@ -1591,11 +2306,32 @@ kbd {
 .cmd-box.hidden { display: none; }
 
 /* Hotkey hint toast — small floating card. */
+/* Hint toast — spans the canvas band (between sidebar and right edge / panel)
+   and centers the badge inside that band with flex, so the toast tracks the
+   visible canvas as the sidebar collapses or the task panel opens. JS sets
+   `right` to `panel-width` when the panel is open; otherwise it stays 0.
+   For toasts that aren't about graph operations (settings, sharing, account
+   actions), `data-anchor="page"` re-anchors to the full viewport so the
+   badge sits over the page horizontal center, not the canvas band. */
 #hotkey-hint {
   position: fixed;
   top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: var(--sidebar-w);
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.2s ease;
+}
+#hotkey-hint[data-anchor="page"] {
+  left: 0;
+}
+#hotkey-hint.hidden {
+  opacity: 0;
+}
+#hotkey-hint-text {
   background: var(--color-pure-white);
   color: var(--color-graphite-nav);
   border: 1px solid var(--color-mist);
@@ -1605,14 +2341,6 @@ kbd {
   font-size: 13px;
   font-weight: 500;
   box-shadow: var(--shadow-sm);
-  z-index: 30;
-  pointer-events: none;
-  opacity: 1;
-  transition: opacity 0.2s ease;
-}
-#hotkey-hint.hidden {
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* Empty state — centered within the canvas area, not the whole viewport */
@@ -1661,3 +2389,133 @@ kbd {
 .tool-btn:active,
 .appearance-clear:active,
 .share-row button:active { scale: 0.96; }
+
+/* === Multiplayer presence === */
+.modal-hint {
+  color: var(--color-steel);
+  font-size: 13px;
+  margin: -8px 0 16px 0;
+}
+
+#presence-bar {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  /* Above canvas, sidebar, toolbar (max ~12); below modals (20) so the dark
+     backdrop hides the avatars cleanly when a dialog is open. */
+  z-index: 15;
+  pointer-events: auto;
+}
+#presence-bar.hidden { display: none; }
+
+.presence-avatar {
+  /* --avatar-glow is set inline per element to the writer's deterministic
+     color. Active avatars use it for a soft halo; idle avatars desaturate. */
+  --avatar-glow: hsl(220, 10%, 60%);
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.18);
+  box-shadow: var(--shadow-sm);
+  cursor: default;
+  user-select: none;
+  transition:
+    transform 140ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 220ms cubic-bezier(0.2, 0, 0, 1),
+    filter 220ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+.presence-avatar.is-active {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--avatar-glow) 55%, transparent),
+    0 0 10px 1px color-mix(in srgb, var(--avatar-glow) 65%, transparent),
+    var(--shadow-sm);
+}
+.presence-avatar.is-idle {
+  /* Fully opaque — no opacity here. When stacked, see-through idle avatars
+     would let the avatar beneath bleed through and look messy. Desaturate
+     and dim via filter only. */
+  filter: grayscale(0.9) brightness(0.78);
+}
+.presence-avatar-own { cursor: pointer; }
+.presence-avatar-own:hover { transform: scale(1.06); }
+.presence-avatar-agent { font-size: 16px; line-height: 1; }
+
+/* "+N others" overflow chip — neutral colored so it reads as a counter,
+   not a person. Shares the same circle shape, tooltip behavior, and stack
+   placement as the avatars it summarizes. */
+.presence-avatar-overflow {
+  --avatar-glow: hsl(220, 8%, 55%);
+  background: var(--color-graphite-nav);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.presence-avatar::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  /* Tooltip is always dark with light text regardless of theme — the design
+     tokens flip across themes and would render text the same color as the
+     surface in one of them. */
+  background: #1f2024;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 120ms, transform 120ms;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.presence-avatar:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Stack mode (5+ writers): all avatars overlap into one deck. JS renders
+   children in REVERSE order so own ends up as the last DOM child, which is
+   both visually rightmost (plain row flex) and naturally painted on top of
+   its overlapping neighbors. Each child after the first slides left by 16px
+   (avatars are 32px) so half of each peeks out — enough to read one initial
+   and tell distinct people apart at a glance. */
+.presence-stack-deck {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.presence-stack-deck .presence-avatar {
+  margin-left: -16px;
+}
+.presence-stack-deck .presence-avatar:first-child {
+  margin-left: 0;
+}
+/* The avatar next to the overflow chip uses a lighter overlap so the chip's
+   "+N" text stays fully readable; the rest of the stack keeps the tighter
+   -16px overlap. */
+.presence-stack-deck .presence-avatar-overflow + .presence-avatar {
+  margin-left: -11px;
+}
+/* Ripple on hover: the hovered avatar elevates briefly and floats above
+   its neighbors. No fan-out of the rest of the stack. */
+.presence-stack-deck .presence-avatar:hover {
+  transform: translateY(-4px);
+  z-index: 100;
+}
