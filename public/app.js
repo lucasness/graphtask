@@ -251,13 +251,30 @@ async function refreshViewerUserId() {
 // (set by GET /api/graphs/:id on the server using canEdit). Body class
 // `readonly` drives the CSS that hides edit affordances; the banner offers
 // a sign-in shortcut when auth is enabled and the viewer is anonymous.
+// Per-tab, per-graph: once the user clicks "Dismiss" on the read-only
+// banner, suppress it for that gid until the tab closes. Hard reloads
+// keep the dismissal (sessionStorage); a fresh tab brings the banner back.
+function readonlyBannerDismissKey(gid) {
+  return `graphtask:readonly-banner-dismissed:${gid}`;
+}
+function isReadOnlyBannerDismissed(gid) {
+  if (!gid) return false;
+  try { return sessionStorage.getItem(readonlyBannerDismissKey(gid)) === '1'; }
+  catch { return false; }
+}
+function setReadOnlyBannerDismissed(gid) {
+  if (!gid) return;
+  try { sessionStorage.setItem(readonlyBannerDismissKey(gid), '1'); } catch {}
+}
+
 function applyReadOnlyState() {
   const banner = document.getElementById('readonly-banner');
   const signinBtn = document.getElementById('readonly-signin-btn');
   const canEdit = !accessDenied && currentGraph?.viewer_can_edit !== false; // null/undefined → allow (back-compat)
   document.body.classList.toggle('forbidden', accessDenied);
   document.body.classList.toggle('readonly', !accessDenied && !canEdit);
-  if (banner) banner.classList.toggle('hidden', accessDenied || canEdit);
+  const dismissed = isReadOnlyBannerDismissed(activeGraphId);
+  if (banner) banner.classList.toggle('hidden', accessDenied || canEdit || dismissed);
   if (signinBtn) {
     // Only show "Sign in to edit" when auth is on AND the user isn't already
     // signed in. If they're signed in and can't edit, the answer isn't
@@ -265,12 +282,21 @@ function applyReadOnlyState() {
     const wantSignIn = gtAuth.enabled && !gtAuth.user;
     signinBtn.classList.toggle('hidden', !wantSignIn);
   }
+  // Disable node grabbing in read-only / forbidden mode — turns the canvas
+  // into a true viewer instead of one that drags freely then fails on save.
+  if (typeof cy !== 'undefined' && cy) {
+    cy.autoungrabify(!canEdit);
+  }
 }
 
-// Wire the sign-in button in the read-only banner exactly once.
+// Wire the sign-in + dismiss buttons in the read-only banner exactly once.
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('readonly-signin-btn')?.addEventListener('click', () => {
     gtAuth.clerk?.openSignIn();
+  });
+  document.getElementById('readonly-dismiss-btn')?.addEventListener('click', () => {
+    setReadOnlyBannerDismissed(activeGraphId);
+    document.getElementById('readonly-banner')?.classList.add('hidden');
   });
 });
 
@@ -980,6 +1006,13 @@ let currentGraph = null;
 // access-denied empty state and locks edit affordances. Reset on every
 // graph switch and on successful fetchGraph.
 let accessDenied = false;
+// Read-only mode mirror — viewer has read but not edit/manage. Used to
+// gate edit-path event handlers so they early-out instead of producing
+// "Save failed" toasts on every interaction.
+function isReadOnly() {
+  return !accessDenied && currentGraph?.viewer_can_edit === false;
+}
+
 // Reactive fallback: if any write returns 403 on the active graph (e.g.
 // SSE is wedged and the kick frame never landed), re-probe the graph so
 // fetchGraph's 403 branch downgrades us into the access-denied state.
@@ -2661,6 +2694,7 @@ let edgeCreation = null;
 
 function startEdgeCreation() {
   if (edgeCreation) return;
+  if (isReadOnly() || accessDenied) return;
   const sources = cy.nodes('.selected')
     .filter((n) => n.id() !== '__pending__' && n.data('taskId'))
     .toArray();
@@ -3835,6 +3869,20 @@ function renderSidebar() {
   let myGraphs = [];
   let sharedGraphs = [];
   const renderedIds = new Set();
+
+  // Race fix: when auth is enabled, the initial render fires before Clerk +
+  // /api/config have resolved the viewer identity. Falling through to the
+  // anon-fallback below would bucket recents from localStorage by their
+  // (often-missing) `created` flag, then immediately re-render with server
+  // truth — producing a visible flash where owned graphs briefly land in
+  // "Shared with me". Hold the sidebar empty until identity is known.
+  const authPending = gtAuth.enabled && (
+    !gtAuth.ready || (gtAuth.user && !gtAuth.viewerUserId)
+  );
+  if (authPending) {
+    updateEmptyStates();
+    return;
+  }
 
   if (viewerId) {
     // Signed-in: server gave us owned + member-of in sidebar.graphs.
@@ -5294,6 +5342,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isCmd(evt.originalEvent)) return; // cmd+click on bg is reserved for box-select start
 
     if (edgeCreation) {
+      if (isReadOnly()) return;
       createPendingNodeFromEdgeCreation(evt.position);
       return;
     }
@@ -5308,6 +5357,7 @@ document.addEventListener('DOMContentLoaded', () => {
       cancelPendingNode();
       return;
     }
+    if (isReadOnly()) return;
     createNodeAt(evt.position);
   });
 
