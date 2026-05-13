@@ -193,7 +193,7 @@ Status enum: `todo` → `in_progress` → `review` → `done`. Each transition s
 | `todo` | You (during plan creation) | The approach: what needs to be done, why, any known constraints. |
 | `in_progress` | You (when you actually start) | Running notes: what you're investigating, what you've ruled out, files you're touching. Update as you go. |
 | `review` | You (when you think it's done) | What you did, files changed, how to verify. **This is what the human reads to confirm.** Make it self-contained. |
-| `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself.** |
+| `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that task only* — don't infer permission for siblings, parents, or the rest of the graph. |
 
 **Read before you write.** Before PATCHing a task, fetch its current content with `GET /api/graphs/$GID/tasks/$TID` and read the body — the user may have edited it in the UI since you last touched it, and PATCH replaces the whole `content` blob. Merge your changes into what's actually there now; don't clobber the user's notes.
 
@@ -295,7 +295,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 ## 7. What you must not touch
 
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Leave them alone.
-- The `done` status on tasks — never write it; that's the human's call.
+- The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
 
 ## Presence lifecycle
