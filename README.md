@@ -24,6 +24,13 @@ graph gets a 16-char random id (`/g/<id>`) that acts as the access
 token — share the URL to collaborate, rotate the id from the graph
 settings (`⋮` → Rotate) to revoke.
 
+The hosted instance runs with `AUTH_PROVIDER=clerk`, so the sidebar
+shows a sign-in button (email OTP). Anonymous use still works — you
+just don't get owned-graph features (My graphs / Shared with me
+bucketing, member invitations, per-graph access tier). The "Auth
+modes" subsection under "Run locally without Docker" below covers
+what changes when you sign in.
+
 **Use it with a Claude Code agent**
 
 ```sh
@@ -154,20 +161,59 @@ See `.env.example` for a fully-commented template.
 
 **Auth modes**
 
-graphtask supports three deployment shapes; pick one at process start via
+graphtask supports two deployment shapes; pick one at process start via
 `AUTH_PROVIDER`. The default is no auth, and that's the recommended mode for
 local dev and single-user self-hosted installs.
 
 | `AUTH_PROVIDER` | Required env | Behavior |
 |---|---|---|
 | `none` _(default)_ | — | No sign-in UI. Every graph id is a bearer token, exactly as before. |
-| `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. Graphs created anonymously stay legacy URL-bearer forever. |
+| `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. |
 
-Legacy (un-owned) graphs never lose URL-bearer access regardless of mode, so
-flipping a previously-no-auth deployment to `clerk` does not lock anyone out
-of their existing graphs. Owners share an owned graph by either flipping
-`anon_role` (link-shared) or adding members by email; agents authenticate
-with a `gt_*` bearer token minted from the in-app key-icon panel.
+On a Clerk-enabled instance, owners share a graph by either flipping
+`anon_role` (link-shared access) or adding members by email — invitees
+without an account yet sit in a pending list and auto-claim on first
+sign-in. Agents authenticate with a `gt_*` bearer token minted from the
+in-app key-icon panel.
+
+Graphs created with `AUTH_PROVIDER=none`, or by anonymous users on a
+Clerk-enabled instance, have `owner_user_id=NULL` and remain URL-bearer
+access forever — flipping a no-auth deployment to Clerk doesn't
+retroactively lock those down.
+
+**Setting up Clerk**
+
+1. Create a Clerk app at <https://dashboard.clerk.com> (use a separate
+   app for dev vs. prod).
+2. Enable **Email address** as the sole sign-in identifier and **Email
+   verification code** (OTP) as the verification strategy. graphtask
+   doesn't wire up any other Clerk sign-in method — leaving them
+   enabled won't break anything, but they won't appear in the modal
+   either.
+3. Copy your **Publishable key** and **Secret key** from the Clerk
+   dashboard into your `.env`:
+   ```sh
+   CLERK_PUBLISHABLE_KEY=pk_test_...   # or pk_live_... in prod
+   CLERK_SECRET_KEY=sk_test_...        # or sk_live_... in prod
+   AUTH_PROVIDER=clerk
+   ```
+4. Restart the server. The boot log should mention the Clerk adapter
+   loading; the browser's `/api/config` will report `auth_enabled: true`.
+
+**Out of scope for Phase B**
+
+These were intentionally left off the auth scope to keep the surface
+small. Don't expect them to work:
+
+- No teams, orgs, or shared workspaces — sharing is per-graph, not per-group.
+- No commenter-only role — `viewer` is read-only, `editor` is full
+  read/write. There's no third tier in between.
+- No SSO, social login, or magic links — email OTP only.
+- No per-task ACL — the access tier is graph-wide.
+- No "claim this graph" flow for inheriting a legacy graph you didn't
+  create locally — only graphs created while signed in are owned, and
+  only graphs created locally-then-claimed by the same browser get
+  auto-promoted on sign-in.
 
 **Setup**
 
