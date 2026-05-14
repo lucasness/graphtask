@@ -1575,23 +1575,6 @@ button {
   box-shadow: var(--shadow-md);
   position: relative;
 }
-.modal-close-x {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  background: transparent;
-  border: none;
-  color: var(--color-storm, var(--tx-2));
-  padding: 2px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-}
-.modal-close-x:hover { background: var(--ui); color: var(--tx); }
-.modal-close-x .ph { font-size: 12px; line-height: 1; }
 /* Slow expressive enter per mymind motion — fast-in / slow-out at 0.7s. */
 @keyframes gt-modal-in {
   from { opacity: 0; transform: translateY(12px); }
@@ -2205,12 +2188,10 @@ input.appearance-input[type="color"] {
 }
 .color-palette.hidden { display: none; }
 .color-palette-header {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 18px;
-  padding-right: 18px; /* reserve space for the absolute-positioned X */
 }
 .color-palette-title {
   font-family: var(--font-ui);
@@ -2219,12 +2200,6 @@ input.appearance-input[type="color"] {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-ember);
-}
-.color-palette-header .modal-close-x {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
 }
 .color-palette-grid {
   display: grid;

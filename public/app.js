@@ -298,7 +298,13 @@ document.addEventListener('DOMContentLoaded', () => {
     setReadOnlyBannerDismissed(activeGraphId);
     document.getElementById('readonly-banner')?.classList.add('hidden');
   });
-  document.getElementById('color-palette-close-x')?.addEventListener('click', () => {
+  // Click outside the color palette closes it (same behaviour as Esc + X).
+  // Capture phase + ignoring clicks that landed inside the palette OR on the
+  // trigger button that just opened it (synthetic order of click events).
+  document.addEventListener('mousedown', (e) => {
+    const palette = document.getElementById('color-palette');
+    if (!palette || palette.classList.contains('hidden')) return;
+    if (palette.contains(e.target)) return;
     closeColorPalette();
   });
 });
@@ -526,6 +532,9 @@ function closeAgentTokensModal() {
   const modal = document.getElementById('agent-tokens-modal');
   if (!modal || modal.classList.contains('hidden')) return;
   modal.classList.add('hidden');
+  // Drop focus off whatever opened us so Escape doesn't leave a
+  // focus-visible outline on the trigger.
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   // Clear the plaintext block on close — it should never linger after the
   // modal is dismissed.
   document.getElementById('agent-tokens-plaintext').value = '';
@@ -546,8 +555,7 @@ function closeAgentTokensModal() {
 
 function wireAgentTokensModal() {
   agentTokensModalWired = true;
-  document.getElementById('agent-tokens-close-x')?.addEventListener('click', closeAgentTokensModal);
-  // Backdrop click (target is the .modal element itself, not a child) closes too.
+  // Backdrop click (target is the .modal element itself, not a child) closes the modal.
   document.getElementById('agent-tokens-modal')?.addEventListener('click', (e) => {
     if (e.target.id === 'agent-tokens-modal') closeAgentTokensModal();
   });
@@ -2042,6 +2050,9 @@ function closeColorPalette(opts = {}) {
   if (palette) palette.classList.add('hidden');
   colorPaletteState.open = false;
   colorPaletteState.target = 'selection';
+  // Drop focus off whatever triggered us (toolbar color button or the
+  // Settings entry) so Escape doesn't leave a focus-visible outline.
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   // Esc / X return to the parent settings modal when that's where the
   // palette was opened from. Committing a swatch (`skipReturn: true`)
   // closes everything so the user can see the change land on the canvas.
@@ -2366,6 +2377,9 @@ function closeSettings() {
   if (!settingsState.open) return;
   settingsState.open = false;
   document.getElementById('settings-overlay').classList.add('hidden');
+  // Drop focus off whatever toolbar button triggered us (or off the search
+  // input) so Escape doesn't leave a focus-visible outline behind.
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
 
 function handleSettingsKey(e) {
@@ -4326,6 +4340,10 @@ function openGraphEditModal(graph) {
 
   function close() {
     _graphModalClose = null;
+    // Blur the trigger (toolbar Settings button etc.) so pressing Escape
+    // to close the modal doesn't leave the browser drawing a focus-visible
+    // outline on the button after the keyboard interaction.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     modal.classList.add('hidden');
     if (typeof accessCleanup === 'function') accessCleanup();
     saveBtn.removeEventListener('click', onSave);
