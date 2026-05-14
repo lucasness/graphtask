@@ -58,9 +58,10 @@
    *
    *   --text-meta      Chips, kbd hints, very small captions, status sub-text.
    *   --text-body-sm   Member rows, picker option values, dense modal copy.
-   *   --text-body      Form labels (Mode/Font), picker triggers, section
-   *                    headers (ACCESS/APPEARANCE — same size, ember+uppercase
-   *                    distinguishes them).
+   *   --text-body      Form labels (Mode/Font), picker triggers.
+   *   --text-section   Section headers (ACCESS/APPEARANCE) — 1px bigger
+   *                    than body so the hierarchy reads correctly; color +
+   *                    uppercase + tracking do the rest.
    *   --text-heading   Modal h3, panel title.
    *
    * Font *family* and *color* are intentionally separate tokens (--font-*,
@@ -69,10 +70,11 @@
   --text-meta: 11px;
   --text-body-sm: 13px;
   --text-body: 14px;
+  --text-section: 15px;
   --text-heading: 22px;
 
   /* Legacy tokens kept as aliases so existing callers don't break while the
-     audit migrates them. Prefer the four above for new code. */
+     audit migrates them. Prefer the five above for new code. */
   --text-caption: var(--text-body-sm);
   --leading-caption: 1.7;
   --leading-body-sm: 1.7;
@@ -237,6 +239,7 @@
   --text-meta: 11px;
   --text-body-sm: 13px;
   --text-body: 14px;
+  --text-section: 15px;
   --text-heading: 22px;
   --text-caption: var(--text-body-sm);
   --leading-caption: 1.55;
@@ -1812,11 +1815,9 @@ button {
   display: block;
   margin-bottom: 10px;
   font-family: var(--font-label);
-  /* Section header uses body size (same as the labels it introduces).
-     Distinguished by color + uppercase + tracking, not by being smaller —
-     a smaller header that introduces bigger labels reads as backwards
-     hierarchy. */
-  font-size: var(--text-body);
+  /* Section header — 1px bigger than body labels so the hierarchy reads
+     correctly while still feeling like a quiet eyebrow, not a heading. */
+  font-size: var(--text-section);
   font-weight: 600;
   color: var(--color-ember-orange);
   text-transform: uppercase;
