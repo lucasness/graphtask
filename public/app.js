@@ -840,11 +840,17 @@ function wirePicker(rootEl, options) {
   }
   trigger.addEventListener('click', onTriggerClick);
   optionEls.forEach((o) => o.addEventListener('click', onOptionClick));
-  return () => {
+  const teardown = () => {
     trigger.removeEventListener('click', onTriggerClick);
     optionEls.forEach((o) => o.removeEventListener('click', onOptionClick));
     closeMenu();
   };
+  // Attach setValue to the teardown so callers can revert the picker UI
+  // without firing onChange (e.g. when a confirm dialog is cancelled).
+  // Function-as-object pattern keeps backward compat with existing callers
+  // that use the return value purely as a teardown fn.
+  teardown.setValue = (v) => setActive(v);
+  return teardown;
 }
 
 // Wires up the inline Access section. Returns a cleanup function.
@@ -873,6 +879,22 @@ function wireAccessSection(graph) {
   const modeTeardown = wirePicker(anonRolePicker, {
     initial: currentMode,
     onChange: async (v) => {
+      // Special-case: flipping from "Invited members only" to "Anyone
+      // with invite can view" leaves existing editor-members with their
+      // explicit editor role on top of the more permissive anon tier.
+      // Confirm so the owner doesn't think the flip downgrades them.
+      if (currentMode === 'none' && v === 'viewer') {
+        const ok = await showConfirm({
+          title: 'Anyone with the link can view',
+          body: 'Invited members can still edit. Continue?',
+          okText: 'Continue',
+          cancelText: 'Cancel',
+        });
+        if (!ok) {
+          modeTeardown.setValue(currentMode);
+          return;
+        }
+      }
       try {
         await setGraphAnonRole(graph.id, v);
         graph.anon_role = v;
@@ -881,6 +903,7 @@ function wireAccessSection(graph) {
       } catch (err) {
         console.error('anon_role change failed', err);
         showHint('Failed to update access — see console.', 'page');
+        modeTeardown.setValue(currentMode);
       }
     },
   });
@@ -4603,6 +4626,11 @@ function openGraphEditModal(graph) {
     // Enter while editing the name is handled by onNameKey (commit-blur).
     // Escape on the name field reverts; outside the name field, it closes.
     if (e.key === 'Escape' && e.target !== nameInput) {
+      // If a confirm dialog is on top of us, let it handle Escape so the
+      // user lands back on this graph-modal instead of dropping all the
+      // way to the canvas.
+      const confirmModal = document.getElementById('app-confirm-modal');
+      if (confirmModal && !confirmModal.classList.contains('hidden')) return;
       e.preventDefault();
       e.stopPropagation();
       close();
