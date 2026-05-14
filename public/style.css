@@ -787,11 +787,15 @@ body {
   white-space: nowrap;
 }
 /* Notion-style chip: text on a soft background, no border, no
-   interactivity. Two variants — role (always grey) and pending (orange). */
+   interactivity. Two variants — role (always grey) and pending (orange).
+   Each variant uses its own min-width so different label texts
+   (Editor/Viewer; Pending/...) render at a stable width and the row
+   layout doesn't shift when status/role changes. */
 .access-member-tag {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   padding: 2px 8px;
   border-radius: 4px;
   font-family: var(--font-ui);
@@ -800,10 +804,13 @@ body {
   background: var(--color-mist, var(--ui));
   color: var(--color-storm, var(--tx-2));
   text-transform: capitalize;
+  text-align: center;
 }
+.access-member-role { min-width: 56px; }
 .access-member-tag-pending {
   background: color-mix(in srgb, var(--color-ember-orange, #f97316) 16%, transparent);
   color: var(--color-ember-orange, #c2410c);
+  min-width: 64px;
 }
 .access-member-kick {
   flex: 0 0 auto;
