@@ -885,8 +885,8 @@ function wireAccessSection(graph) {
       // Confirm so the owner doesn't think the flip downgrades them.
       if (currentMode === 'none' && v === 'viewer') {
         const ok = await showConfirm({
-          title: 'Anyone with the link can view',
-          body: 'Invited members can still edit. Continue?',
+          title: 'Invited members can edit, continue?',
+          body: 'Remove members first if you want to revoke their edit access.',
           okText: 'Continue',
           cancelText: 'Cancel',
         });
