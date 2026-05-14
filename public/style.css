@@ -2192,8 +2192,8 @@ input.appearance-input[type="color"] {
 
 .color-palette {
   position: fixed;
-  display: grid;
-  grid-template-columns: repeat(5, 28px);
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   padding: 16px;
   background: var(--color-pure-white);
@@ -2203,6 +2203,32 @@ input.appearance-input[type="color"] {
   z-index: 24;
 }
 .color-palette.hidden { display: none; }
+.color-palette-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding-right: 28px; /* reserve space for the absolute-positioned X */
+}
+.color-palette-title {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ember);
+}
+.color-palette-header .modal-close-x {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+}
+.color-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 28px);
+  gap: 12px;
+}
 .color-swatch {
   width: 28px;
   height: 28px;

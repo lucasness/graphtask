@@ -383,7 +383,15 @@
 
   <div id="node-title-overlay" class="hidden" contenteditable="true" spellcheck="false" data-placeholder="Untitled"></div>
   <div id="edge-curve-handle" class="hidden" title="Drag to curve edge"></div>
-  <div id="color-palette" class="color-palette hidden" role="listbox" aria-label="Background color"></div>
+  <div id="color-palette" class="color-palette hidden" role="dialog" aria-label="Color picker">
+    <div class="color-palette-header">
+      <span class="color-palette-title" id="color-palette-title">Color</span>
+      <button type="button" id="color-palette-close-x" class="modal-close-x" aria-label="Close" title="Close (Esc)">
+        <i class="ph ph-x" aria-hidden="true"></i>
+      </button>
+    </div>
+    <div class="color-palette-grid" id="color-palette-grid" role="listbox"></div>
+  </div>
 
   <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-label="Defaults">
     <div class="settings-card">

@@ -298,6 +298,9 @@ document.addEventListener('DOMContentLoaded', () => {
     setReadOnlyBannerDismissed(activeGraphId);
     document.getElementById('readonly-banner')?.classList.add('hidden');
   });
+  document.getElementById('color-palette-close-x')?.addEventListener('click', () => {
+    closeColorPalette();
+  });
 });
 
 // When the Clerk session changes (sign-in or sign-out), re-announce presence
@@ -1908,13 +1911,14 @@ function getColorPaletteAnchor() {
 
 function renderColorPalette() {
   const palette = document.getElementById('color-palette');
-  if (!palette) return;
+  const grid = document.getElementById('color-palette-grid');
+  if (!palette || !grid) return;
   const active = getActivePalette();
   // Skip re-render if the same palette is already laid out — keyed by target
   // so swapping between bg-picker and font-picker correctly rebuilds.
   const paletteKey = colorPaletteState.target === 'settings-font-color' ? 'font' : 'bg';
   if (palette.dataset.rendered === paletteKey) return;
-  palette.innerHTML = '';
+  grid.innerHTML = '';
   active.forEach((color, index) => {
     const swatch = document.createElement('button');
     swatch.type = 'button';
@@ -1924,7 +1928,7 @@ function renderColorPalette() {
     swatch.setAttribute('aria-label', color.name);
     swatch.dataset.index = String(index);
     swatch.addEventListener('click', () => commitColorPalette(index));
-    palette.appendChild(swatch);
+    grid.appendChild(swatch);
   });
   palette.dataset.rendered = paletteKey;
 }
@@ -1991,6 +1995,11 @@ function positionColorPalette(anchor) {
   palette.style.top = `${top}px`;
 }
 
+// When the color palette was opened from the app-settings modal, set this
+// so that closing it (X, Esc) re-opens settings instead of dropping back
+// to the canvas.
+let _colorPaletteReturnToSettings = false;
+
 function openColorPalette(anchor, target = 'selection') {
   if (target === 'selection') {
     if (edgeCreation || !hasColorableSelection()) return false;
@@ -2006,6 +2015,15 @@ function openColorPalette(anchor, target = 'selection') {
   renderColorPalette();
   const palette = document.getElementById('color-palette');
   if (!palette) return false;
+  // Set the section title so the picker isn't a context-free grid of swatches.
+  const titleEl = document.getElementById('color-palette-title');
+  if (titleEl) {
+    if (target === 'settings-font-color') titleEl.textContent = 'Font color';
+    else if (target === 'settings-bg') titleEl.textContent = 'Background color';
+    else titleEl.textContent = 'Color';
+  }
+  // Track whether this open came from app-settings so close can return there.
+  _colorPaletteReturnToSettings = (target === 'settings-bg' || target === 'settings-font-color');
 
   colorPaletteState.open = true;
   palette.classList.remove('hidden');
@@ -2019,11 +2037,19 @@ function openColorPalette(anchor, target = 'selection') {
   return true;
 }
 
-function closeColorPalette() {
+function closeColorPalette(opts = {}) {
   const palette = document.getElementById('color-palette');
   if (palette) palette.classList.add('hidden');
   colorPaletteState.open = false;
   colorPaletteState.target = 'selection';
+  // Esc / X return to the parent settings modal when that's where the
+  // palette was opened from. Committing a swatch (`skipReturn: true`)
+  // closes everything so the user can see the change land on the canvas.
+  if (_colorPaletteReturnToSettings) {
+    const shouldReturn = !opts.skipReturn;
+    _colorPaletteReturnToSettings = false;
+    if (shouldReturn) openSettings();
+  }
 }
 
 function handleColorPaletteKey(e) {
@@ -2168,7 +2194,7 @@ function commitColorPalette(index) {
   const color = getActivePalette()[index];
   if (!color) return;
   const target = colorPaletteState.target;
-  closeColorPalette();
+  closeColorPalette({ skipReturn: true });
   if (target === 'settings-bg') setSettingBgColor(color.value);
   else if (target === 'settings-font-color') setSettingFontColor(color.value);
   else applySelectionColor(color.value);
