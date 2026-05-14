@@ -1029,11 +1029,8 @@ function renderAccessMemberRow(m) {
   return `
     <div class="access-member-row">
       <span class="access-member-avatar" style="background: ${colorForId(m.user_id)};">${escapeHtml(initials)}</span>
-      <div class="access-member-meta">
-        <div class="access-member-name">${escapeHtml(name)}</div>
-        <div class="access-member-email">${escapeHtml(m.email || '')}</div>
-      </div>
-      <span class="access-member-role">${escapeHtml(m.role)}</span>
+      <span class="access-member-email" title="${escapeHtml(name)}">${escapeHtml(m.email || name)}</span>
+      <span class="access-member-tag access-member-role">${escapeHtml(m.role)}</span>
       <button type="button" class="access-member-kick" data-kick-user-id="${escapeHtml(m.user_id)}" title="Remove" aria-label="Remove member">&times;</button>
     </div>
   `;
@@ -1044,11 +1041,9 @@ function renderAccessPendingRow(p) {
   return `
     <div class="access-member-row access-member-row-pending">
       <span class="access-member-avatar" style="background: ${colorForId(p.email)};">${escapeHtml(initials)}</span>
-      <div class="access-member-meta">
-        <div class="access-member-name">${escapeHtml(p.email)}</div>
-        <div class="access-member-email">Pending sign-in</div>
-      </div>
-      <span class="access-member-role">${escapeHtml(p.role)}</span>
+      <span class="access-member-email">${escapeHtml(p.email)}</span>
+      <span class="access-member-tag access-member-tag-pending" title="Pending sign-in">Pending</span>
+      <span class="access-member-tag access-member-role">${escapeHtml(p.role)}</span>
       <button type="button" class="access-member-kick" data-cancel-pending-email="${escapeHtml(p.email)}" title="Cancel invite" aria-label="Cancel invite">&times;</button>
     </div>
   `;
