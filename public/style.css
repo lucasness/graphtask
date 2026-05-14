@@ -760,6 +760,31 @@ body {
   max-height: 168px;
   overflow-y: auto;
   margin-top: 6px;
+  /* Scrollbar fades in only on hover/focus so it doesn't sit visible
+     when the user is looking at the rest of the modal. */
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease;
+}
+.access-members-list:hover,
+.access-members-list:focus-within {
+  scrollbar-color: var(--color-mist) transparent;
+}
+.access-members-list::-webkit-scrollbar {
+  width: 8px;
+}
+.access-members-list::-webkit-scrollbar-track { background: transparent; }
+.access-members-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 4px;
+  transition: background-color 0.25s ease;
+}
+.access-members-list:hover::-webkit-scrollbar-thumb,
+.access-members-list:focus-within::-webkit-scrollbar-thumb {
+  background: var(--color-mist);
+}
+.access-members-list::-webkit-scrollbar-thumb:hover {
+  background: var(--color-slate);
 }
 .access-members-list.hidden { display: none; }
 .access-member-row {
