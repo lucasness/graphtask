@@ -853,21 +853,22 @@ body {
 }
 .access-member-kick {
   /* Match the share-row copy button and the paper-plane send button —
-     same width (30px) so all three icons in this column have aligned
-     centers + right edges. The role tag's right edge then naturally
-     lands at the dropdown right-edge column above. */
+     same 30px width so all three columns' centers stack. Width is
+     pinned explicitly so the icon size inside can be smaller than the
+     copy/plane icons without breaking the button column. */
   flex: 0 0 auto;
   background: transparent;
   border: none;
   color: var(--color-slate, var(--tx-2));
   cursor: pointer;
-  padding: 0 6px;
+  padding: 0;
+  width: 30px;
   border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.access-member-kick .ph { font-size: 18px; line-height: 1; }
+.access-member-kick .ph { font-size: 13px; line-height: 1; }
 .access-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
 .access-member-row-pending .access-member-avatar { opacity: 0.6; }
 
