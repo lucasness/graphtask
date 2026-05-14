@@ -651,7 +651,7 @@ body {
   /* Form-line input — no box, just an underline. Italic placeholder so
      the field reads as "write on the line". Width tuned so the Editor
      caret roughly aligns with the Mode caret above. */
-  flex: 0 0 170px;
+  flex: 0 0 120px;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--color-mist);
@@ -669,8 +669,12 @@ body {
 }
 /* Role picker uses the default .font-picker-trigger styling (transparent
    text + caret) so it matches the Mode + Font pickers elsewhere in the
-   modal. */
-.access-invite-row .font-picker { flex: 0 0 auto; }
+   modal. Pushed right so its right edge aligns with the Mode picker's
+   right edge above (tuned to match the Mode trigger's natural width). */
+.access-invite-row .font-picker {
+  flex: 0 0 auto;
+  margin-left: 125px;
+}
 .access-invite-row button.primary { margin-left: 16px; }
 .access-invite-row button.primary {
   flex: 0 0 auto;
