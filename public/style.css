@@ -52,16 +52,34 @@
   /* Reference fonts (Helvetica Neue universally) */
   --font-helvetica-neue: 'Helvetica Neue', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
-  /* Reference type scale */
-  --text-caption: 13px;
+  /* === TYPE SCALE — single source of truth for text sizing ====================
+   * Every font-size in the codebase should pick one of these four tokens. If
+   * a new element doesn't fit any of them, change the scale; don't hardcode.
+   *
+   *   --text-meta      Chips, kbd hints, very small captions, status sub-text.
+   *   --text-body-sm   Member rows, picker option values, dense modal copy.
+   *   --text-body      Form labels (Mode/Font), picker triggers, section
+   *                    headers (ACCESS/APPEARANCE — same size, ember+uppercase
+   *                    distinguishes them).
+   *   --text-heading   Modal h3, panel title.
+   *
+   * Font *family* and *color* are intentionally separate tokens (--font-*,
+   * --color-*) so app-level + graph-level overrides keep working.
+   * ========================================================================= */
+  --text-meta: 11px;
+  --text-body-sm: 13px;
+  --text-body: 14px;
+  --text-heading: 22px;
+
+  /* Legacy tokens kept as aliases so existing callers don't break while the
+     audit migrates them. Prefer the four above for new code. */
+  --text-caption: var(--text-body-sm);
   --leading-caption: 1.7;
-  --text-body-sm: 15px;
   --leading-body-sm: 1.7;
   --tracking-body-sm: 0.15px;
-  --text-body: 22px;
   --leading-body: 1.5;
-  --text-subheading: 18px;
-  --text-heading-sm: 22px;
+  --text-subheading: var(--text-body);
+  --text-heading-sm: var(--text-heading);
 
   /* Reference radii (flat surfaces, 4px buttons, 9999px pills) */
   --radius-md: 4px;
@@ -214,16 +232,19 @@
   --font-body:    'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-ui:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
-  /* Reference type scale */
-  --text-caption: 15px;
-  --leading-caption: 1.55;
+  /* Type scale — see the master block at the top of the file for the spec.
+     This light-theme override resolves to the same values. */
+  --text-meta: 11px;
   --text-body-sm: 13px;
+  --text-body: 14px;
+  --text-heading: 22px;
+  --text-caption: var(--text-body-sm);
+  --leading-caption: 1.55;
   --leading-body-sm: 1.55;
   --tracking-body-sm: normal;
-  --text-body: 16px;
   --leading-body: 1.55;
-  --text-subheading: 18px;
-  --text-heading-sm: 28px;
+  --text-subheading: var(--text-body);
+  --text-heading-sm: var(--text-heading);
 
   /* Reference radii */
   --radius-md: 12px;
@@ -352,7 +373,7 @@ body {
   padding: 5px 9px;
   cursor: pointer;
   font-family: var(--font-label);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.125em;
@@ -424,7 +445,7 @@ body {
   width: 100%;
   padding: 6px 8px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx-2);
   min-width: 0;
   background: transparent;
@@ -463,7 +484,7 @@ body {
   border-radius: 6px;
   padding: 4px 12px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx);
   cursor: pointer;
   text-align: center;
@@ -507,14 +528,14 @@ body {
 }
 .agent-tokens-minted-warning {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: rgb(180, 83, 9);
   font-weight: 500;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.agent-tokens-minted-warning .ph { font-size: 14px; line-height: 1; }
+.agent-tokens-minted-warning .ph { font-size: var(--text-body); line-height: 1; }
 .agent-tokens-list {
   max-height: 260px;
   overflow-y: auto;
@@ -531,7 +552,7 @@ body {
 }
 .agent-tokens-empty-hint {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--color-storm, var(--tx-2));
   font-style: italic;
 }
@@ -552,13 +573,13 @@ body {
 .agent-token-meta { flex: 1 1 auto; min-width: 0; }
 .agent-token-label {
   font-family: var(--font-ui, inherit);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--color-graphite-nav, var(--tx));
   line-height: 1.3;
 }
 .agent-token-times {
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--color-storm, var(--tx-2));
   margin-top: 4px;
   line-height: 1.5;
@@ -595,7 +616,7 @@ body {
   gap: 6px;
 }
 .modal-field-access > span:first-child {
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -618,7 +639,7 @@ body {
      and read as part of the same form. */
   flex: 0 0 100px;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 500;
   color: var(--color-storm);
   text-transform: none;
@@ -671,7 +692,7 @@ body {
   border-radius: 0;
   color: var(--color-graphite-nav);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   padding: 4px 0;
   outline: none;
 }
@@ -747,7 +768,7 @@ body {
   border-radius: 6px;
   padding: 3px 8px;
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 500;
   color: var(--red-strong, #b91c1c);
   white-space: nowrap;
@@ -819,7 +840,7 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   font-family: var(--font-ui, inherit);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--color-graphite-nav, var(--tx));
   overflow: hidden;
   text-overflow: ellipsis;
@@ -838,7 +859,7 @@ body {
   padding: 2px 8px;
   border-radius: 4px;
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 500;
   background: var(--color-mist, var(--ui));
   color: var(--color-storm, var(--tx-2));
@@ -868,7 +889,7 @@ body {
   align-items: center;
   justify-content: center;
 }
-.access-member-kick .ph { font-size: 13px; line-height: 1; }
+.access-member-kick .ph { font-size: var(--text-body-sm); line-height: 1; }
 .access-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
 .access-member-row-pending .access-member-avatar { opacity: 0.6; }
 
@@ -885,7 +906,7 @@ body {
   background: var(--ui);
   color: var(--tx);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   cursor: pointer;
 }
 .share-button:hover { background: var(--ui-2, var(--border)); }
@@ -898,7 +919,7 @@ body {
   gap: 8px;
 }
 .share-section-title {
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -907,7 +928,7 @@ body {
 .share-select {
   width: 100%;
   padding: 8px 10px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -923,7 +944,7 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-family: var(--mono, monospace);
 }
 .share-link-row button {
@@ -936,7 +957,7 @@ body {
 }
 .share-link-row button:hover { color: var(--tx); background: var(--ui); }
 .share-link-hint {
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--tx-2);
   margin: 0;
 }
@@ -950,11 +971,11 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
 }
 .share-invite-row select {
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg);
@@ -962,7 +983,7 @@ body {
 }
 .share-invite-row button {
   padding: 6px 14px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
 }
 
 .share-member-row-pending .share-member-name {
@@ -1005,14 +1026,14 @@ body {
 }
 .share-member-meta { flex: 1 1 auto; min-width: 0; }
 .share-member-name {
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .share-member-email {
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--tx-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1051,7 +1072,7 @@ body {
   color: white;
   padding: 6px 14px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   letter-spacing: 0.02em;
   display: inline-flex;
@@ -1066,7 +1087,7 @@ body {
   border: none;
   padding: 3px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1078,7 +1099,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.55);
   padding: 3px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1103,7 +1124,7 @@ body.forbidden #cy {
 }
 .agent-token-warning {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: rgb(180, 83, 9);
   line-height: 1.4;
   display: flex;
@@ -1111,7 +1132,7 @@ body.forbidden #cy {
   gap: 6px;
 }
 .agent-token-warning .ph {
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1.4;
   flex: 0 0 auto;
   margin-top: 1px;
@@ -1124,7 +1145,7 @@ body.forbidden #cy {
 .agent-token-confirm-input {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   padding: 4px 8px;
 }
 .agent-token-cancel {
@@ -1176,7 +1197,7 @@ body.forbidden #cy {
   padding: 6px 14px;
   border-radius: var(--radius-buttons, 100px);
   font-family: var(--font-label);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.053em;
   text-transform: uppercase;
@@ -1195,7 +1216,7 @@ body.forbidden #cy {
   color: var(--red);
   border-radius: var(--radius-buttons, 100px);
   font-family: var(--font-label);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.053em;
   text-transform: uppercase;
@@ -1230,7 +1251,7 @@ body.forbidden #cy {
   border: 1px solid var(--green-strong);
   border-radius: var(--radius-buttons, 100px);
   font-family: var(--font-label);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
   letter-spacing: 0.053em;
   text-transform: uppercase;
@@ -1258,7 +1279,7 @@ body.forbidden #cy {
   color: var(--color-graphite-nav, var(--tx));
   border-color: var(--color-graphite-nav, var(--tx));
 }
-#agent-tokens-copy .ph { font-size: 14px; line-height: 1; }
+#agent-tokens-copy .ph { font-size: var(--text-body); line-height: 1; }
 
 #sidebar.collapsed .sb-bottom-label {
   display: none;
@@ -1278,7 +1299,7 @@ body.forbidden #cy {
   border: none;
   border-radius: 6px;
   color: var(--tx-2);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   /* Optical balance: icon side gets ~2px less padding than text side so
      the gear sits on the same visual axis as the centered label. */
   padding: 6px 10px 6px 8px;
@@ -1315,7 +1336,7 @@ body.forbidden #cy {
 .sb-name {
   color: var(--color-graphite-nav);
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: var(--text-body);
   font-weight: 500;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -1326,7 +1347,7 @@ body.forbidden #cy {
 .sb-meta {
   color: var(--color-steel);
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--text-meta);
   margin-top: 2px;
 }
 .sb-menu-btn {
@@ -1369,7 +1390,7 @@ body.forbidden #cy {
 .sb-section {
   padding: 18px 20px 6px;
   font-family: var(--font-label);
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.125em;
   text-transform: uppercase;
@@ -1390,7 +1411,7 @@ body.forbidden #cy {
   position: absolute;
   left: 18px;
   bottom: 12px;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1;
   color: var(--color-steel);
   opacity: 0.7;
@@ -1399,7 +1420,7 @@ body.forbidden #cy {
 #sidebar-empty {
   padding: 20px 14px;
   color: var(--tx-2);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   text-align: center;
 }
 #sidebar-empty.hidden { display: none; }
@@ -1491,7 +1512,7 @@ body.forbidden #cy {
   margin-bottom: 6px;
 }
 .body-label {
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx-2);
 }
 
@@ -1504,7 +1525,7 @@ body.forbidden #cy {
 }
 .mode-btn {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   background: transparent;
   color: var(--tx-2);
   border: none;
@@ -1546,14 +1567,14 @@ body.forbidden #cy {
   background: none;
   border: none;
   color: var(--tx-3);
-  font-size: 24px;
+  font-size: var(--text-heading);
   cursor: pointer;
   line-height: 1;
 }
 .panel-header button:hover { color: var(--tx); }
 
 .save-status {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--tx-2);
   transition: opacity 0.6s ease;
   opacity: 1;
@@ -1567,7 +1588,7 @@ body.forbidden #cy {
 form label {
   display: block;
   margin-bottom: 12px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx-2);
 }
 form input, form textarea, form select {
@@ -1579,7 +1600,7 @@ form input, form textarea, form select {
   border: 1px solid var(--ui-3);
   border-radius: 4px;
   color: var(--app-font-color);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-family: var(--app-font);
 }
 form textarea {
@@ -1597,7 +1618,7 @@ button {
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
 }
 
 /* Toast UI Editor dark-theme tweaks to align with Flexoki */
@@ -1729,7 +1750,7 @@ button {
   width: fit-content;
   margin: 0 0 6px auto;
   font-family: var(--font-body);
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--color-steel);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
@@ -1756,7 +1777,7 @@ button {
   border: 1px solid var(--color-slate);
   border-radius: var(--radius-buttons);
   font-family: var(--font-label);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
   letter-spacing: 0.053em;
   text-transform: uppercase;
@@ -1791,7 +1812,11 @@ button {
   display: block;
   margin-bottom: 10px;
   font-family: var(--font-label);
-  font-size: 11px;
+  /* Section header uses body size (same as the labels it introduces).
+     Distinguished by color + uppercase + tracking, not by being smaller —
+     a smaller header that introduces bigger labels reads as backwards
+     hierarchy. */
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--color-ember-orange);
   text-transform: uppercase;
@@ -1808,7 +1833,7 @@ button {
   border-radius: var(--radius-cardsalt);
   color: var(--color-graphite-nav);
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: var(--text-body);
   padding: 10px 14px;
   outline: none;
   resize: vertical;
@@ -1823,7 +1848,7 @@ button {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
 }
 .modal-readonly {
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx-2);
   font-variant-numeric: tabular-nums;
 }
@@ -1835,7 +1860,7 @@ button {
 .settings-heading p { text-wrap: pretty; }
 .modal-error {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--red);
 }
 .modal-error.hidden { display: none; }
@@ -1912,7 +1937,7 @@ button {
   border-radius: var(--radius-cardsalt);
   color: var(--color-cobalt-link); /* the URL is a link, hence cobalt */
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   padding: 9px 14px;
   outline: none;
 }
@@ -1940,7 +1965,7 @@ button {
 .share-hint {
   margin: 10px 0 0;
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   line-height: 1.55;
   color: var(--color-steel);
 }
@@ -1951,12 +1976,12 @@ button {
   gap: 8px;
   cursor: pointer;
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: var(--text-body);
   color: var(--color-graphite-nav);
 }
 .visibility-hint {
   color: var(--color-steel);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   margin-left: 2px;
 }
 .visibility-row input[type="checkbox"],
@@ -2020,7 +2045,7 @@ button {
 .appearance-label {
   flex: 0 0 100px;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 500;
   color: var(--color-storm);
   /* Override .modal-field > span:first-child uppercase + ember */
@@ -2033,7 +2058,7 @@ button {
   height: 34px;
   padding: 0 12px;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   background: var(--color-pure-white);
   color: var(--color-graphite-nav);
   border: 1px solid var(--color-mist);
@@ -2064,7 +2089,7 @@ input.appearance-input[type="color"] {
   border: none;
   padding: 0;
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   color: var(--color-graphite-nav);
   cursor: pointer;
   outline: none;
@@ -2106,7 +2131,7 @@ input.appearance-input[type="color"] {
   background: transparent;
   border: none;
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-body);
   color: var(--color-graphite-nav);
   border-radius: 8px;
   cursor: pointer;
@@ -2161,7 +2186,7 @@ input.appearance-input[type="color"] {
   border-radius: var(--radius-buttons);
   padding: 5px 14px;
   font-family: var(--font-label);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.053em;
   text-transform: uppercase;
@@ -2175,7 +2200,7 @@ input.appearance-input[type="color"] {
 .modal-body-text {
   margin: 0 0 18px;
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: var(--text-body);
   line-height: 1.55;
   color: var(--color-storm);
 }
@@ -2185,7 +2210,7 @@ input.appearance-input[type="color"] {
   gap: 8px;
   cursor: pointer;
   margin: 0 0 16px;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   color: var(--tx-2);
 }
 .suppress-row input[type="checkbox"] {
@@ -2231,7 +2256,7 @@ input.appearance-input[type="color"] {
 .tb-direction,
 .tb-direction-controls {
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--color-steel);
   padding: 0 6px;
   white-space: nowrap;
@@ -2281,7 +2306,7 @@ input.appearance-input[type="color"] {
   border: 1px solid transparent;
   border-radius: var(--radius-buttons);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   font-weight: 500;
   cursor: pointer;
   transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
@@ -2319,7 +2344,7 @@ input.appearance-input[type="color"] {
 }
 .color-palette-title {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2373,7 +2398,7 @@ input.appearance-input[type="color"] {
 .settings-heading h3 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: var(--text-heading);
   font-weight: 400;
   letter-spacing: -0.04em;
   line-height: 1.1;
@@ -2382,7 +2407,7 @@ input.appearance-input[type="color"] {
 .settings-heading p {
   margin: 6px 0 0;
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   line-height: 1.55;
   color: var(--color-steel);
 }
@@ -2395,7 +2420,7 @@ input.appearance-input[type="color"] {
   border-bottom: 1px solid var(--color-mist);
   color: var(--color-graphite-nav);
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: var(--text-body);
   outline: none;
 }
 .settings-search::placeholder { color: var(--tx-3); }
@@ -2415,7 +2440,7 @@ input.appearance-input[type="color"] {
   border-radius: 8px;
   color: var(--color-graphite-nav);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--text-body);
   text-align: left;
   cursor: pointer;
 }
@@ -2458,7 +2483,7 @@ kbd {
   margin: 0;
   color: var(--tx);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   line-height: 1.2;
   text-align: center;
   max-width: 140px;
@@ -2545,7 +2570,7 @@ kbd {
   padding: 8px 16px;
   border-radius: var(--radius-buttons);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   font-weight: 500;
   box-shadow: var(--shadow-sm);
 }
@@ -2566,7 +2591,7 @@ kbd {
 #empty-state.hidden { display: none; }
 #empty-state p {
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: var(--text-heading);
   font-weight: 400;
   font-style: italic;
   letter-spacing: -0.02em;
@@ -2600,7 +2625,7 @@ kbd {
 /* === Multiplayer presence === */
 .modal-hint {
   color: var(--color-steel);
-  font-size: 13px;
+  font-size: var(--text-body-sm);
   margin: -8px 0 16px 0;
 }
 
@@ -2631,7 +2656,7 @@ kbd {
   align-items: center;
   justify-content: center;
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: #fff;
   letter-spacing: 0.02em;
@@ -2667,7 +2692,7 @@ kbd {
 .presence-avatar-overflow {
   --avatar-glow: hsl(220, 8%, 55%);
   background: var(--color-graphite-nav);
-  font-size: 11px;
+  font-size: var(--text-meta);
   letter-spacing: 0;
 }
 
@@ -2681,7 +2706,7 @@ kbd {
      surface in one of them. */
   background: #1f2024;
   color: #ffffff;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   padding: 4px 8px;
   border-radius: 4px;
