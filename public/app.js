@@ -1035,7 +1035,11 @@ async function loadAccessMembers(gid) {
     listEl.classList.remove('hidden');
     listEl.innerHTML = rows.join('');
     listEl.querySelectorAll('[data-kick-user-id]').forEach((btn) => {
-      btn.addEventListener('click', () => kickMember(gid, btn.dataset.kickUserId));
+      btn.addEventListener('click', () => {
+        const emailEl = btn.closest('.access-member-row')?.querySelector('.access-member-email');
+        const email = emailEl ? emailEl.textContent.trim() : '';
+        kickMember(gid, btn.dataset.kickUserId, email);
+      });
     });
     listEl.querySelectorAll('[data-cancel-pending-email]').forEach((btn) => {
       btn.addEventListener('click', () => cancelPending(gid, btn.dataset.cancelPendingEmail));
@@ -1072,12 +1076,14 @@ function renderAccessPendingRow(p) {
   `;
 }
 
-async function kickMember(gid, userId) {
+async function kickMember(gid, userId, email) {
   if (!gid || !userId) return;
   const ok = await showConfirm({
-    title: 'Remove this member?',
-    body: 'They will lose access immediately.',
-    okText: 'Remove',
+    title: 'Revoke access',
+    body: email
+      ? `${email} will no longer have access.`
+      : 'This member will no longer have access.',
+    okText: 'Revoke',
     danger: true,
   });
   if (!ok) return;
