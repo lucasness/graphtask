@@ -641,30 +641,37 @@ body {
 }
 .access-invite-row {
   display: flex;
-  gap: 6px;
+  gap: 12px;
   align-items: center;
+  /* Indent to line up with the Mode picker above (Mode label is 100px,
+     access-row gap is 12px → 112px from the row start). */
+  padding-left: 112px;
 }
 .access-invite-row input[type="email"] {
-  /* Match the share-row URL input so the two rows read as the same kind
-     of field — white bg, mist border, ui-sized type. Fixed-ish width so
-     the input doesn't span the modal; row packs to the left. */
-  flex: 0 1 200px;
-  min-width: 0;
-  background: var(--color-pure-white);
-  border: 1px solid var(--color-mist);
-  border-radius: var(--radius-cards);
+  /* Form-line input — no box, just an underline. Italic placeholder so
+     the field reads as "write on the line". Width tuned so the Editor
+     caret roughly aligns with the Mode caret above. */
+  flex: 0 0 133px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-mist);
+  border-radius: 0;
   color: var(--color-graphite-nav);
   font-family: var(--font-ui);
-  font-size: 13px;
-  padding: 9px 14px;
+  font-size: 14px;
+  padding: 4px 0;
   outline: none;
 }
-.access-invite-row input[type="email"]:focus { border-color: var(--color-cobalt-link); }
-.access-invite-row input[type="email"]::placeholder { color: var(--color-steel); }
+.access-invite-row input[type="email"]:focus { border-bottom-color: var(--color-cobalt-link); }
+.access-invite-row input[type="email"]::placeholder {
+  font-style: italic;
+  color: var(--color-steel);
+}
 /* Role picker uses the default .font-picker-trigger styling (transparent
    text + caret) so it matches the Mode + Font pickers elsewhere in the
-   modal. No border / no pill. */
+   modal. */
 .access-invite-row .font-picker { flex: 0 0 auto; }
+.access-invite-row button.primary { margin-left: 16px; }
 .access-invite-row button.primary {
   flex: 0 0 auto;
   padding: 7px 18px;
