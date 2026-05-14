@@ -627,9 +627,8 @@ body {
 .access-picker {
   /* Fixed width + right-aligned caret so the caret position doesn't
      shift when the selected Mode text changes length. Tuned so the
-     caret lands at the same X as the Editor caret in the invite row
-     below. */
-  width: 204px;
+     caret lands at the right edge of the share-URL field above. */
+  width: 268px;
 }
 .access-picker .font-picker-trigger {
   /* Right-cluster the text + caret so the gap between the last letter
@@ -692,8 +691,9 @@ body {
      above. */
   width: 70px;
   /* Push the role picker right so its caret stacks under the Mode
-     caret. Tuned to email width (180px) + role picker width (70px). */
-  margin-left: 54px;
+     caret (which lands at the share-URL field's right edge above).
+     Tuned to email width (180px) + role picker width (70px). */
+  margin-left: 118px;
 }
 .access-invite-row .font-picker .font-picker-trigger {
   width: 100%;
@@ -754,12 +754,15 @@ body {
   /* Up to ~5 rows visible (each row ≈ 32px including its vertical padding)
      before vertical scrolling kicks in. No outer border or background —
      rows sit directly on the modal. Small margin-top to visually separate
-     the list from the invite-row above it. */
+     the list from the invite-row above it. Horizontal padding gives a
+     subtle "tab indent" so the list reads as a nested subsection. */
   display: flex;
   flex-direction: column;
   max-height: 168px;
   overflow-y: auto;
   margin-top: 6px;
+  padding-left: 16px;
+  padding-right: 16px;
   /* Scrollbar fades in only on hover/focus so it doesn't sit visible
      when the user is looking at the rest of the modal. */
   scrollbar-width: thin; /* Firefox */
