@@ -1682,7 +1682,6 @@ button {
   max-width: 360px;
   padding: 22px 24px;
 }
-#app-confirm-modal .modal-content h3 { font-size: var(--text-heading-xs, 18px); }
 /* Slow expressive enter per mymind motion — fast-in / slow-out at 0.7s. */
 @keyframes gt-modal-in {
   from { opacity: 0; transform: translateY(12px); }
