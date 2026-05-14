@@ -893,12 +893,14 @@ function wireAccessSection(graph) {
   inviteEmail.value = '';
   inviteError.classList.add('hidden');
 
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
   async function submitInvite() {
+    // Inline-below error pattern is gone — feedback is on the icon itself.
     inviteError.classList.add('hidden');
     const email = inviteEmail.value.trim();
-    if (!email) {
-      inviteError.textContent = 'Enter an email address.';
-      inviteError.classList.remove('hidden');
+    if (!email || !EMAIL_RE.test(email)) {
+      flashInviteResult('error', 'No valid address');
       return;
     }
     try {
@@ -912,33 +914,43 @@ function wireAccessSection(graph) {
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        inviteError.textContent = body.error || `Request failed (${res.status})`;
-        inviteError.classList.remove('hidden');
+        flashInviteResult('error', body.error || 'Request failed');
         return;
       }
       inviteEmail.value = '';
-      flashInviteSent();
+      flashInviteResult('sent');
       await loadAccessMembers(graph.id);
     } catch (err) {
       console.error('invite failed', err);
-      inviteError.textContent = 'Network error — see console.';
-      inviteError.classList.remove('hidden');
+      flashInviteResult('error', 'Network error');
     }
   }
-  // On a successful send: swap the paper-plane icon for a green check
-  // for ~1 second, then restore. Visual confirmation so the user knows
-  // the invite landed without scanning the members list.
+  // Visual confirmation on the icon itself:
+  //   - kind='sent'  → green check-circle for ~1.1s, then restore.
+  //   - kind='error' → red x-circle + a small floating message (set on a
+  //     data attribute so the ::before pseudo can show it) for ~1.6s.
+  // Either way: returns to the paper-plane so the user can send the next
+  // invite without thinking about state.
   let _inviteFlashTimer = null;
-  function flashInviteSent() {
+  function flashInviteResult(kind, message) {
     const icon = inviteSubmit.querySelector('i');
     if (!icon) return;
-    inviteSubmit.classList.add('sent');
-    icon.className = 'ph ph-check-circle';
+    inviteSubmit.classList.remove('sent', 'error');
+    delete inviteSubmit.dataset.flashMessage;
+    if (kind === 'sent') {
+      inviteSubmit.classList.add('sent');
+      icon.className = 'ph ph-check-circle';
+    } else {
+      inviteSubmit.classList.add('error');
+      icon.className = 'ph ph-x-circle';
+      if (message) inviteSubmit.dataset.flashMessage = message;
+    }
     clearTimeout(_inviteFlashTimer);
     _inviteFlashTimer = setTimeout(() => {
-      inviteSubmit.classList.remove('sent');
+      inviteSubmit.classList.remove('sent', 'error');
+      delete inviteSubmit.dataset.flashMessage;
       icon.className = 'ph ph-paper-plane-tilt';
-    }, 1100);
+    }, kind === 'error' ? 1600 : 1100);
   }
   function onInviteKey(e) {
     if (e.key === 'Enter') { e.preventDefault(); submitInvite(); }

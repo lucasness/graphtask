@@ -694,8 +694,10 @@ body {
 }
 .access-invite-row .invite-send-btn { margin-left: 16px; }
 /* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
-   icon that turns green on hover and flashes into a check on send. */
+   icon that turns green on hover and flashes into a check on send /
+   red x on validation or send failure. */
 .invite-send-btn {
+  position: relative;
   flex: 0 0 auto;
   background: transparent;
   border: none;
@@ -710,11 +712,34 @@ body {
 .invite-send-btn .ph { font-size: 18px; line-height: 1; }
 .invite-send-btn:hover { color: var(--green-strong); }
 .invite-send-btn.sent { color: var(--green-strong); }
-.invite-send-btn.sent .ph { animation: invite-send-pulse 0.4s ease-out; }
+.invite-send-btn.error { color: var(--red-strong, #b91c1c); }
+.invite-send-btn.sent .ph,
+.invite-send-btn.error .ph {
+  animation: invite-send-pulse 0.4s ease-out;
+}
 @keyframes invite-send-pulse {
   0% { transform: scale(0.6); opacity: 0.4; }
   60% { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
+}
+/* Small floating message above the button — appears only when the
+   button has a non-empty data-flash-message (error path only). */
+.invite-send-btn[data-flash-message]::before {
+  content: attr(data-flash-message);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--red-strong, #b91c1c);
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
 }
 .access-members-list {
   display: flex;
