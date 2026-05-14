@@ -1097,9 +1097,9 @@ async function kickMember(gid, userId) {
 async function cancelPending(gid, email) {
   if (!gid || !email) return;
   const ok = await showConfirm({
-    title: 'Cancel this invite?',
-    body: `${email} will no longer be added on sign-in.`,
-    okText: 'Cancel invite',
+    title: 'Revoke access',
+    body: `${email} will no longer have access.`,
+    okText: 'Revoke',
     danger: true,
   });
   if (!ok) return;
