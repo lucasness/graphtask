@@ -401,6 +401,7 @@ body {
   width: 100%;
   display: flex;
   justify-content: center;
+  position: relative;
 }
 #sidebar-auth:empty {
   display: none;
@@ -411,51 +412,68 @@ body {
   justify-content: center;
 }
 
-.sb-user-pill {
+/* Combined account-and-settings row (signed-in). Gear icon + account
+   text; clicking opens the app-level settings modal. Hover surfaces a
+   "Sign out" popover above so the user can sign out without opening
+   the settings modal first. */
+.sb-account-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   width: 100%;
   padding: 6px 8px;
   border-radius: 6px;
   font-size: 13px;
-  color: var(--tx);
+  color: var(--tx-2);
+  min-width: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sb-account-row:hover { background: var(--ui); color: var(--tx); }
+.sb-account-row .ph { font-size: 16px; line-height: 1; flex: 0 0 auto; }
+.sb-account-row .sb-user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   min-width: 0;
 }
-.sb-user-pill:hover { background: var(--ui); }
-.sb-user-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 10px;
-  font-weight: 600;
-  flex: 0 0 auto;
-  letter-spacing: 0.02em;
+
+/* Sign-out hover popover. Mounted on <body> via JS so it isn't clipped by
+   the sidebar's overflow:hidden; positioned with `position: fixed` off the
+   account row's bounding rect. The wrapper is invisible — the button
+   itself carries the pill visual so the popover sizes to content. */
+.sb-user-popover {
+  position: fixed;
+  z-index: 100;
+  display: flex;
 }
+.sb-user-popover.hidden { display: none; }
+.sb-user-popover-btn {
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist, var(--border));
+  border-radius: var(--radius-buttons, 100px);
+  padding: 6px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--tx);
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.sb-user-popover-btn:hover { background: var(--ui); }
+.sb-user-popover-btn.danger { color: var(--red-strong, #b91c1c); border-color: color-mix(in srgb, var(--red-strong, #b91c1c) 30%, var(--color-mist, var(--border))); }
+.sb-user-popover-btn.danger:hover { background: color-mix(in srgb, var(--red-strong, #b91c1c) 8%, transparent); }
+#sidebar.collapsed .sb-account-row .sb-user-name { display: none; }
 .sb-user-name {
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sb-user-icon {
-  background: transparent;
-  border: none;
-  color: var(--tx-2);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-}
-.sb-user-icon:hover { color: var(--tx); background: var(--ui-2, var(--ui)); }
-.sb-user-icon .ph { font-size: 14px; line-height: 1; }
 
 /* Agent tokens modal — designed to match the same eyebrow rhythm as the
    graph-modal's Access/Appearance sections. Section labels are styled by
@@ -1122,14 +1140,13 @@ body.forbidden #cy {
 }
 #agent-tokens-copy .ph { font-size: 14px; line-height: 1; }
 
-#sidebar.collapsed .sb-user-name,
 #sidebar.collapsed .sb-bottom-label {
   display: none;
 }
-#sidebar.collapsed .sb-user-pill {
-  justify-content: center;
+#sidebar.collapsed .sb-account-row {
   padding: 6px 4px;
 }
+#app-settings-btn.hidden { display: none; }
 
 /* Bottom-row button — gear + "Settings" label centered when expanded;
    collapses to just the gear icon (still centered) when the sidebar is. */
@@ -1551,7 +1568,24 @@ button {
   border-radius: var(--radius-cards);
   min-width: 280px;
   box-shadow: var(--shadow-md);
+  position: relative;
 }
+.modal-close-x {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  color: var(--color-storm, var(--tx-2));
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-close-x:hover { background: var(--ui); color: var(--tx); }
+.modal-close-x .ph { font-size: 18px; line-height: 1; }
 /* Slow expressive enter per mymind motion — fast-in / slow-out at 0.7s. */
 @keyframes gt-modal-in {
   from { opacity: 0; transform: translateY(12px); }
@@ -2256,6 +2290,9 @@ input.appearance-input[type="color"] {
 .settings-item + .settings-item { margin-top: 2px; }
 .settings-item:hover { background: var(--color-blush-tint); }
 .settings-item.active { background: var(--color-blush-tint); }
+.settings-item.danger { color: var(--red-strong, #b91c1c); }
+.settings-item.danger:hover,
+.settings-item.danger.active { background: color-mix(in srgb, var(--red-strong, #b91c1c) 8%, transparent); }
 .settings-color-dot {
   width: 14px;
   height: 14px;

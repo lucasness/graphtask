@@ -412,27 +412,78 @@ function renderAuthChrome() {
     host.innerHTML = '';
     return;
   }
+  // Toggle the separate Settings button: signed-in users use the combined
+  // account-and-settings row, so the lower Settings button is redundant
+  // and gets hidden.
+  const appSettingsBtn = document.getElementById('app-settings-btn');
+  if (appSettingsBtn) appSettingsBtn.classList.toggle('hidden', !!gtAuth.user);
+
   if (gtAuth.user) {
     const name = gtAuth.user.displayName || gtAuth.user.email || 'You';
     host.innerHTML = `
-      <div class="sb-user-pill" title="${escapeHtml(gtAuth.user.email || '')}">
-        <span class="sb-user-avatar">${escapeHtml(initialsFromName(name))}</span>
+      <button type="button" class="sb-account-row" id="sb-account-row" title="${escapeHtml(gtAuth.user.email || '')}">
+        <i class="ph ph-gear" aria-hidden="true"></i>
         <span class="sb-user-name">${escapeHtml(name)}</span>
-        <button type="button" class="sb-user-icon" id="sb-tokens-btn" title="Agent tokens" aria-label="Agent tokens">
-          <i class="ph ph-key" aria-hidden="true"></i>
-        </button>
-        <button type="button" class="sb-user-icon" id="sb-signout-btn" title="Sign out" aria-label="Sign out">
-          <i class="ph ph-sign-out" aria-hidden="true"></i>
-        </button>
-      </div>
+      </button>
     `;
-    document.getElementById('sb-signout-btn')?.addEventListener('click', async () => {
-      try { await gtAuth.clerk.signOut(); } catch (e) { console.error('sign out failed', e); }
+    // Mount the hover popover on <body> so it isn't clipped by the sidebar's
+    // overflow:hidden in collapsed mode. Positioned with JS off the row's
+    // bounding rect — fixed positioning means viewport coordinates, no
+    // parent-clipping.
+    let pop = document.getElementById('sb-user-popover');
+    if (pop) pop.remove();
+    pop = document.createElement('div');
+    pop.id = 'sb-user-popover';
+    pop.className = 'sb-user-popover hidden';
+    pop.setAttribute('role', 'menu');
+    pop.innerHTML = `<button type="button" class="sb-user-popover-btn danger" id="sb-signout-btn">Sign out</button>`;
+    document.body.appendChild(pop);
+
+    const row = document.getElementById('sb-account-row');
+    let hideTimer = null;
+    function positionPop() {
+      const r = row.getBoundingClientRect();
+      const collapsed = document.getElementById('sidebar')?.classList.contains('collapsed');
+      if (collapsed) {
+        // To the right of the gear, vertically centered with it. translateY
+        // self-centers regardless of the popover's actual height.
+        pop.style.left = `${Math.round(r.right + 8)}px`;
+        pop.style.top = `${Math.round(r.top + r.height / 2)}px`;
+        pop.style.transform = 'translateY(-50%)';
+      } else {
+        // Centered above the row. translate(-50%, -100%) anchors the
+        // popover's bottom-center to the row's top-center + 8px gap.
+        pop.style.left = `${Math.round(r.left + r.width / 2)}px`;
+        pop.style.top = `${Math.round(r.top - 8)}px`;
+        pop.style.transform = 'translate(-50%, -100%)';
+      }
+    }
+    function showPop() {
+      positionPop();
+      pop.classList.remove('hidden');
+      clearTimeout(hideTimer);
+    }
+    function scheduleHide() {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => pop.classList.add('hidden'), 200);
+    }
+    row.addEventListener('mouseenter', showPop);
+    row.addEventListener('mouseleave', scheduleHide);
+    pop.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    pop.addEventListener('mouseleave', scheduleHide);
+    row.addEventListener('click', () => {
+      pop.classList.add('hidden');
+      openSettings();
     });
-    document.getElementById('sb-tokens-btn')?.addEventListener('click', () => openAgentTokensModal());
+    document.getElementById('sb-signout-btn')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      pop.classList.add('hidden');
+      try { await gtAuth.clerk.signOut(); } catch (err) { console.error('sign out failed', err); }
+    });
   } else {
+    document.getElementById('sb-user-popover')?.remove();
     host.innerHTML = `
-      <button type="button" class="sb-bottom-btn sb-signin-btn" id="sb-signin-btn">
+      <button type="button" class="sb-bottom-btn sb-signin-btn" id="sb-signin-btn" title="Sign in" aria-label="Sign in">
         <i class="ph ph-sign-in" aria-hidden="true"></i>
         <span class="sb-bottom-label">Sign in</span>
       </button>
@@ -450,11 +501,16 @@ function renderAuthChrome() {
 // visible inside the modal until the modal closes, then never re-displayed.
 
 let agentTokensModalWired = false;
+// When the agent-tokens modal is opened from the app-settings modal, set
+// this so closing it (X, Esc, or backdrop) re-opens settings instead of
+// dropping the user back to the canvas.
+let _agentTokensReturnToSettings = false;
 
-async function openAgentTokensModal() {
+async function openAgentTokensModal(opts = {}) {
   if (!gtAuth.user) return;
   const modal = document.getElementById('agent-tokens-modal');
   if (!modal) return;
+  _agentTokensReturnToSettings = !!opts.fromSettings;
   if (!agentTokensModalWired) wireAgentTokensModal();
   // Clear any previously-displayed plaintext from a prior mint.
   document.getElementById('agent-tokens-just-minted')?.classList.add('hidden');
@@ -464,7 +520,9 @@ async function openAgentTokensModal() {
 }
 
 function closeAgentTokensModal() {
-  document.getElementById('agent-tokens-modal')?.classList.add('hidden');
+  const modal = document.getElementById('agent-tokens-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
   // Clear the plaintext block on close — it should never linger after the
   // modal is dismissed.
   document.getElementById('agent-tokens-plaintext').value = '';
@@ -477,11 +535,28 @@ function closeAgentTokensModal() {
       const trash = row.querySelector('.agent-token-trash');
       if (trash?.dataset.state === 'confirming') cancelRowRevoke(row);
     });
+  if (_agentTokensReturnToSettings) {
+    _agentTokensReturnToSettings = false;
+    openSettings();
+  }
 }
 
 function wireAgentTokensModal() {
   agentTokensModalWired = true;
-  document.getElementById('agent-tokens-close')?.addEventListener('click', closeAgentTokensModal);
+  document.getElementById('agent-tokens-close-x')?.addEventListener('click', closeAgentTokensModal);
+  // Backdrop click (target is the .modal element itself, not a child) closes too.
+  document.getElementById('agent-tokens-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'agent-tokens-modal') closeAgentTokensModal();
+  });
+  // Esc handler — capture phase so we beat any other listener that might
+  // also bind Esc on the body.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('agent-tokens-modal');
+    if (!modal || modal.classList.contains('hidden')) return;
+    e.stopPropagation();
+    closeAgentTokensModal();
+  }, true);
   document.getElementById('agent-tokens-mint')?.addEventListener('click', mintAgentToken);
   document.getElementById('agent-tokens-copy')?.addEventListener('click', () => {
     const input = document.getElementById('agent-tokens-plaintext');
@@ -2147,7 +2222,7 @@ function getSettingsItems() {
       { label: 'Dark',  kbd: null, active: appSettings.theme === 'dark',  onSelect: () => { setSettingTheme('dark');  closeSettings(); } },
     ];
   }
-  return [
+  const items = [
     // To re-enable theme switching, restore this entry:
     //   { label: 'Theme', kbd: 'T', onSelect: () => { settingsState.mode = 'theme'; settingsState.activeIndex = 0; clearSettingsSearch(); renderSettings(); } },
     {
@@ -2167,6 +2242,26 @@ function getSettingsItems() {
       },
     },
   ];
+  // Agent tokens are account-level — only show the entry when a user is
+  // signed in. Anon viewers and AUTH_PROVIDER=none deployments don't have a
+  // user row to attach tokens to.
+  if (gtAuth.enabled && gtAuth.user) {
+    items.push({
+      label: 'Agents',
+      kbd: 'A',
+      onSelect: () => { closeSettings(); openAgentTokensModal({ fromSettings: true }); },
+    });
+    items.push({
+      label: 'Sign out',
+      kbd: null,
+      danger: true,
+      onSelect: async () => {
+        closeSettings();
+        try { await gtAuth.clerk.signOut(); } catch (err) { console.error('sign out failed', err); }
+      },
+    });
+  }
+  return items;
 }
 
 function getFilteredSettingsItems() {
@@ -2196,7 +2291,9 @@ function renderSettings() {
   items.forEach((it, idx) => {
     const row = document.createElement('button');
     row.type = 'button';
-    row.className = 'settings-item' + (idx === settingsState.activeIndex ? ' active' : '');
+    row.className = 'settings-item'
+      + (idx === settingsState.activeIndex ? ' active' : '')
+      + (it.danger ? ' danger' : '');
     if (it.previewStack) row.style.fontFamily = it.previewStack;
     const label = document.createElement('span');
     label.textContent = it.label + (it.active ? ' ✓' : '');
