@@ -643,15 +643,15 @@ body {
   display: flex;
   gap: 12px;
   align-items: center;
-  /* Indent to line up with the Mode picker above (Mode label is 100px,
-     access-row gap is 12px → 112px from the row start). */
-  padding-left: 112px;
+  /* No left indent — email input starts at the same X as the Mode label
+     above. Width is tuned so the Editor caret still stacks under the
+     Mode caret. */
 }
 .access-invite-row input[type="email"] {
   /* Form-line input — no box, just an underline. Italic placeholder so
      the field reads as "write on the line". Width tuned so the Editor
      caret roughly aligns with the Mode caret above. */
-  flex: 0 0 133px;
+  flex: 0 0 245px;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--color-mist);
