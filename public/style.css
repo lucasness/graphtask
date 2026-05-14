@@ -624,6 +624,17 @@ body {
   text-transform: none;
   letter-spacing: 0;
 }
+.access-picker {
+  /* Fixed width + right-aligned caret so the caret position doesn't
+     shift when the selected Mode text changes length. Tuned so the
+     caret lands at the same X as the Editor caret in the invite row
+     below. */
+  width: 204px;
+}
+.access-picker .font-picker-trigger {
+  width: 100%;
+  justify-content: space-between;
+}
 .access-picker .font-picker-menu {
   /* The Mode menu is wider than the font menu because the options are long
      descriptive labels ("Anyone with invite can view"). */
