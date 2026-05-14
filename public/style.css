@@ -632,8 +632,11 @@ body {
   width: 204px;
 }
 .access-picker .font-picker-trigger {
+  /* Right-cluster the text + caret so the gap between the last letter
+     and the caret is constant — switching Mode no longer shifts the
+     text's right edge relative to the caret. */
   width: 100%;
-  justify-content: space-between;
+  justify-content: flex-end;
 }
 .access-picker .font-picker-menu {
   /* The Mode menu is wider than the font menu because the options are long
@@ -662,7 +665,7 @@ body {
   /* Form-line input — no box, just an underline. Italic placeholder so
      the field reads as "write on the line". Width tuned so the Editor
      caret roughly aligns with the Mode caret above. */
-  flex: 0 0 120px;
+  flex: 0 0 180px;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--color-mist);
@@ -684,7 +687,10 @@ body {
    right edge above (tuned to match the Mode trigger's natural width). */
 .access-invite-row .font-picker {
   flex: 0 0 auto;
-  margin-left: 125px;
+  /* Push the Editor picker right so its right edge stacks under the
+     Mode picker's right edge. Tuned to email width (180px) — adjust
+     if email-width changes. */
+  margin-left: 65px;
 }
 .access-invite-row button.primary { margin-left: 16px; }
 .access-invite-row button.primary {
