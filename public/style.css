@@ -687,10 +687,17 @@ body {
    right edge above (tuned to match the Mode trigger's natural width). */
 .access-invite-row .font-picker {
   flex: 0 0 auto;
-  /* Push the Editor picker right so its right edge stacks under the
-     Mode picker's right edge. Tuned to email width (180px) — adjust
-     if email-width changes. */
-  margin-left: 65px;
+  /* Pin the role picker to the wider of "Editor"/"Viewer" so the caret
+     X is constant when the user switches. Same trick as .access-picker
+     above. */
+  width: 70px;
+  /* Push the role picker right so its caret stacks under the Mode
+     caret. Tuned to email width (180px) + role picker width (70px). */
+  margin-left: 54px;
+}
+.access-invite-row .font-picker .font-picker-trigger {
+  width: 100%;
+  justify-content: flex-end;
 }
 .access-invite-row .invite-send-btn { margin-left: 16px; }
 /* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
