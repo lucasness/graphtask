@@ -917,12 +917,28 @@ function wireAccessSection(graph) {
         return;
       }
       inviteEmail.value = '';
+      flashInviteSent();
       await loadAccessMembers(graph.id);
     } catch (err) {
       console.error('invite failed', err);
       inviteError.textContent = 'Network error — see console.';
       inviteError.classList.remove('hidden');
     }
+  }
+  // On a successful send: swap the paper-plane icon for a green check
+  // for ~1 second, then restore. Visual confirmation so the user knows
+  // the invite landed without scanning the members list.
+  let _inviteFlashTimer = null;
+  function flashInviteSent() {
+    const icon = inviteSubmit.querySelector('i');
+    if (!icon) return;
+    inviteSubmit.classList.add('sent');
+    icon.className = 'ph ph-check-circle';
+    clearTimeout(_inviteFlashTimer);
+    _inviteFlashTimer = setTimeout(() => {
+      inviteSubmit.classList.remove('sent');
+      icon.className = 'ph ph-paper-plane-tilt';
+    }, 1100);
   }
   function onInviteKey(e) {
     if (e.key === 'Enter') { e.preventDefault(); submitInvite(); }

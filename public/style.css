@@ -692,24 +692,29 @@ body {
      if email-width changes. */
   margin-left: 65px;
 }
-.access-invite-row button.primary { margin-left: 16px; }
-.access-invite-row button.primary {
+.access-invite-row .invite-send-btn { margin-left: 16px; }
+/* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
+   icon that turns green on hover and flashes into a check on send. */
+.invite-send-btn {
   flex: 0 0 auto;
-  padding: 7px 18px;
   background: transparent;
-  border: 1px solid var(--green-strong);
-  border-radius: var(--radius-buttons, 100px);
-  font-family: var(--font-label);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.053em;
-  text-transform: uppercase;
-  color: var(--green-strong);
+  border: none;
+  padding: 4px;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  color: var(--color-slate, var(--tx-2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
 }
-.access-invite-row button.primary:hover {
-  background: color-mix(in srgb, var(--green-strong) 10%, transparent);
+.invite-send-btn .ph { font-size: 18px; line-height: 1; }
+.invite-send-btn:hover { color: var(--green-strong); }
+.invite-send-btn.sent { color: var(--green-strong); }
+.invite-send-btn.sent .ph { animation: invite-send-pulse 0.4s ease-out; }
+@keyframes invite-send-pulse {
+  0% { transform: scale(0.6); opacity: 0.4; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }
 .access-members-list {
   display: flex;
