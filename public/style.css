@@ -699,9 +699,11 @@ body {
   width: 100%;
   justify-content: flex-end;
 }
-/* Send icon sits tight next to the role dropdown — it's the submit
-   action for the same input, so they should read as a single unit. */
-.access-invite-row .invite-send-btn { margin-left: 0; }
+/* Send icon: width-matched to the share-row copy button (both 30px) and
+   nudged left by 4px so its right edge stacks under the copy button's
+   right edge above. The negative margin compensates for the extra width
+   added vs the default 4px-padding plane. */
+.access-invite-row .invite-send-btn { margin-left: -4px; }
 /* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
    icon that turns green on hover and flashes into a check on send /
    red x on validation or send failure. */
@@ -710,7 +712,9 @@ body {
   flex: 0 0 auto;
   background: transparent;
   border: none;
-  padding: 4px;
+  /* Match the share-row copy button (0 6px) so the two icons render at
+     the same width and the centers stack vertically. */
+  padding: 0 6px;
   cursor: pointer;
   color: var(--color-slate, var(--tx-2));
   display: inline-flex;
@@ -761,8 +765,11 @@ body {
   max-height: 168px;
   overflow-y: auto;
   margin-top: 6px;
-  padding-left: 16px;
-  padding-right: 16px;
+  /* Symmetric tab-style indent. Right value (38px) is also tuned so the
+     row's × button right edge stacks under the copy / paper-plane icons
+     above. */
+  padding-left: 38px;
+  padding-right: 38px;
   /* Scrollbar fades in only on hover/focus so it doesn't sit visible
      when the user is looking at the rest of the modal. */
   scrollbar-width: thin; /* Firefox */
