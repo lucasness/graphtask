@@ -975,9 +975,13 @@ async function loadAccessMembers(gid) {
       ...pending.map(renderAccessPendingRow),
     ];
     if (rows.length === 0) {
-      listEl.innerHTML = '<p class="modal-hint">Just you so far.</p>';
+      // Empty list — don't show a "Just you so far" placeholder; just hide
+      // the list area entirely so the section reads as "nothing to manage".
+      listEl.innerHTML = '';
+      listEl.classList.add('hidden');
       return;
     }
+    listEl.classList.remove('hidden');
     listEl.innerHTML = rows.join('');
     listEl.querySelectorAll('[data-kick-user-id]').forEach((btn) => {
       btn.addEventListener('click', () => kickMember(gid, btn.dataset.kickUserId));
