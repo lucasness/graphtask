@@ -618,13 +618,9 @@ body {
   flex-direction: column;
   gap: 6px;
 }
-.modal-field-access > span:first-child {
-  font-size: var(--text-meta);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--tx-2);
-}
+/* The Access section header inherits the .modal-field > span:first-child
+   base style — same sentence-case + ember treatment as every other section
+   header. No need to override here. */
 .access-controls {
   display: flex;
   flex-direction: column;
@@ -1815,13 +1811,11 @@ button {
   display: block;
   margin-bottom: 10px;
   font-family: var(--font-label);
-  /* Section header — 1px bigger than body labels so the hierarchy reads
-     correctly while still feeling like a quiet eyebrow, not a heading. */
+  /* Section header — sentence case + ember color is enough to distinguish
+     it from body labels. Uppercase was reading too loud at this size. */
   font-size: var(--text-section);
   font-weight: 600;
   color: var(--color-ember-orange);
-  text-transform: uppercase;
-  letter-spacing: 0.125em;
 }
 /* "Flush" fields skip the eyebrow entirely — placeholder/control
    communicates the purpose. Used for Name, Description, share row. */
