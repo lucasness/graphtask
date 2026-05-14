@@ -1810,9 +1810,11 @@ button {
 .modal-field > span:first-child {
   display: block;
   margin-bottom: 10px;
-  font-family: var(--font-label);
-  /* Section header — sentence case + ember color is enough to distinguish
-     it from body labels. Uppercase was reading too loud at this size. */
+  /* Use --font-ui (Inter) so the section header matches the body labels
+     beneath it. The legacy --font-label (Nunito) was paired with uppercase
+     + tracking; without those, Nunito's rounder letterforms looked like a
+     different typeface from the rest of the modal. */
+  font-family: var(--font-ui);
   font-size: var(--text-section);
   font-weight: 600;
   color: var(--color-ember-orange);
