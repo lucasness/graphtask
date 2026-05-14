@@ -651,7 +651,7 @@ body {
   /* Form-line input — no box, just an underline. Italic placeholder so
      the field reads as "write on the line". Width tuned so the Editor
      caret roughly aligns with the Mode caret above. */
-  flex: 0 0 245px;
+  flex: 0 0 170px;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--color-mist);
