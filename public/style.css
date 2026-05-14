@@ -443,29 +443,34 @@ body {
 
 /* Sign-out hover popover. Mounted on <body> via JS so it isn't clipped by
    the sidebar's overflow:hidden; positioned with `position: fixed` off the
-   account row's bounding rect. The wrapper is invisible — the button
-   itself carries the pill visual so the popover sizes to content. */
+   account row's bounding rect. The wrapper is the card (border + shadow +
+   small padding); the button inside is transparent and just provides the
+   click target + hover background. */
 .sb-user-popover {
   position: fixed;
   z-index: 100;
   display: flex;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist, var(--border));
+  border-radius: var(--radius-cards, 8px);
+  padding: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 .sb-user-popover.hidden { display: none; }
 .sb-user-popover-btn {
-  background: var(--color-pure-white);
-  border: 1px solid var(--color-mist, var(--border));
-  border-radius: var(--radius-buttons, 100px);
-  padding: 6px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 12px;
   font-family: inherit;
   font-size: 13px;
   color: var(--tx);
   cursor: pointer;
   text-align: center;
   white-space: nowrap;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 .sb-user-popover-btn:hover { background: var(--ui); }
-.sb-user-popover-btn.danger { color: var(--red-strong, #b91c1c); border-color: color-mix(in srgb, var(--red-strong, #b91c1c) 30%, var(--color-mist, var(--border))); }
+.sb-user-popover-btn.danger { color: var(--red-strong, #b91c1c); }
 .sb-user-popover-btn.danger:hover { background: color-mix(in srgb, var(--red-strong, #b91c1c) 8%, transparent); }
 #sidebar.collapsed .sb-account-row .sb-user-name { display: none; }
 .sb-user-name {
