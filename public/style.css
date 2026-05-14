@@ -699,7 +699,9 @@ body {
   width: 100%;
   justify-content: flex-end;
 }
-.access-invite-row .invite-send-btn { margin-left: 16px; }
+/* Send icon sits tight next to the role dropdown — it's the submit
+   action for the same input, so they should read as a single unit. */
+.access-invite-row .invite-send-btn { margin-left: 0; }
 /* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
    icon that turns green on hover and flashes into a check on send /
    red x on validation or send failure. */
@@ -751,11 +753,13 @@ body {
 .access-members-list {
   /* Up to ~5 rows visible (each row ≈ 32px including its vertical padding)
      before vertical scrolling kicks in. No outer border or background —
-     rows sit directly on the modal. */
+     rows sit directly on the modal. Small margin-top to visually separate
+     the list from the invite-row above it. */
   display: flex;
   flex-direction: column;
   max-height: 168px;
   overflow-y: auto;
+  margin-top: 6px;
 }
 .access-members-list.hidden { display: none; }
 .access-member-row {
