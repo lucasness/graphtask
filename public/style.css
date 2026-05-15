@@ -1703,8 +1703,19 @@ button {
   inset: 0;
   background: rgba(0,0,0,0.55);
   display: flex;
-  align-items: center;
+  /* Scroll the backdrop (not .modal-content) when the modal is taller
+     than the viewport — keeps the scrollbar at the viewport edge instead
+     of inside the modal box (which would steal width and break the
+     right-column alignment between share-row icons and access-row carets).
+     margin: auto on .modal-content keeps it centered when it fits and
+     pinned to the top once content overflows.
+     align-items: flex-start (instead of center) is required so an
+     overflowing child stays reachable at the top — with align-items:
+     center, the top is pushed off-screen and unscrollable. */
+  align-items: flex-start;
   justify-content: center;
+  overflow-y: auto;
+  padding: 32px 0;
   z-index: 20;
 }
 .modal.hidden { display: none; }
@@ -1714,6 +1725,9 @@ button {
   padding: 32px;
   border-radius: var(--radius-cards);
   min-width: 280px;
+  /* margin-block: auto centers vertically when content fits the viewport;
+     collapses to 0 (pinned to top) once .modal starts scrolling. */
+  margin-block: auto;
   box-shadow: var(--shadow-md);
   position: relative;
 }
