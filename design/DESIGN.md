@@ -52,19 +52,33 @@ A cool blue-grey neutral ramp for text. Default body text is `--color-deep-slate
 | Ash | `#afb5c1` | `--color-ash` | Placeholder text, empty-state copy, default edge color. |
 | Chalk | `#a6a8aa` | `--color-chalk` | Reserved for future low-emphasis chrome. |
 
-### Semantic Roles (light theme aliases)
+### Semantic Colors — the layer components actually use
 
-These names are referenced by component CSS so per-theme remapping stays at the token layer.
+The semantic layer gives each role a stable name; theme switching rebinds the names without touching component CSS. Three groups of role tokens live here:
 
-| Role | Maps to | Used for |
-|------|---------|----------|
-| `--color-ember-orange` | `--main-orange` | Brand accent (outline-only). |
+**Brand + interactive aliases** — named-role tokens that re-point to reference tokens per theme.
+
+| Token | Maps to (light) | Used for |
+|-------|-----------------|----------|
+| `--color-ember-orange` | `--main-orange` | Brand accent (outline-only). Eyebrows, active sidebar bullet, active tool outline. |
 | `--color-cobalt-link` | `--purple-strong` | Filled chromatic interactive: focus rings, checked checkbox, link URL, rubber-band selection. |
 | `--color-canvas-white` | `--neutral-light-grey` | Page canvas. |
-| `--color-pure-white` | `--neutral-white` | Surfaces (modal, sidebar, panel, popovers). |
+| `--color-pure-white` | `--neutral-white` | Surfaces (modal, sidebar, panel, popovers, hotkey toast). |
 | `--color-blush-tint` | `--neutral-light-grey` | Hover / active item wash. |
 | `--color-mist` | `--neutral-grey` | Hairline borders. |
 | `--red` | `--red-strong` | Conventional warning red (private warn, destructive button). |
+
+**Typographic Slate Family** — already enumerated in *Typographic Slate Family* above. These are semantic tokens too (`--color-midnight-ink`, `--color-graphite-nav`, `--color-deep-slate`, `--color-storm`, `--color-steel`, `--color-slate`, `--color-ash`); they're declared directly with hex values instead of via reference aliases because their roles map 1:1 to specific text-color jobs.
+
+**Status-family raw tokens used directly** — components reach into the reference layer for these because they ARE the role: `--green-strong` for the Save/Confirm pill, `--red-strong` for Delete/Rotate, `--orange-strong` / `--orange-medium` / `--orange-light` and their purple/blue/green/red/yellow siblings for the user-pickable swatches.
+
+**Picking a color token (decision order):**
+
+1. If the role is in the *Brand + interactive aliases* table above, use that name.
+2. If you need a text color, use a Typographic Slate Family token (see that section for the role each one carries).
+3. If you need a constructive/destructive button color, use `--green-strong` / `--red-strong` directly.
+4. If you need a status hue for a chip / swatch / fill, reach into the status families directly (`--{color}-{light|medium|strong}`).
+5. If none of the above fits, the design system is missing a token — add a semantic alias rather than hardcoding a hex.
 
 ## Tokens — Typography
 
@@ -80,7 +94,7 @@ Four typefaces, each with a clear role. Typeface choice does the hierarchy work 
 ### Nunito — Eyebrows + Pill labels · `--font-label`
 - **Stack:** `'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`
 - **Weights:** 600
-- **Sizes:** 11px (eyebrows), 12px (small pill label), 14px (modal action pill label)
+- **Sizes:** 14px / `--text-body` (eyebrows, modal action pill label), 12px (small pill label)
 - **Letter spacing:** 0.125em (eyebrows) · 0.053em (pill labels)
 - **Case:** UPPERCASE
 - **Role:** Section eyebrows, sidebar section titles, all uppercase pill button labels.
@@ -100,13 +114,23 @@ Four typefaces, each with a clear role. Typeface choice does the hierarchy work 
 
 ### Type Scale
 
-| Role | Size | Line Height | Letter Spacing | Token |
-|------|------|-------------|----------------|-------|
-| body-sm | 13px | 1.55 | normal | `--text-body-sm` |
-| caption | 15px | 1.55 | — | `--text-caption` |
-| body | 16px | 1.55 | — | `--text-body` |
-| subheading | 18px | — | — | `--text-subheading` |
-| heading-sm | 28px | 1.1 | -0.04em | `--text-heading-sm` |
+Five canonical size tokens. Pick the one whose role matches; don't hardcode `px`.
+
+| Token | Size | Role |
+|-------|------|------|
+| `--text-meta` | 11px | Chips, kbd hints, very small captions, modal subtitle metadata. |
+| `--text-body-sm` | 13px | Member rows, picker option values, dense modal copy, secondary form text. |
+| `--text-body` | 14px | Form labels (Mode / Font), picker triggers, section eyebrows, pill button labels. |
+| `--text-section` | 15px | Available but currently unused — was the larger eyebrow variant, kept as a token in case the design returns to it. |
+| `--text-heading` | 22px | Modal h3, panel title. |
+
+**Legacy aliases** (kept so older callers don't break — prefer the canonical name in new code):
+
+| Alias | Resolves to |
+|-------|-------------|
+| `--text-caption` | `--text-body-sm` (13px) |
+| `--text-subheading` | `--text-body` (14px) |
+| `--text-heading-sm` | `--text-heading` (22px) |
 
 ## Tokens — Spacing & Shapes
 
