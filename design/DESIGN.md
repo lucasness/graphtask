@@ -122,7 +122,8 @@ Five canonical size tokens. Pick the one whose role matches; don't hardcode `px`
 | `--text-body-sm` | 13px | Member rows, picker option values, dense modal copy, secondary form text. |
 | `--text-body` | 14px | Form labels (Mode / Font), picker triggers, section eyebrows, pill button labels. |
 | `--text-section` | 15px | Available but currently unused — was the larger eyebrow variant, kept as a token in case the design returns to it. |
-| `--text-heading` | 22px | Modal h3, panel title. |
+| `--text-heading` | 22px | Modal h3 (generic — Confirm delete, Create Edge, Defaults, etc.), panel title. |
+| `--text-heading-lg` | 24px | Graph-edit modal title (`.editable-heading`) — one step above the generic modal h3 because it's the main "this is the thing you're editing" headline. |
 
 **Legacy aliases** (kept so older callers don't break — prefer the canonical name in new code):
 

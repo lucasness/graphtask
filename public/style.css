@@ -72,6 +72,7 @@
   --text-body: 14px;
   --text-section: 15px;
   --text-heading: 22px;
+  --text-heading-lg: 24px;
 
   /* Legacy tokens kept as aliases so existing callers don't break while the
      audit migrates them. Prefer the five above for new code. */
@@ -241,6 +242,7 @@
   --text-body: 14px;
   --text-section: 15px;
   --text-heading: 22px;
+  --text-heading-lg: 24px;
   --text-caption: var(--text-body-sm);
   --leading-caption: 1.55;
   --leading-body-sm: 1.55;
@@ -1899,6 +1901,11 @@ button {
   transition: background-color 0.15s ease;
   word-break: break-word;
 }
+/* Graph-edit modal title is the lone heading that needs to sit a step
+   above the generic modal h3 — uses --text-heading-lg (24px) rather
+   than --text-heading (22px). Selector qualified with .modal-content to
+   beat the .modal-content h3 specificity (0,1,1 vs 0,2,0). */
+.modal-content .editable-heading { font-size: var(--text-heading-lg); }
 .editable-heading:hover { background: var(--color-blush-tint); }
 .editable-heading:focus { background: var(--color-blush-tint); }
 .editable-heading:empty::before {
