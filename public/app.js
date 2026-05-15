@@ -2831,6 +2831,7 @@ async function createNodeAt(pos, options = {}) {
   loadIntoEditor(`---\ntitle: \nstatus: todo\nx: ${pos.x}\ny: ${pos.y}\n---\n`);
   setEditorMode('rich');
   panel.classList.remove('hidden');
+  if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   if (resolveNodeOverlap(ghost)) {
     const fp = ghost.position();
     pendingPosition = fp;
