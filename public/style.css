@@ -1861,6 +1861,10 @@ button {
   resize: vertical;
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
+/* Cap the resizable textarea so it can't be dragged to a height that
+   pushes the rest of the form off-screen. Modal-content scrolls as a
+   safety net, but the cap keeps the form layout sane during normal use. */
+.modal-field textarea { max-height: 240px; }
 .modal-field input::placeholder,
 .modal-field textarea::placeholder { color: var(--color-ash); }
 /* Cobalt focus — the only chromatic non-orange interactive color. */
