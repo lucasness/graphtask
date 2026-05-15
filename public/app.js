@@ -5430,13 +5430,16 @@ function cytoscapeStyleDark() {
     { selector: 'node.selected.status-editing-todo, node.selected.status-editing-in_progress, node.selected.status-editing-done', style: { 'border-color': '#ff4700', 'border-width': 2.5 } },
     { selector: 'node.editing', style: { 'border-color': '#ff4700', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
-    { selector: 'edge', style: { 'width': 1.5, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
-    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
-    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    // Edge visuals: thinner lines + `vee` arrowheads (narrow V) for a sleeker
+    // look than the previous triangle. arrow-scale=1.2 makes the vee read at
+    // the same visual mass as the old triangle without the chunky base.
+    { selector: 'edge', style: { 'width': 1, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
+    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
+    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 5, 'z-index': 9 } },
     { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
-    { selector: 'edge.highlighted', style: { 'line-color': '#ff4700', 'target-arrow-color': '#ff4700', 'width': 3.5, 'z-index': 10 } },
-    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)' } },
+    { selector: 'edge.highlighted', style: { 'line-color': '#ff4700', 'target-arrow-color': '#ff4700', 'width': 2.25, 'z-index': 10 } },
+    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)' } },
     { selector: 'node.edge-hover-target', style: { 'border-color': '#ff4700', 'border-width': 2 } },
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
@@ -5493,13 +5496,16 @@ function cytoscapeStyleLight() {
     { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#49ca80', 'border-width': 2.5 } },
     { selector: 'node.editing', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
-    { selector: 'edge', style: { 'width': 1.5, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
-    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
-    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'triangle', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)', 'line-color': 'data(color)', 'width': 2 } },
+    // Edge visuals: thinner lines + `vee` arrowheads (narrow V) for a sleeker
+    // look than the previous triangle. arrow-scale=1.2 makes the vee read at
+    // the same visual mass as the old triangle without the chunky base.
+    { selector: 'edge', style: { 'width': 1, 'line-color': 'data(color)', 'curve-style': 'unbundled-bezier', 'control-point-distances': 'data(curveDistance)', 'control-point-weights': 'data(curveWeight)' } },
+    { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
+    { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 5, 'z-index': 9 } },
     { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
-    { selector: 'edge.highlighted', style: { 'line-color': '#ef3230', 'target-arrow-color': '#ef3230', 'width': 3.5, 'z-index': 10 } },
-    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'triangle', 'source-arrow-color': 'data(color)' } },
+    { selector: 'edge.highlighted', style: { 'line-color': '#ef3230', 'target-arrow-color': '#ef3230', 'width': 2.25, 'z-index': 10 } },
+    { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)' } },
     { selector: 'node.edge-hover-target', style: { 'border-color': '#a45fff', 'border-width': 2 } },
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
@@ -5861,6 +5867,28 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'b':
       case 'B':
         if (!e.metaKey && !e.ctrlKey && !e.altKey && openColorPalette()) e.preventDefault();
+        break;
+      case 'c':
+      case 'C':
+        // Edge-context color shortcut. C opens the color palette only when
+        // an edge is selected — nodes still use B (above). Surfaced on the
+        // tb-edge toolbar as the canonical edge-color hotkey.
+        if (!e.metaKey && !e.ctrlKey && !e.altKey
+            && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length >= 1
+            && openColorPalette()) {
+          e.preventDefault();
+        }
+        break;
+      case 'd':
+      case 'D':
+        // Edge-context direction shortcut. D cycles the selected edge's
+        // direction (forward → related → backward). E still works as the
+        // legacy shortcut + the node-context "start edge creation" key.
+        if (!e.metaKey && !e.ctrlKey && !e.altKey
+            && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length === 1) {
+          cycleSelectedEdgeType();
+          e.preventDefault();
+        }
         break;
       case 'Enter':
         if (edgeTypeEditing) {
