@@ -153,6 +153,22 @@ Cool grey, soft, low-spread. No black, no chromatic tint — elevation should fe
 - **Modal padding:** 32px
 - **Modal max-width (form):** 520px
 
+### Form-Modal Rhythm
+
+Three vertical-gap levels inside a form modal (e.g., the graph-edit modal). The hierarchy makes the title→first-row gap visibly larger than the row→row gap, the way a typeset document structures headings.
+
+| Role | Token | Value | Applies to |
+|------|-------|-------|------------|
+| After a title or eyebrow | `--space-5` | 20px | h3 → first field; section eyebrow → first row |
+| Between rows inside a section | `--space-2` | 8px | sibling form rows / flush fields in the same group |
+| Between distinct sections | `--space-8` | 32px | section → next section |
+
+Implementation notes:
+
+- The graph-title `h3` introduces an implicit "top section" — its `--space-5` bottom margin starts the rhythm. The flush rows beneath (Description, share-URL) live in that section and use the 8px gap.
+- When a flush row group is followed by a real section (e.g., share-URL → Access), the section's `margin-top: --space-8` collapses with the flush row's `margin-bottom: --space-2` and the larger value wins — restoring the section-break gap.
+- Sub-blocks inside a section (e.g., the members-list region inside Access, or the Text/Background color row inside Appearance) carry an extra `margin-top: 4px` so the gap above them reads as 12px — a hair more breathing room than a plain row-to-row gap, signalling that the sub-block groups its own children.
+
 ## Components
 
 ### Outlined Slate Pill (default modal button — Cancel / Dismiss / Reset / Clear)
@@ -173,7 +189,7 @@ Same shape as Slate Pill. Border + text: `--red` / `--red-strong` (`#ef3230`). H
 ### Section Eyebrow
 **Role:** Typographic label
 
-Nunito 600, 11px, UPPERCASE, letter-spacing 0.125em, color `--color-ember-orange`. Sits above a section group inside a modal. Use sparingly — one per section, only when the controls below aren't self-evident from a placeholder.
+Nunito 600, 14px (`--text-body`), UPPERCASE, letter-spacing 0.125em, color `--color-ember-orange`. Sits above a section group inside a modal. Use sparingly — one per section, only when the controls below aren't self-evident from a placeholder. Bottom margin: 20px (`--space-5`) — see *Form-Modal Rhythm* below for the surrounding vertical structure.
 
 ### Modal Heading (inline-editable)
 **Role:** Heading
@@ -276,7 +292,7 @@ Hover transitions are property-specific (color, border-color, background-color),
 
 2. Example Component Prompts:
    - **Modal heading:** Playfair Display weight 400, 28px, line-height 1.1, letter-spacing -0.04em, color `--color-midnight-ink`. Inline-editable with blush-tint hover background, 6px radius, 2px 6px padding.
-   - **Section eyebrow:** Nunito weight 600, 11px, UPPERCASE, letter-spacing 0.125em, color `--color-ember-orange`. 10px margin below.
+   - **Section eyebrow:** Nunito weight 600, 14px (`--text-body`), UPPERCASE, letter-spacing 0.125em, color `--color-ember-orange`. 20px margin below (`--space-5`).
    - **Outlined Green Pill (primary):** transparent background, 1px `--green-strong` border, `--green-strong` text, Nunito 600 14px UPPERCASE letter-spacing 0.053em, padding 10px 22px, border-radius 100px. Hover: 10% green-strong fill via color-mix. Active: scale(0.96), 120ms cubic-bezier(0.2, 0, 0, 1).
    - **Form input:** background `--color-pure-white`, 1px `--color-mist` border, 12px radius, padding 10px 14px, Inter 15px color `--color-graphite-nav`. Placeholder `--color-ash`. Focus: border `--color-cobalt-link` + 3px box-shadow at 18% cobalt opacity.
    - **Color swatch grid:** 5-column grid of 22px squares, 6px gap, 1px `--color-mist` border, 4px radius. Active state: 2px `--color-graphite-nav` outset ring.

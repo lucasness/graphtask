@@ -624,7 +624,9 @@ body {
 .access-controls {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* In-section row gap — smaller than the after-title gap above, per
+     the modal form rhythm. */
+  gap: var(--space-2);
 }
 /* Mode row: label + picker, same layout as the Appearance section's
    Font row so the two read as part of the same form. */
@@ -646,9 +648,10 @@ body {
 }
 .access-picker {
   /* Fixed width + right-aligned caret so the caret position doesn't
-     shift when the selected Mode text changes length. Tuned so the
-     caret lands at the right edge of the share-URL field above. */
-  width: 268px;
+     shift when the selected Mode text changes length. Width tuned so
+     the caret center stacks under the share-row's COPY icon center
+     above (not the URL field right edge). */
+  width: 297px;
 }
 .access-picker .font-picker-trigger {
   /* Right-cluster the text + caret so the gap between the last letter
@@ -711,19 +714,18 @@ body {
      above. */
   width: 70px;
   /* Push the role picker right so its caret stacks under the Mode
-     caret (which lands at the share-URL field's right edge above).
-     Tuned to email width (180px) + role picker width (70px). */
-  margin-left: 118px;
+     caret above (which stacks under the COPY icon at the top). Tuned
+     to email width (180px) + role picker width (70px). */
+  margin-left: 147px;
 }
 .access-invite-row .font-picker .font-picker-trigger {
   width: 100%;
   justify-content: flex-end;
 }
-/* Send icon: width-matched to the share-row copy button (both 30px) and
-   nudged left by 4px so its right edge stacks under the copy button's
-   right edge above. The negative margin compensates for the extra width
-   added vs the default 4px-padding plane. */
-.access-invite-row .invite-send-btn { margin-left: -4px; }
+/* Send icon: width-matched to the share-row rotate button (both 30px)
+   and pushed right so its center stacks under the ROTATE icon above
+   (NOT the copy icon — the role-picker caret already sits under copy). */
+.access-invite-row .invite-send-btn { margin-left: 5px; }
 /* Send-invite icon button. Replaces the old "ADD" pill — a paper-plane
    icon that turns green on hover and flashes into a check on send /
    red x on validation or send failure. */
@@ -785,11 +787,14 @@ body {
   max-height: 168px;
   overflow-y: auto;
   margin-top: 6px;
-  /* Symmetric tab-style indent. Right value (38px) is also tuned so the
-     row's × button right edge stacks under the copy / paper-plane icons
-     above. */
-  padding-left: 38px;
-  padding-right: 38px;
+  /* The scrollbar lives on the inside-right edge of this scroll container.
+     Pull the list's right boundary in by 11px so the 8px scrollbar centers
+     under the paper-plane icon above (which sits at the ROTATE-icon column,
+     11px left of the modal content-area's right edge). */
+  margin-right: 11px;
+  /* Symmetric tab-style indent. */
+  padding-left: 27px;
+  padding-right: 27px;
   /* Scrollbar fades in only on hover/focus so it doesn't sit visible
      when the user is looking at the rest of the modal. */
   scrollbar-width: thin; /* Firefox */
@@ -1797,10 +1802,14 @@ button {
   width: 100%;
   box-sizing: border-box;
 }
-.modal-field { display: block; margin-bottom: 20px; }
-/* Form-modal title gets the same block rhythm as fields below it, so the
-   gap from heading → first field matches every other section gap. */
-.modal-content-form h3 { margin-bottom: 20px; }
+/* Form-modal spacing rhythm — three levels of vertical gap:
+   - --space-5 (20px) after a title/eyebrow (graph h3 or section header)
+   - --space-2 (8px)  between sibling rows inside a section
+   - --space-8 (32px) between distinct sections
+   This makes the title→first-row gap visibly larger than the row→row
+   gap, the way a typeset document structures headings. */
+.modal-field { display: block; margin-bottom: var(--space-8); }
+.modal-content-form h3 { margin-bottom: var(--space-5); }
 /* Section eyebrow — Nunito-SemiBold uppercase ember tracked +0.125em.
    The design uses ember eyebrows sparingly (one per section, as visual
    punctuation). Only fields whose meaning isn't self-evident from a
@@ -1809,19 +1818,33 @@ button {
    immediately under it." */
 .modal-field > span:first-child {
   display: block;
-  margin-bottom: 10px;
-  /* Use --font-ui (Inter) so the section header matches the body labels
-     beneath it. The legacy --font-label (Nunito) was paired with uppercase
-     + tracking; without those, Nunito's rounder letterforms looked like a
-     different typeface from the rest of the modal. */
-  font-family: var(--font-ui);
-  font-size: var(--text-section);
+  /* Section title → first row uses the "after-title" gap (more breathing
+     room than between-row gap) so the eyebrow visibly groups with the
+     content below. */
+  margin-bottom: var(--space-5);
+  /* Small ember eyebrow — Nunito (--font-label) paired with uppercase +
+     tracking. The smaller body-size renders sleeker than the 15px sentence-
+     case variant; the sentence-case version at 15px was reading too loud
+     and Inter's strokes lost the "label" quality. */
+  font-family: var(--font-label);
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--color-ember-orange);
+  text-transform: uppercase;
+  letter-spacing: 0.125em;
 }
 /* "Flush" fields skip the eyebrow entirely — placeholder/control
-   communicates the purpose. Used for Name, Description, share row. */
-.modal-field-flush { margin-bottom: 20px; }
+   communicates the purpose. Used for Name, Description, share row.
+   These are rows within the implicit "top section" introduced by the
+   graph-title h3, so they get the tight in-section row gap. */
+.modal-field-flush { margin-bottom: var(--space-2); }
+/* When a flush row is the last one before a real section (e.g., share
+   URL → Access), bump the gap back up to the between-sections rhythm
+   so the section break reads correctly. Margin-collapsing takes the
+   larger of the two values, so the 32px on the next section wins. */
+.modal-field-flush + .modal-field:not(.modal-field-flush) {
+  margin-top: var(--space-8);
+}
 .modal-field input,
 .modal-field textarea {
   width: 100%;
@@ -2032,7 +2055,9 @@ button {
 .appearance-grid {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  /* In-section row gap — matches .access-controls so the two sections
+     share the same row-to-row rhythm. */
+  gap: var(--space-2);
 }
 .appearance-row {
   display: flex;
@@ -2148,6 +2173,10 @@ input.appearance-input[type="color"] {
   display: flex;
   gap: 28px;
   align-items: flex-start;
+  /* Mirrors the +4px nudge on .access-members-section so the gap from
+     the Font row above matches the Mode → email gap in Access (both 12px
+     total: 8px section row-gap + 4px sub-block breathing room). */
+  margin-top: 4px;
 }
 .appearance-color-group {
   flex: 1;
