@@ -5463,14 +5463,17 @@ function cytoscapeStyleDark() {
 }
 function cytoscapeStyleLight() {
   // Palette mapping (May 2026):
-  //   Tier rule: light → fill, medium → text, strong → border / highlight.
-  //   in_progress         → bg blue-light #e2f9ff, text blue-medium #95daf5, border blue-strong #43ace6
-  //   review              → bg yellow-light #fef0bf, text yellow-medium #f6e5a5, border yellow-strong #f6c53e
-  //   done                → bg green-light #deffe3, text green-medium #beecd1, border green-strong #49ca80
+  //   Tier rule: light → fill, strong → border + text.
+  //   in_progress         → bg amber-light #ffe7c5, border/text amber-strong #e88a1b
+  //                         (warm amber-orange — "actively working")
+  //   review              → bg green-light #deffe3, border/text green-strong #49ca80
+  //                         (calm green — "ready for sign-off")
+  //   done                → bg indigo-light #e0e7ff, border/text indigo-strong #4f46e5
+  //                         (settled indigo — "complete, archived")
   //   selection / main    → main-orange #fb5305 (selection underlay, edge.selected, status-editing-todo)
   //   agent-edit / hover  → purple-strong #a45fff (.editing, agent-flash-insert/body, edge-hover-target)
   //   warning             → red-strong #ef3230 (edge.highlighted)
-  //   default todo border → neutral-grey #e5e5e5 (todo has no family hue)
+  //   default todo border → neutral-grey #e5e5e5 (todo has no status hue)
   return [
     {
       selector: 'node',
@@ -5495,20 +5498,20 @@ function cytoscapeStyleLight() {
     },
     // Three-tier per-status palette: light = fill, medium = text, strong = border.
     // (todo has no status hue and falls through to the default body text color.)
-    { selector: 'node[status = "in_progress"]', style: { 'background-color': '#e2f9ff', 'border-color': '#43ace6', 'color': '#43ace6' } },
-    { selector: 'node[status = "review"]',      style: { 'background-color': '#fef0bf', 'border-color': '#f6c53e', 'color': '#f6c53e' } },
-    { selector: 'node[status = "done"]',        style: { 'background-color': '#deffe3', 'border-color': '#49ca80', 'color': '#49ca80' } },
+    { selector: 'node[status = "in_progress"]', style: { 'background-color': '#ffe7c5', 'border-color': '#e88a1b', 'color': '#e88a1b' } },
+    { selector: 'node[status = "review"]',      style: { 'background-color': '#deffe3', 'border-color': '#49ca80', 'color': '#49ca80' } },
+    { selector: 'node[status = "done"]',        style: { 'background-color': '#e0e7ff', 'border-color': '#4f46e5', 'color': '#4f46e5' } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     { selector: 'node.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
     { selector: 'node.agent-flash-insert', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.agent-flash-status-todo',        style: { 'underlay-color': '#e5e5e5', 'underlay-opacity': 0.55, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#43ace6', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-review',      style: { 'underlay-color': '#f6c53e', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-done',        style: { 'underlay-color': '#49ca80', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#e88a1b', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-review',      style: { 'underlay-color': '#49ca80', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
+    { selector: 'node.agent-flash-status-done',        style: { 'underlay-color': '#4f46e5', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
     { selector: 'node.agent-flash-body', style: { 'underlay-color': '#a45fff', 'underlay-opacity': 0.35, 'underlay-padding': 10 } },
     { selector: 'node.selected.status-editing-todo',        style: { 'border-color': '#fb5305', 'border-width': 1.5 } },
-    { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': '#43ace6', 'border-width': 2.5 } },
-    { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#49ca80', 'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': '#e88a1b', 'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#4f46e5', 'border-width': 2.5 } },
     { selector: 'node.editing', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
     // Edge visuals: thinner lines + `vee` arrowheads (narrow V) for a sleeker
