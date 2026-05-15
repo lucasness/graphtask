@@ -5,8 +5,8 @@
                  loadSettings() in app.js pins everyone to "light".
    - "light" → Active theme. Warm light canvas, ember-orange brand mark,
                  cobalt-purple as the only chromatic interactive fill.
-                 Spec: /design/DESIGN.md (+ design/variables.css, theme.css,
-                 tokens.json).
+                 Prose spec: /design/DESIGN.md. This file is the source of
+                 truth for the actual tokens and component CSS.
    Both themes redefine the FULL set of tokens. Avoid relying on any
    token cascading from base :root into a theme override — keep everything
    redundantly explicit so adding a third theme later is straightforward.

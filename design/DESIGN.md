@@ -4,6 +4,8 @@
 
 **Theme:** light
 
+> **How to read this doc.** This is the prose narrative — the *intent* of the design language. The actual tokens and component CSS live in [`public/style.css`](../public/style.css), which is the single source of truth. Two naming layers coexist in that file: the **reference tokens** documented in the tables below (`--neutral-white`, `--main-orange`, …) declare raw values, and the **semantic tokens** (`--color-pure-white`, `--color-ember-orange`, …) alias them with role-based names. Component CSS uses the semantic layer; the reference layer exists so the two themes can re-point semantic names at different raw values without touching component code.
+
 This design system reads like a notebook on a clean desk. Surfaces are near-white (`#ffffff` / `#f7f7f7`) with a single neutral hairline (`#e5e5e5`); shadows are cool grey rather than black so elevation feels weightless. A small, intentional cast of typefaces does almost all of the visual work: a serif display (Playfair Display) for headings, a humanist sans (Nunito) for uppercase eyebrows and pill button labels, a friendly text sans (DM Sans) for body and hints, and a neutral UI sans (Inter) for controls and lists. Color is rationed: ember orange (`#fb5305`) is the brand mark — eyebrows, the active sidebar bullet, the active-tool outline — never a fill. Cobalt purple (`#a45fff`) is the only chromatic interactive *fill* (focus rings, the checked checkbox, the share-link URL). Outlined pill buttons in green (constructive) and red (destructive) carry the modal action moments. Six status hue families (orange / purple / green / blue / red / yellow), each with light / medium / strong tiers, supply the palette for user-pickable node and font colors.
 
 ## Tokens — Colors
