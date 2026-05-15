@@ -2760,6 +2760,7 @@ function cancelPendingNode() {
   hideTitleOverlay();
   if (isPanelOpen() && !editingTaskId) {
     document.getElementById('panel').classList.add('hidden');
+    if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   }
   if (viewportToRestore) restoreViewport(viewportToRestore);
   if (hadGhost) updateToolbar();
@@ -4954,6 +4955,20 @@ function adjustPresenceBarOffset() {
   }
 }
 
+// Watch the panel's class attribute and re-run the presence-bar adjustment
+// every time `.hidden` is added or removed. Belt-and-suspenders for the
+// explicit calls in showPanel/hidePanel/cancelPendingNode/ghost-create — any
+// future path that toggles the panel's visibility (or anything that adds a
+// different state class) gets the bar offset reconciled automatically.
+let _panelClassObserver = null;
+function startPanelClassObserver() {
+  if (_panelClassObserver) return;
+  const panel = document.getElementById('panel');
+  if (!panel) return;
+  _panelClassObserver = new MutationObserver(() => adjustPresenceBarOffset());
+  _panelClassObserver.observe(panel, { attributes: true, attributeFilter: ['class'] });
+}
+
 function renderPresenceBar() {
   const bar = document.getElementById('presence-bar');
   if (!bar) return;
@@ -5524,6 +5539,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // server-side, so /api/graphs returns the right slice from the first call.
   bootAuth();
   loadSettings();
+  startPanelClassObserver();
   cy = cytoscape({
     container: document.getElementById('cy'),
     style: cytoscapeStyle(appSettings.theme),
