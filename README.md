@@ -1070,6 +1070,43 @@ same choices.
   DOM regions, and reconciled SSE / peer-cursor / follow-toggle
   behavior across views.
 
+- **Responsive layout system.** Most of the canvas chrome
+  (`#presence-bar`, `.push-button`, `#panel`, peer-cursor placement,
+  modal widths) is currently positioned with hardcoded pixel
+  offsets — `top: 104px`, `right: 12px`, `width: 40px`, etc. — tuned
+  by eye for a desktop viewport. As soon as the viewport gets
+  narrower, taller, or denser, the row alignments we manually
+  calibrated (avatar bar ↔ status label ↔ MY GRAPHS ↔ Title) start
+  drifting. Turn the ad-hoc px-tuning into a system so the layout
+  holds across phones, tablets, and varied desktop sizes without
+  re-tuning each element.
+
+  What "a system" means here:
+  - **Flex / grid primitives** for groupings like the top-right
+    "avatar bar + push-button" stack, instead of separate fixed-
+    positioned elements that each compute their own `right`.
+  - **Fluid sizing**: `clamp()`, `min()`, `rem`, `vw`/`vh` for
+    dimensions that should scale with viewport, replacing the
+    hardcoded px on widths and gaps.
+  - **Breakpoint strategy**: a small set of media-query layouts
+    (mobile portrait, tablet, desktop) where the shape of the UI
+    actually changes — e.g., sidebar collapses to a drawer below
+    768px, side panel becomes a bottom sheet on phones.
+  - **Container queries** for elements that should reflow based on
+    their container rather than the viewport (e.g., the side panel
+    when the user resizes it).
+  - **Extend the design tokens** so every gap/padding/margin uses
+    `--space-*` rather than raw pixels. Same for the few remaining
+    raw font-size px (status label is 7px, should be a token).
+  - **Audit pass**: every `position: fixed` + `top:` / `right:` /
+    `width: <px>` rule gets either reworked into a layout primitive
+    or annotated with a comment explaining why pixel-perfect is the
+    right choice for that element.
+
+  This is ongoing work, not a single PR — every UI change going
+  forward should use the system rather than adding new hardcoded
+  positions.
+
 ### Deferred
 
 - **Prod-Clerk cutover.** Phase B B7 mode 4 (Hosted, Clerk prod) is the
