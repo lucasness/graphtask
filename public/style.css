@@ -1232,9 +1232,11 @@ body.forbidden #cy {
   height: 100vh;
   background: var(--color-pure-white);
   border-left: 1px solid var(--color-mist);
-  /* Extra bottom padding clears the floating bottom toolbar so the body
-     editor's content never sits behind it. */
-  padding: 24px 24px 96px 24px;
+  /* Top padding matches #sidebar-header so "Edit Task" centers on the same
+     y as NEW GRAPH / collapse icon / avatar bar. Extra bottom padding clears
+     the floating bottom toolbar so the body editor's content never sits
+     behind it. */
+  padding: 18px 24px 96px 24px;
   overflow-y: auto;
   z-index: 10;
   transition: transform 0.7s cubic-bezier(0.19, 1, 0.22, 1);
@@ -1344,7 +1346,13 @@ body.forbidden #cy {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  /* Match #sidebar-header inner button height (28px) so the header's
+     centerline lands at y=32, aligning with NEW GRAPH / collapse / avatars. */
+  min-height: 28px;
+  /* Mirror sidebar-header padding-bottom (14) + #sidebar-list padding-top (4)
+     + .sb-section:first-child padding-top (22) = 40px, so the first form
+     label ("Title") lands on the same y as the "MY GRAPHS" section label. */
+  margin-bottom: 40px;
 }
 .panel-header h2 {
   flex: 1;
@@ -1358,6 +1366,16 @@ body.forbidden #cy {
 .panel-header button {
   background: none;
   border: none;
+  /* No vertical padding — the explicit 28px height sets the hit box, matching
+     the sidebar header's icon-button size. Left padding extends the hit area
+     inward. Negative right margin counters the ✕ glyph's intrinsic right
+     side-bearing so the visible glyph lands flush with the panel's right
+     content edge (matching input/select right borders). */
+  padding: 0 0 0 12px;
+  margin-right: -4px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
   color: var(--tx-3);
   font-size: var(--text-heading);
   cursor: pointer;
@@ -2541,7 +2559,10 @@ kbd {
   width: calc(100vw - var(--sidebar-w));
   height: 100vh;
   pointer-events: none;
-  z-index: 15;
+  /* Below the side panel (z-index 10) so a cursor anchored to a node near
+     the right edge of the canvas doesn't poke through an open panel. Still
+     above #cy (default stacking) so cursors render over the graph. */
+  z-index: 9;
   overflow: hidden;
 }
 .peer-cursor {

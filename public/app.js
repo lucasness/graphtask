@@ -5035,6 +5035,49 @@ function userInteractedRecently() { return Date.now() - _lastUserInteractionAt <
   window.addEventListener(evt, noteUserInteraction, true);
 });
 
+// When the tab becomes visible again, snap the camera to whichever node
+// the current agent is on — *instantly*, no animation. The document.hidden
+// guards in maybeFollowSelection / refreshFromEvent already keep us from
+// queueing pans while hidden, so there's nothing to replay; we just want
+// the user to see the current state the moment they return, not the pre-
+// switch state plus a delayed pan.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  snapCameraToCurrentAgentTarget();
+});
+
+function snapCameraToCurrentAgentTarget() {
+  if (!cy) return;
+  if (!followToggleEnabled) return;
+  // Find a peer selection from an agent we'd follow (same multi-agent rules
+  // as the live follow). First match wins; with a single active agent there
+  // is only one match anyway.
+  let targetNode = null;
+  for (const [writerId, sel] of peerSelectionState) {
+    if (!shouldFollowSelectionFrom(writerId)) continue;
+    const anchor = sel.cursor_anchor || sel.editing;
+    if (!anchor || anchor.kind !== 'node' || anchor.id == null) continue;
+    const node = cy.getElementById(String(anchor.id));
+    if (!node || node.empty()) continue;
+    targetNode = node;
+    break;
+  }
+  if (!targetNode) return;
+  // Instant pan: replicate centerNodeInVisibleArea's math but use cy.panBy
+  // (synchronous) instead of cy.animate (220ms ease).
+  const panel = document.getElementById('panel');
+  const panelWidth = panel && !panel.classList.contains('hidden')
+    ? panel.getBoundingClientRect().width
+    : 0;
+  const targetX = (cy.width() - panelWidth) / 2;
+  const targetY = cy.height() / 2;
+  const pos = targetNode.renderedPosition();
+  const dx = targetX - pos.x;
+  const dy = targetY - pos.y;
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+  cy.panBy({ x: dx, y: dy });
+}
+
 // --- Presence (multiplayer avatars) ---
 // Per-graph map of writerId -> {id, name, type, lastSeen}. Updated by SSE
 // events from the server (other people joining/renaming/leaving) and our own
@@ -5408,9 +5451,47 @@ function handleSelectionEvent(payload) {
       editing: payload.editing ?? null,
       cursor_anchor: payload.cursor_anchor ?? null,
     });
+    // Camera-follow on the agent's announce_focus, not just the subsequent
+    // PATCH. Agents POST selection before they edit, so without this the
+    // peer-cursor tag would render at the new node's rendered position
+    // while the camera was still on the previous node — the tag visually
+    // floats until the PATCH lands and triggers the pan.
+    maybeFollowSelection(payload);
   }
   applyPeerSelectionToCy();
   // T257 will hook here too to redraw cursor labels.
+}
+
+function maybeFollowSelection(payload) {
+  if (!cy) return;
+  if (!followToggleEnabled) return;
+  // Hidden tab → don't pan. rAF is throttled/paused, so cy.animate calls
+  // would queue and replay in a burst when the tab returns.
+  if (document.hidden) return;
+  if (userInteractedRecently()) return;
+  if (!shouldFollowSelectionFrom(payload.writer_id)) return;
+  const anchor = payload.cursor_anchor || payload.editing;
+  if (!anchor || anchor.kind !== 'node' || anchor.id == null) return;
+  const node = cy.getElementById(String(anchor.id));
+  if (!node || node.empty()) return;
+  centerNodeInVisibleArea(node);
+}
+
+// Companion to shouldFollowAgentEvent for selection events. Same multi-agent
+// rules: 0 agents → never; 1 agent → follow it; 2+ agents → follow only
+// agents owned by me. Keyed on writer_id (no payload.id with a row to read
+// last_modified_by_user from, so we read the agent's owner_user_id directly
+// off presenceState).
+function shouldFollowSelectionFrom(writerId) {
+  const writer = presenceState.get(writerId);
+  if (!writer || writer.type !== 'agent') return false;
+  const activeAgents = Array.from(presenceState.values())
+    .filter((w) => w.type === 'agent');
+  if (activeAgents.length === 0) return false;
+  if (activeAgents.length === 1) return true;
+  const me = window.gtUser?.id ?? null;
+  if (me == null) return false;
+  return writer.owner_user_id != null && writer.owner_user_id === me;
 }
 
 // Debounced POST of the local cytoscape selection so peers see what we have
@@ -5591,7 +5672,12 @@ function peerCursorRenderGroup(el, peers) {
 // rendered coords (which is cy-container-relative — same space as
 // renderedBoundingBox).
 function peerCursorPickSlot(anchorBb, markerW, markerH, otherBboxes) {
-  const GAP = 8;
+  // GAP scales with zoom so the tag sits proportionally close to the node.
+  // At zoom=1 it's the historical 8px; zoomed out the node renders smaller
+  // and a constant 8px would look detached, so we scale down (floored at
+  // 2px to keep some breathing room).
+  const zoomFactor = cy ? cy.zoom() : 1;
+  const GAP = Math.max(2, Math.min(16, 8 * zoomFactor));
   const viewW = cy ? cy.width() : Infinity;
   const viewH = cy ? cy.height() : Infinity;
   const cx = (anchorBb.x1 + anchorBb.x2) / 2 - markerW / 2;
@@ -5905,6 +5991,7 @@ async function refreshFromEvent(payload) {
     payload.kind === 'tasks' &&
     payload.id != null &&
     payload.op !== 'DELETE' &&
+    !document.hidden &&
     !userInteractedRecently() &&
     shouldFollowAgentEvent(payload)
   ) {
@@ -6183,6 +6270,10 @@ function cytoscapeStyleDark() {
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
     { selector: 'node:active, edge:active, core:active', style: { 'overlay-opacity': 0 } },
+    // Suppress the default ~25px translucent gray circle Cytoscape paints
+    // at the pointer during a background press/drag. The pointer already
+    // tells the user where they are; the indicator adds nothing.
+    { selector: 'core', style: { 'active-bg-opacity': 0, 'active-bg-size': 0 } },
   ];
 }
 function cytoscapeStyleLight() {
@@ -6254,6 +6345,10 @@ function cytoscapeStyleLight() {
     { selector: 'node.phantom', style: { 'width': 1, 'height': 1, 'background-opacity': 0, 'border-width': 0, 'label': '', 'events': 'no' } },
     { selector: 'edge.preview', style: { 'opacity': 0.6, 'events': 'no', 'z-index': 8 } },
     { selector: 'node:active, edge:active, core:active', style: { 'overlay-opacity': 0 } },
+    // Suppress the default ~25px translucent gray circle Cytoscape paints
+    // at the pointer during a background press/drag. The pointer already
+    // tells the user where they are; the indicator adds nothing.
+    { selector: 'core', style: { 'active-bg-opacity': 0, 'active-bg-size': 0 } },
   ];
 }
 function cytoscapeStyle(theme) {
