@@ -377,3 +377,33 @@ BEGIN
     END LOOP;
   END LOOP;
 END $$;
+
+-- Per-(user, graph) follow preference for the camera-follow toggle.
+-- Absent row = "use the user's default" (see user_prefs). Authed users only;
+-- anons store the equivalent in localStorage (gt_follow_default and
+-- gt_follow_graph_<gid>).
+CREATE TABLE IF NOT EXISTS user_graph_prefs (
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  graph_id     TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  agent_follow BOOLEAN NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, graph_id)
+);
+
+-- Per-user global default for "new graphs I haven't toggled yet". Toggling
+-- on any graph also writes-through to this row, so the user's most recent
+-- choice becomes the default for FUTURE graphs without changing existing
+-- per-graph rows.
+CREATE TABLE IF NOT EXISTS user_prefs (
+  user_id              UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  agent_follow_default BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Owner of the row's most recent write — needed for owner-agent precedence
+-- in mergeFields when two agents conflict on the same field. Nullable for
+-- anonymous writers and for legacy rows written before this column existed.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
+  REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
+  REFERENCES users(id) ON DELETE SET NULL;

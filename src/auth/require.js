@@ -34,7 +34,13 @@ export function requireGraph(level) {
     // counts as "I'm here" and refreshes the avatar TTL. Matches the Phase A
     // behavior that lived in app.js, but now only fires after the ACL passes.
     if (req.method !== 'GET' && req.writer?.id) {
-      presence.touch(graph.id, req.writer.id, req.writer.name, req.writer.type);
+      presence.touch(
+        graph.id,
+        req.writer.id,
+        req.writer.name,
+        req.writer.type,
+        req.user?.id ?? null,
+      );
     }
     next();
   };

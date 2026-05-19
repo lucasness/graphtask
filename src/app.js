@@ -8,12 +8,15 @@ import graphViewRouter from './routes/graphView.js';
 import presenceRouter from './routes/presence.js';
 import membersRouter from './routes/members.js';
 import meRouter from './routes/me.js';
+import graphPrefsRouter from './routes/graphPrefs.js';
+import selectionRouter from './routes/selection.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
 import { verifyAuth } from './auth/middleware.js';
 import { requireGraph, requireGraphForMethod } from './auth/require.js';
 import * as presence from './presence.js';
+import * as selectionState from './selectionState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -87,6 +90,8 @@ app.use('/api/graphs/:gid/tasks', requireGraphForMethod, tasksRouter);
 app.use('/api/graphs/:gid/edges', requireGraphForMethod, edgesRouter);
 app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
+app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
+app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);
 app.use('/api/graphs/:gid/members', membersRouter);
 app.use('/api/me', meRouter);
 
@@ -95,6 +100,18 @@ presence.startReaper();
 presence.startActiveSweep();
 presence.onChange((graphId, op, writer) => {
   broadcastPresence(graphId, { graph_id: graphId, kind: 'presence', op, writer });
+  // When a writer leaves (Stop hook DELETE, sendBeacon on unload, idle reaper),
+  // wipe their selection state so peers' colored outlines and cursor labels
+  // disappear in the same SSE round-trip rather than lingering.
+  if (op === 'depart') selectionState.clearSelection(graphId, writer.id);
+});
+
+// Fan out per-writer selection changes. The frame shape rides on
+// broadcastPresence (it's a generic per-graph SSE channel; clients route
+// by `kind`). Payload from selectionState includes writer_id + the
+// node_ids/edge_ids/editing/cursor_anchor snapshot.
+selectionState.onChange((graphId, op, payload) => {
+  broadcastPresence(graphId, { graph_id: graphId, kind: 'selection', op, ...payload });
 });
 
 // SPA fallback: client-side routes like /g/:gid only exist in the frontend.

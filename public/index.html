@@ -70,6 +70,28 @@
 
   <div id="cy"></div>
 
+  <!-- Multi-peer presence: labeled cursors anchored to nodes/edges that
+       remote peers have selected or are editing. Sits above the canvas
+       (z-index 15) but below modals (20). pointer-events: none so it
+       never blocks taps. JS positions each cursor via a small
+       force-directed simulation. -->
+  <div id="peer-cursor-layer"></div>
+
+  <!-- Agent-follow pause/play toggle. Hidden until at least one agent is
+       active on the graph. Top-left of the canvas, below the cursor
+       layer (z-index 12). JS swaps the icon between play (paused) and
+       pause (auto-following). -->
+  <button type="button" id="btn-follow-toggle" class="canvas-overlay-btn hidden"
+          title="Pause/resume agent follow">
+    <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="3.5" y="2.5" width="3" height="11" rx="0.75"/>
+      <rect x="9.5" y="2.5" width="3" height="11" rx="0.75"/>
+    </svg>
+    <svg class="icon-play hidden" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4 2.5 L4 13.5 L13 8 Z"/>
+    </svg>
+  </button>
+
   <div id="panel" class="panel hidden">
     <div id="panel-resize-handle"></div>
     <div class="panel-header">

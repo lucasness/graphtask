@@ -13,7 +13,12 @@ router.post('/', (req, res) => {
   if (!id || typeof id !== 'string') {
     return res.status(400).json({ error: 'id is required' });
   }
-  const writer = presence.announce(gid, { id, name, type });
+  const writer = presence.announce(gid, {
+    id,
+    name,
+    type,
+    owner_user_id: req.user?.id ?? null,
+  });
   if (!writer) return res.status(400).json({ error: 'invalid writer' });
   res.status(204).end();
 });

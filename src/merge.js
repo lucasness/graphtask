@@ -9,7 +9,12 @@
 //   - Both writers changed the same field:
 //       human writer + agent already-applied → human wins.
 //       agent writer + human already-applied → human is preserved (current kept).
-//       same kind on both sides → writer wins (last-write-wins per field).
+//       same kind on both sides:
+//         agent-vs-agent: if exactly one side's owner_user_id matches the
+//                         graph owner, that side wins (graph owner's agent
+//                         takes precedence in multi-agent collaboration).
+//                         Otherwise last-write-wins.
+//         human-vs-human: writer wins (last-write-wins per field).
 
 function deepEqual(a, b) {
   if (a === b) return true;
@@ -50,7 +55,14 @@ export function unflattenJsonb(flat, columnName) {
   return out;
 }
 
-export function mergeFields(base, writerEdit, current, writerType, currentWriterType) {
+export function mergeFields(base, writerEdit, current, ctx = {}) {
+  const {
+    writerType,
+    currentWriterType,
+    writerOwnerId = null,
+    currentOwnerId = null,
+    graphOwnerId = null,
+  } = ctx;
   const merged = { ...current };
   const conflicts = [];
 
@@ -84,6 +96,16 @@ export function mergeFields(base, writerEdit, current, writerType, currentWriter
         merged[k] = w;
       } else if (writerType === 'agent' && currentWriterType === 'human') {
         merged[k] = c;
+      } else if (writerType === 'agent' && currentWriterType === 'agent' && graphOwnerId != null) {
+        // Owner-agent precedence: when one of two conflicting agents is
+        // owned by the graph owner, that agent's edit wins. If neither or
+        // both match (or graphOwnerId is unknown), fall through to
+        // last-write-wins so the existing behavior is preserved.
+        const writerIsOwner = writerOwnerId != null && writerOwnerId === graphOwnerId;
+        const currentIsOwner = currentOwnerId != null && currentOwnerId === graphOwnerId;
+        if (writerIsOwner && !currentIsOwner) merged[k] = w;
+        else if (currentIsOwner && !writerIsOwner) merged[k] = c;
+        else merged[k] = w;
       } else {
         merged[k] = w;
       }

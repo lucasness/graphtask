@@ -9,6 +9,7 @@
 //   to graph access, not credential escalation.
 import { Router } from 'express';
 import { createToken, listTokens, revokeToken } from '../auth/agent_tokens.js';
+import pool from '../db.js';
 
 const router = Router();
 
@@ -59,6 +60,35 @@ router.delete('/agent_tokens/:id', requireBrowserUser, async (req, res) => {
   const revoked = await revokeToken(req.params.id, req.user.id);
   if (!revoked) return res.status(404).json({ error: 'not found or already revoked' });
   res.json(revoked);
+});
+
+// Per-user follow preferences. Anons can't store prefs server-side (no
+// stable user id) — they use localStorage on the client. So both endpoints
+// are sign-in-required for authed users only; the client falls back to
+// localStorage when window.gtUser is absent (see public/app.js).
+router.get('/prefs', requireUser, async (req, res) => {
+  const r = await pool.query(
+    'SELECT agent_follow_default FROM user_prefs WHERE user_id = $1',
+    [req.user.id],
+  );
+  const agent_follow_default = r.rows[0]?.agent_follow_default ?? true;
+  res.json({ agent_follow_default });
+});
+
+router.put('/prefs', requireUser, async (req, res) => {
+  const { agent_follow_default } = req.body ?? {};
+  if (typeof agent_follow_default !== 'boolean') {
+    return res.status(400).json({ error: 'agent_follow_default must be boolean' });
+  }
+  await pool.query(
+    `INSERT INTO user_prefs (user_id, agent_follow_default, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (user_id) DO UPDATE SET
+       agent_follow_default = EXCLUDED.agent_follow_default,
+       updated_at = NOW()`,
+    [req.user.id, agent_follow_default],
+  );
+  res.json({ agent_follow_default });
 });
 
 export default router;

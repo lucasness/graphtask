@@ -78,13 +78,45 @@ function effectiveIdentity(gid) {
   }
   return stored;
 }
+// 64-color palette: 16 well-spaced hues × 4 lightness/saturation variants.
+// Pure `hue % 360` hashing produced near-identical hues for unrelated ids
+// (e.g. two writers landing 16° apart on the wheel both look "green") which
+// surfaced the moment multi-peer presence highlights shipped. Discrete
+// buckets give wider perceptual spacing for the realistic peer-count range.
+//
+// Determinism is preserved: same id → same color across reloads/devices/
+// incognito. Past 64 ids the birthday paradox kicks back in (~50% collision
+// at 10 peers, ~5% at 4) but the colliding pairs stay perceptually distant
+// rather than landing in the same hue band, and the cursor name pill carries
+// the disambiguation load.
+const PEER_COLOR_HUES = [
+  11, 34, 56, 79, 101, 124, 146, 169,
+  191, 214, 236, 259, 281, 304, 326, 349,
+];
+const PEER_COLOR_VARIANTS = [
+  { s: 70, l: 58 },   // base — vivid (the historical params)
+  { s: 60, l: 72 },   // lighter pastel
+  { s: 80, l: 44 },   // deep saturated
+  { s: 45, l: 55 },   // muted
+];
 function colorForId(id) {
-  // Deterministic HSL hue from id. Saturation/lightness tuned for vibrancy
-  // so all 360 hues read as colorful (no muddy/dark slots) and contrast
-  // cleanly with the white initials text.
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360}, 70%, 58%)`;
+  // Murmur3 finalizer — without it, the polynomial hash leaks structure
+  // into the low bits and `% 64` clusters (e.g. two real writer_ids
+  // landing in the same bucket because their trailing chars line up).
+  // The finalizer's avalanche guarantee gives healthy mod-N distribution
+  // even for small N, so the 64-bucket palette stays well-spread.
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  h = h >>> 0;  // bitops yield int32; coerce back to uint32 before mod
+  const bucket = h % (PEER_COLOR_HUES.length * PEER_COLOR_VARIANTS.length);
+  const hue = PEER_COLOR_HUES[bucket % PEER_COLOR_HUES.length];
+  const v = PEER_COLOR_VARIANTS[Math.floor(bucket / PEER_COLOR_HUES.length)];
+  return `hsl(${hue}, ${v.s}%, ${v.l}%)`;
 }
 function initialsFromName(name) {
   const parts = (name || '').trim().split(/\s+/).filter(Boolean);
@@ -1430,6 +1462,9 @@ function updateGraphNode(task) {
   node.data('color', meta.color || DEFAULT_NODE_COLOR);
   node.data('meta', meta);
   if (typeof task.version === 'number') node.data('version', task.version);
+  // Last writer's user id, used by the multi-agent follow filter to decide
+  // whether THIS event came from the agent owned by me.
+  node.data('lastModifiedByUser', task.last_modified_by_user ?? null);
 }
 
 function addGraphNode(task) {
@@ -1446,6 +1481,7 @@ function addGraphNode(task) {
       color: meta.color || DEFAULT_NODE_COLOR,
       meta,
       version: typeof task.version === 'number' ? task.version : 0,
+      lastModifiedByUser: task.last_modified_by_user ?? null,
     },
   });
 }
@@ -1558,8 +1594,9 @@ async function fetchGraph() {
     cy.layout({
       name: 'breadthfirst',
       directed: true,
-      spacingFactor: 0.75,
+      spacingFactor: 1.0,
       avoidOverlap: true,
+      nodeDimensionsIncludeLabels: true,
     }).run();
   }
 
@@ -1683,6 +1720,31 @@ function isEdgeEditSelected() {
   return !!edgeTypeEditing && edges.length === 1 && edgeTypeEditing.edgeId === edges[0].id();
 }
 
+// Measure the bottom toolbar's natural width and scale it down with a CSS
+// transform if it would otherwise extend past the canvas (sidebar-right →
+// viewport-right). Keeps the toolbar inside the canvas region at narrow
+// viewports while preserving its centered position and aspect at wide
+// ones. Combines with the CSS `translateX(-50%)` centering — the final
+// transform is `translateX(-50%) scale(N)`.
+function fitBottomBar() {
+  const bar = document.getElementById('bottom-bar');
+  if (!bar || bar.classList.contains('hidden')) return;
+  const sidebarW = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'),
+  ) || 0;
+  const TOOLBAR_MARGIN = 16; // visual breathing room inside the canvas
+  const canvasW = Math.max(0, window.innerWidth - sidebarW - 2 * TOOLBAR_MARGIN);
+  // Reset to the unscaled centering transform so getBoundingClientRect
+  // reports the natural width.
+  bar.style.transform = 'translateX(-50%)';
+  const natural = bar.getBoundingClientRect().width;
+  if (natural <= canvasW || canvasW <= 0) return;
+  // Floor at 0.4 — past that the buttons become illegible; the user
+  // accepted "small viewport looks bad" as the tradeoff.
+  const scale = Math.max(0.4, canvasW / natural);
+  bar.style.transform = `translateX(-50%) scale(${scale})`;
+}
+
 function updateToolbar() {
   const mode = getSelectionMode();
   const tbNeutral = document.getElementById('tb-neutral');
@@ -1735,6 +1797,8 @@ function updateToolbar() {
       previewText;
     document.getElementById('tb-edge-creating-direction-icon').innerHTML = directionIconSvg(direction);
   }
+  // Buttons appear/disappear depending on selection — re-measure & re-scale.
+  if (typeof fitBottomBar === 'function') fitBottomBar();
 }
 
 // --- App settings (Cmd+K) ---
@@ -1817,7 +1881,28 @@ function applySettings() {
       'font-family': fontStack,
       'color': eff.fontColor,
     }).update();
+    // The theme styles use historical orange for node.selected/edge.selected
+    // underlays. Override with the local user's deterministic color so own
+    // selection visually matches the user's avatar — and matches the
+    // colored outline peers see on the same node.
+    if (typeof applyOwnSelectionColor === 'function') applyOwnSelectionColor();
   }
+}
+
+// Override the underlay color for node.selected and edge.selected so the
+// local user's own selection renders in their avatar color (purple for
+// Lucas, etc.) instead of the historical orange. Cytoscape doesn't read
+// CSS variables for canvas rendering, so we patch the style at runtime —
+// once after cy init and after every full re-style (theme switch).
+function applyOwnSelectionColor() {
+  if (!cy) return;
+  const ownId = presenceCurrentOwnId();
+  if (!ownId) return;
+  const color = colorForId(ownId);
+  cy.style()
+    .selector('node.selected').style('underlay-color', color)
+    .selector('edge.selected').style('underlay-color', color)
+    .update();
 }
 
 function setSettingTheme(theme) {
@@ -2591,7 +2676,15 @@ function restoreViewport(snapshot) {
   );
 }
 
-function showPanel(task) {
+// Tracks whether the side panel was opened programmatically (by
+// followAgentEdit, for example). When true, postLocalSelection treats the
+// user as NOT actively editing — opening the panel passively to view an
+// agent's edit shouldn't broadcast the local user as "selecting" that
+// node. Reset on any user-initiated panel open or close.
+let _panelOpenedProgrammatically = false;
+
+function showPanel(task, opts = {}) {
+  _panelOpenedProgrammatically = !!opts.programmatic;
   editingTaskId = task ? task.data('taskId') : null;
   const panel = document.getElementById('panel');
   const title = document.getElementById('panel-title');
@@ -2612,6 +2705,7 @@ function showPanel(task) {
   panel.classList.remove('hidden');
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   if (task) centerNodeInVisibleArea(task);
+  if (typeof postLocalSelection === 'function') postLocalSelection();
   // Do NOT auto-focus a panel field — selection alone shouldn't redirect keystrokes.
   // The user enters edit mode by clicking into a field, or by double-clicking the node.
 }
@@ -2628,6 +2722,8 @@ function hidePanel() {
   panel.classList.add('hidden');
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   editingTaskId = null;
+  _panelOpenedProgrammatically = false;
+  if (typeof postLocalSelection === 'function') postLocalSelection();
   hideTitleOverlay();
   // If a ghost was never saved (no title), drop it now
   const hadGhost = !!(pendingNode && pendingNode.id() === '__pending__' && !pendingNode.removed());
@@ -3445,8 +3541,9 @@ async function tidyAndFit() {
   cy.layout({
     name: 'breadthfirst',
     directed: true,
-    spacingFactor: 0.75,
+    spacingFactor: 1.0,
     avoidOverlap: true,
+    nodeDimensionsIncludeLabels: true,
     fit: false,
   }).run();
   resolveAllOverlaps();
@@ -3991,12 +4088,18 @@ function setSidebarCollapsed(collapsed) {
   el.classList.toggle('collapsed', !!collapsed);
   // The canvas, bottom toolbar, and panel all anchor off `--sidebar-w` so
   // they reflow when the sidebar shrinks. Keep that var in sync.
-  document.documentElement.style.setProperty('--sidebar-w', collapsed ? '48px' : '240px');
+  document.documentElement.style.setProperty('--sidebar-w', collapsed ? '48px' : '200px');
   try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch {}
   // Cytoscape sized off the parent — let it know the viewport changed.
   if (typeof cy !== 'undefined' && cy) {
     requestAnimationFrame(() => { try { cy.resize(); } catch {} });
   }
+  // Sidebar width feeds into computePanelMaxWidth (button shifts with
+  // --sidebar-w, sidebar.right changes too). Re-clamp so a previously-safe
+  // wide panel doesn't suddenly overlap the avatar bar.
+  if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
+  // Sidebar width also affects the bottom toolbar's available canvas width.
+  if (typeof fitBottomBar === 'function') fitBottomBar();
 }
 
 function applySidebarCollapsedFromStorage() {
@@ -4901,6 +5004,16 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   presenceAnnounce(id);
   startPresenceHeartbeat(id);
   renderPresenceBar();
+  // Own writer_id can vary per graph (per-graph presence identity), so the
+  // selection color needs to be re-applied after the switch.
+  if (typeof applyOwnSelectionColor === 'function') applyOwnSelectionColor();
+  // Follow-toggle pref: pull per-graph + default in parallel and apply.
+  // Per-graph row is only WRITTEN on first toggle, never on read — so old
+  // graphs that haven't been toggled keep falling back to the live default.
+  loadFollowPref(id).then((value) => {
+    followToggleEnabled = value;
+    updateFollowToggleUI();
+  });
 }
 
 // Live-update plumbing: open one EventSource per active graph. When the
@@ -4930,7 +5043,13 @@ const VISIBLE_AVATARS = 4;
 // Hard cap on individually-rendered avatars (including own). Anything past
 // this collapses into a single "+N others" overflow chip at the far end of
 // the stack, hover-explained.
-const MAX_AVATARS = 11;
+// Hard cap on individual avatars shown in the presence bar. Anything past
+// this folds into a single "+N others" chip at the leftmost position.
+// 7 + chip = 8 icons total, which keeps the bar's measured width bounded
+// (~150px even in stack mode) so the panel-resize cap (computePanelMaxWidth)
+// has enough headroom on narrow viewports and the bar never has to slide
+// into the sidebar or off-screen to clear a wide panel.
+const MAX_AVATARS = 7;
 const PRESENCE_HEARTBEAT_MS = 20000;
 let presenceState = new Map();
 let _presenceHeartbeatTimer = null;
@@ -4941,18 +5060,81 @@ function presenceCurrentOwnId() {
   return id ? id.id : null;
 }
 
+// Uniform spacing bumper for floating UI groups (presence bar, follow toggle
+// button, future canvas overlays). Each group reserves UI_BUMPER px on every
+// side that other groups can't encroach into; when two bumpers meet they
+// stack, so the visible gap between groups is at least 2 × UI_BUMPER. This
+// keeps the layout from collapsing into overlaps when the panel is wide,
+// when the sidebar collapses, or when an agent joins and the play/pause
+// button appears.
+const UI_BUMPER = 16;
+const PANEL_BAR_GAP = 16;     // matches what adjustPresenceBarOffset writes
+const PANEL_MIN_WIDTH = 320;
+
+// Largest panel width that still leaves room for the sidebar and the
+// presence bar, each with their own bumper. The follow-toggle button is
+// no longer a separate obstacle — it sits directly beneath the bar (same
+// right edge), so the bar's bumper already covers it.
+//
+// Sidebar width is read from --sidebar-w (the CSS variable), NOT from
+// sidebar.getBoundingClientRect(). The sidebar has a 0.7s width transition;
+// getBoundingClientRect would return the in-progress animated width and
+// give us the wrong target, leaving the panel uncapped until the next
+// unrelated re-clamp trigger fires (e.g. a 20s heartbeat-driven rerender).
+function computePanelMaxWidth() {
+  const bar = document.getElementById('presence-bar');
+  if (!bar) return null;
+  const sidebarWvar = getComputedStyle(document.documentElement)
+    .getPropertyValue('--sidebar-w').trim();
+  const sidebarRight = parseFloat(sidebarWvar) || 0;
+  const barW = bar.getBoundingClientRect().width;
+  // Leftmost screen-x the presence bar's LEFT edge is allowed to reach.
+  // Two bumpers stack here (one from the sidebar, one from the bar) so the
+  // visible gap is at least 2 × UI_BUMPER.
+  const minBarLeft = sidebarRight + 2 * UI_BUMPER;
+  // adjustPresenceBarOffset places the bar at `right = panelW + PANEL_BAR_GAP`,
+  // so bar.left = viewport.width - panelW - PANEL_BAR_GAP - barW. Solve for panelW.
+  const max = window.innerWidth - PANEL_BAR_GAP - barW - minBarLeft;
+  return Math.max(PANEL_MIN_WIDTH, max);
+}
+
 function adjustPresenceBarOffset() {
   const bar = document.getElementById('presence-bar');
   const panel = document.getElementById('panel');
   if (!bar) return;
   // When the task panel is open, shift the avatar bar left of the panel so
-  // the own avatar doesn't sit on top of the panel's close button.
+  // the own avatar doesn't sit on top of the panel's close button. Also
+  // clamp the panel down to its bumper-aware max in case the layout changed
+  // (sidebar collapsed, follow-toggle button appeared, viewport shrank).
   if (panel && !panel.classList.contains('hidden')) {
+    const max = computePanelMaxWidth();
+    if (max != null) {
+      const current = panel.getBoundingClientRect().width;
+      if (current > max) panel.style.width = `${max}px`;
+    }
     const w = panel.getBoundingClientRect().width;
-    bar.style.right = `${Math.round(w) + 16}px`;
+    let barRight = Math.round(w) + PANEL_BAR_GAP;
+    // Hard floor on bar.right so the bar's LEFT edge can never cross the
+    // sidebar bumper. Without this, an extreme-narrow viewport (where the
+    // panel can't shrink below its 320px min and the bar has nowhere left
+    // to go) would push the bar off-screen left or onto the sidebar.
+    // Constraint: bar.left = viewport.width - barRight - barW >= sidebarW + UI_BUMPER
+    //   →        barRight <= viewport.width - barW - sidebarW - UI_BUMPER
+    const sidebarW = parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'),
+    ) || 0;
+    const barW = bar.getBoundingClientRect().width;
+    const maxBarRight = window.innerWidth - barW - sidebarW - UI_BUMPER;
+    if (barRight > maxBarRight) barRight = Math.max(0, maxBarRight);
+    bar.style.right = `${barRight}px`;
   } else {
     bar.style.right = '';
   }
+  // Keep the follow-toggle button aligned with the bar's right edge so it
+  // sits directly under the own (rightmost) avatar. Matches inline style;
+  // empty string falls back to the CSS default `right: 16px`.
+  const btn = document.getElementById('btn-follow-toggle');
+  if (btn) btn.style.right = bar.style.right || '';
 }
 
 // Watch the panel's class attribute and re-run the presence-bar adjustment
@@ -4976,9 +5158,11 @@ function renderPresenceBar() {
   if (!activeGraphId || !ownId) {
     bar.classList.add('hidden');
     bar.innerHTML = '';
+    // Bar disappeared: re-evaluate the cap (panel can grow now). Run on next
+    // frame so the bar's hidden class has actually applied.
+    requestAnimationFrame(() => adjustPresenceBarOffset());
     return;
   }
-  adjustPresenceBarOffset();
   const ownIdentity = effectiveIdentity(activeGraphId);
   const others = Array.from(presenceState.values())
     .filter((w) => w.id !== ownId)
@@ -5022,6 +5206,11 @@ function renderPresenceBar() {
     }
     bar.appendChild(deck);
   }
+  // After the bar's DOM has been rebuilt, the bar's measured width may
+  // have changed (added/removed avatars or stack chip). Re-clamp the panel
+  // so it respects the new bumper-aware max. Deferred to next frame so the
+  // browser has laid out the new content before we measure.
+  requestAnimationFrame(() => adjustPresenceBarOffset());
 }
 
 function presenceOverflowEl(n) {
@@ -5061,6 +5250,11 @@ async function presenceHydrate(gid) {
     if (gid !== activeGraphId) return; // raced past a graph switch
     presenceState = new Map(list.map((w) => [w.id, w]));
     renderPresenceBar();
+    // Catch up on peer selections too — without this a late-joining tab
+    // wouldn't see existing peer outlines until something changes.
+    if (typeof hydratePeerSelections === 'function') hydratePeerSelections();
+    // Re-evaluate follow-toggle visibility now that we know who's on the graph.
+    if (typeof updateFollowToggleUI === 'function') updateFollowToggleUI();
   } catch {}
 }
 
@@ -5118,11 +5312,381 @@ function handlePresenceEvent(payload) {
   if (payload.writer.id === ownId) return;
   if (payload.op === 'depart') {
     presenceState.delete(payload.writer.id);
+    // Also drop any peer-selection state for this writer so stale outlines
+    // don't linger between the depart frame and the SSE selection 'cleared'
+    // frame (they ride on the same broadcast but render order is incidental).
+    if (peerSelectionState.delete(payload.writer.id)) applyPeerSelectionToCy();
   } else {
     presenceState.set(payload.writer.id, payload.writer);
+    // Refresh any active peer-selection entry so its color/name reflect the
+    // latest writer object (e.g. after a rename).
+    if (peerSelectionState.has(payload.writer.id)) applyPeerSelectionToCy();
   }
   renderPresenceBar();
+  // An agent joining/leaving should show/hide the follow-toggle button.
+  if (typeof updateFollowToggleUI === 'function') updateFollowToggleUI();
 }
+
+// ---- Peer selection rendering ---------------------------------------------
+// State: per peer (writer_id), what they have selected/are editing on the
+// graph. Driven by SSE `kind: 'selection'` frames from src/selectionState.js.
+// Renders as colored cytoscape underlays + dashed borders (T256). The cursor
+// label overlay (T257) reads the same state.
+const peerSelectionState = new Map();
+
+// Cytoscape doesn't honor CSS variables on elements; per-element colors must
+// be threaded via data() interpolation (already used at line 5419 for
+// background-color). Each peer's rules use data(peerColor) — set on the cy
+// element by applyPeerSelectionToCy.
+function applyPeerSelectionToCy() {
+  if (!cy) return;
+  // Wipe existing peer classes first, then re-apply from current state.
+  cy.elements('.peer-selected, .peer-editing').forEach((el) => {
+    el.removeClass('peer-selected peer-editing');
+    el.removeData('peerColor');
+  });
+  // Group peers by element id so each element computes its color from the
+  // same "lead" peer that the cursor marker uses (editing-first, then by
+  // writer_id). Otherwise the node's outline and the marker pill end up
+  // in different colors when 2+ peers are on the same node.
+  // Map<elementId, { isEditing: bool, peers: [{ writerId, color, sel }] }>
+  const groups = new Map();
+  const visit = (elemId, peer, isEditing) => {
+    let g = groups.get(elemId);
+    if (!g) { g = { isEditing: false, peers: [] }; groups.set(elemId, g); }
+    if (isEditing) g.isEditing = true;
+    g.peers.push(peer);
+  };
+  for (const [writerId, sel] of peerSelectionState) {
+    // Skip idle HUMAN peers — selection state has no expiry but presence
+    // flips active=false after ACTIVE_WINDOW_MS (60s) of no writes. For
+    // agents, presence membership IS the "still working" signal (Stop hook
+    // DELETEs at end of turn), so an agent pondering >60s without writes
+    // should still render its marker. Per-type filter handles both.
+    const writer = presenceState.get(writerId);
+    if (writer && writer.type !== 'agent' && writer.active === false) continue;
+    const peer = { writerId, sel, color: colorForId(writerId) };
+    for (const id of sel.node_ids ?? []) visit(String(id), peer, false);
+    for (const id of sel.edge_ids ?? []) visit(String(id), peer, false);
+    if (sel.editing) visit(String(sel.editing.id), peer, true);
+  }
+  for (const [elemId, g] of groups) {
+    const el = cy.getElementById(elemId);
+    if (!el || el.empty()) continue;
+    // Lead peer: editing peer first, then first by writer_id. Mirrors
+    // peerCursorRenderGroup so the marker and the outline reference the
+    // same peer's color.
+    const lead = g.peers.slice().sort((a, b) => {
+      const ae = a.sel.editing ? 0 : 1;
+      const be = b.sel.editing ? 0 : 1;
+      if (ae !== be) return ae - be;
+      return a.writerId < b.writerId ? -1 : 1;
+    })[0];
+    el.data('peerColor', lead.color);
+    // Always apply peer-selected if anyone selected this element. Add
+    // peer-editing on top if at least one peer has it as their editing
+    // target — the dashed border reads on top of the underlay.
+    el.addClass('peer-selected');
+    if (g.isEditing) el.addClass('peer-editing');
+  }
+  // Refresh labeled cursors in lock-step with the cytoscape highlights.
+  if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
+}
+
+function handleSelectionEvent(payload) {
+  if (!payload || payload.kind !== 'selection') return;
+  const ownId = presenceCurrentOwnId();
+  // Skip our own selection coming back from the server — local cy already
+  // shows it via the 'selected' class set by cy.on('select').
+  if (payload.writer_id === ownId) return;
+  if (payload.op === 'cleared') {
+    if (!peerSelectionState.delete(payload.writer_id)) return;
+  } else {
+    peerSelectionState.set(payload.writer_id, {
+      node_ids: payload.node_ids ?? [],
+      edge_ids: payload.edge_ids ?? [],
+      editing: payload.editing ?? null,
+      cursor_anchor: payload.cursor_anchor ?? null,
+    });
+  }
+  applyPeerSelectionToCy();
+  // T257 will hook here too to redraw cursor labels.
+}
+
+// Debounced POST of the local cytoscape selection so peers see what we have
+// selected/are editing. Debounce window matches the server-side rate-limit
+// guard (50ms) with a margin — shift-selecting 30 nodes fires 30 events;
+// we coalesce to ~2-3 POSTs.
+let _postLocalSelectionTimer = null;
+let _lastPostedSelectionKey = '';
+function postLocalSelection() {
+  if (_postLocalSelectionTimer) clearTimeout(_postLocalSelectionTimer);
+  _postLocalSelectionTimer = setTimeout(() => {
+    _postLocalSelectionTimer = null;
+    if (!cy || !activeGraphId) return;
+    const ownId = presenceCurrentOwnId();
+    if (!ownId) return;
+    // This codebase uses the .selected CSS class (manually managed in tap
+    // handlers / data-refresh) rather than cytoscape's native :selected
+    // pseudo-class. Read from the class so we stay in sync.
+    const nodeIds = cy.nodes('.selected').map((n) => Number(n.id())).filter(Number.isFinite);
+    const edgeIds = cy.edges('.selected').map((e) => Number(e.id())).filter(Number.isFinite);
+    // editing field: the side panel is the canonical "I'm actively editing
+    // this" signal. It's set by showPanel via editingTaskId, cleared by
+    // hidePanel. BUT: if the panel was opened programmatically (e.g. by
+    // followAgentEdit auto-surfacing an agent's update), the local user
+    // is a passive viewer — not actually editing. Skip the broadcast in
+    // that case so peers don't see this user as "editing along" with
+    // every node the agent touches.
+    const panel = document.getElementById('panel');
+    const panelOpen = panel && !panel.classList.contains('hidden');
+    const editing = (panelOpen && editingTaskId != null && !_panelOpenedProgrammatically)
+      ? { kind: 'node', id: Number(editingTaskId) }
+      : null;
+    // Cursor anchor: prefer the editing target, else the most recent
+    // single selection. Multi-selection => no anchor (cursor would be
+    // ambiguous; T257 will hide the label for stacked-empty-anchor peers).
+    let cursor_anchor = null;
+    if (editing) cursor_anchor = editing;
+    else if (nodeIds.length === 1) cursor_anchor = { kind: 'node', id: nodeIds[0] };
+    else if (edgeIds.length === 1) cursor_anchor = { kind: 'edge', id: edgeIds[0] };
+    const key = JSON.stringify([nodeIds, edgeIds, editing, cursor_anchor]);
+    if (key === _lastPostedSelectionKey) return;
+    _lastPostedSelectionKey = key;
+    const headers = { 'Content-Type': 'application/json', 'X-Writer-Id': ownId };
+    const identity = effectiveIdentity(activeGraphId);
+    if (identity?.name) headers['X-Writer-Name'] = identity.name;
+    if (identity?.type) headers['X-Writer-Type'] = identity.type;
+    fetch(`/api/graphs/${activeGraphId}/selection`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ node_ids: nodeIds, edge_ids: edgeIds, editing, cursor_anchor }),
+      keepalive: true,
+    }).catch(() => {});
+  }, 120);
+}
+
+// Hydrate peer selections on graph open / SSE reconnect so a late joiner
+// sees peers' current state without waiting for the next change.
+async function hydratePeerSelections() {
+  if (!activeGraphId) return;
+  try {
+    const r = await fetch(`/api/graphs/${activeGraphId}/selection`);
+    if (!r.ok) return;
+    const list = await r.json();
+    const ownId = presenceCurrentOwnId();
+    peerSelectionState.clear();
+    for (const sel of list) {
+      if (sel.writer_id === ownId) continue;
+      peerSelectionState.set(sel.writer_id, {
+        node_ids: sel.node_ids ?? [],
+        edge_ids: sel.edge_ids ?? [],
+        editing: sel.editing ?? null,
+        cursor_anchor: sel.cursor_anchor ?? null,
+      });
+    }
+    applyPeerSelectionToCy();
+  } catch {}
+}
+// ---- end peer selection rendering -----------------------------------------
+
+// ---- Peer cursor overlay (glowing dot + name pill) ----------------------
+// One DOM marker per ANCHOR (node/edge), not per peer — so multiple peers
+// focused on the same node stack into one marker rather than overlapping
+// in the same slot. Three rendering modes by peer count:
+//   1 peer        : dot + full name pill (the common case)
+//   2-4 peers     : vertically stacked rows, each = dot + initials pill
+//                   (editing peer placed at the top so it's nearest the node)
+//   5+ peers      : one larger dot + "AB & N others" pill
+// Slot placement uses an 8-direction probe (deterministic, no simulation)
+// so the marker never overlaps the anchor or any other node bbox.
+
+const _peerCursorSlots = new Map();   // anchorKey ("node:123" | "edge:45") → { el }
+const STACK_INITIALS_THRESHOLD = 2;   // ≥ this many peers → use initials
+const STACK_OVERFLOW_THRESHOLD = 5;   // ≥ this many peers → overflow chip
+
+function peerCursorMakeEl() {
+  const layer = document.getElementById('peer-cursor-layer');
+  if (!layer) return null;
+  const el = document.createElement('div');
+  el.className = 'peer-cursor peer-cursor-enter';
+  layer.appendChild(el);
+  requestAnimationFrame(() => el.classList.remove('peer-cursor-enter'));
+  return el;
+}
+
+function peerCursorAnchorKey(sel) {
+  const pick = sel.cursor_anchor || sel.editing
+    || (sel.node_ids?.[0] != null ? { kind: 'node', id: sel.node_ids[0] } : null)
+    || (sel.edge_ids?.[0] != null ? { kind: 'edge', id: sel.edge_ids[0] } : null);
+  if (!pick) return null;
+  return `${pick.kind}:${pick.id}`;
+}
+
+// Build the inner HTML for an anchor's group of peers. Single peer → full
+// name pill. 2-4 peers → vertically stacked dot+initials rows, editing
+// peer at the top. 5+ → big dot + "AB & N others" using the editing (or
+// first) peer's initials and color.
+function peerCursorRenderGroup(el, peers) {
+  // Stable ordering: editing peer(s) first so they render closest to the
+  // node, then by writer_id for determinism.
+  const sorted = peers.slice().sort((a, b) => {
+    const ae = a.sel.editing ? 0 : 1;
+    const be = b.sel.editing ? 0 : 1;
+    if (ae !== be) return ae - be;
+    return a.writerId < b.writerId ? -1 : 1;
+  });
+
+  el.classList.remove('peer-cursor-stack', 'peer-cursor-overflow');
+
+  if (sorted.length < STACK_INITIALS_THRESHOLD) {
+    // Single peer: dot + full name. Color = peer color.
+    const p = sorted[0];
+    el.style.setProperty('--peer-color', p.color);
+    el.innerHTML =
+      '<span class="peer-cursor-dot"></span>' +
+      '<span class="peer-cursor-pill"></span>';
+    el.querySelector('.peer-cursor-pill').textContent = p.name;
+    return;
+  }
+
+  if (sorted.length < STACK_OVERFLOW_THRESHOLD) {
+    // 2-4: stacked rows, initials only, each in its peer's color.
+    el.classList.add('peer-cursor-stack');
+    el.style.removeProperty('--peer-color');
+    el.innerHTML = '';
+    for (const p of sorted) {
+      const row = document.createElement('span');
+      row.className = 'peer-cursor-row';
+      row.style.setProperty('--peer-color', p.color);
+      row.title = p.name;
+      row.innerHTML =
+        '<span class="peer-cursor-dot"></span>' +
+        '<span class="peer-cursor-pill"></span>';
+      row.querySelector('.peer-cursor-pill').textContent = initialsFromName(p.name);
+      el.appendChild(row);
+    }
+    return;
+  }
+
+  // 5+ peers: overflow chip with one larger dot and a "AB & N others" pill.
+  // Color/initials come from the editing (or first) peer per ordering above.
+  el.classList.add('peer-cursor-overflow');
+  const lead = sorted[0];
+  el.style.setProperty('--peer-color', lead.color);
+  el.title = sorted.map((p) => p.name).join(', ');
+  const otherCount = sorted.length - 1;
+  el.innerHTML =
+    '<span class="peer-cursor-dot"></span>' +
+    '<span class="peer-cursor-pill"></span>';
+  el.querySelector('.peer-cursor-pill').textContent =
+    `${initialsFromName(lead.name)} & ${otherCount} other${otherCount === 1 ? '' : 's'}`;
+}
+
+// 8-slot probe: place the marker just outside the anchor bbox in one of
+// 8 directions; pick the first slot whose marker rect doesn't intersect
+// any other node bbox AND fits inside the cy container. Falls back to a
+// best-effort choice (N or S, whichever has more in-bounds space) if
+// every slot has a problem. Slot is the marker's top-left corner in
+// rendered coords (which is cy-container-relative — same space as
+// renderedBoundingBox).
+function peerCursorPickSlot(anchorBb, markerW, markerH, otherBboxes) {
+  const GAP = 8;
+  const viewW = cy ? cy.width() : Infinity;
+  const viewH = cy ? cy.height() : Infinity;
+  const cx = (anchorBb.x1 + anchorBb.x2) / 2 - markerW / 2;
+  const cy_ = (anchorBb.y1 + anchorBb.y2) / 2 - markerH / 2;
+  const slots = [
+    { x: cx,                       y: anchorBb.y1 - markerH - GAP }, // N
+    { x: anchorBb.x2 + GAP,        y: anchorBb.y1 - markerH - GAP }, // NE
+    { x: anchorBb.x2 + GAP,        y: cy_ },                          // E
+    { x: anchorBb.x2 + GAP,        y: anchorBb.y2 + GAP },            // SE
+    { x: cx,                       y: anchorBb.y2 + GAP },            // S
+    { x: anchorBb.x1 - markerW - GAP, y: anchorBb.y2 + GAP },         // SW
+    { x: anchorBb.x1 - markerW - GAP, y: cy_ },                       // W
+    { x: anchorBb.x1 - markerW - GAP, y: anchorBb.y1 - markerH - GAP },// NW
+  ];
+  for (const s of slots) {
+    const sx2 = s.x + markerW;
+    const sy2 = s.y + markerH;
+    // Skip slots that clip the viewport — a tall stack near the top edge
+    // would otherwise lose its uppermost row to overflow: hidden.
+    if (s.x < 0 || s.y < 0 || sx2 > viewW || sy2 > viewH) continue;
+    let overlap = false;
+    for (const bb of otherBboxes) {
+      if (s.x < bb.x2 && sx2 > bb.x1 && s.y < bb.y2 && sy2 > bb.y1) {
+        overlap = true;
+        break;
+      }
+    }
+    if (!overlap) return s;
+  }
+  // Nothing perfect: prefer the slot whose top-left is in-bounds and
+  // closest to the anchor, even if it overlaps something.
+  return slots.find((s) =>
+    s.x >= 0 && s.y >= 0 && s.x + markerW <= viewW && s.y + markerH <= viewH,
+  ) || slots[4 /* S */] || slots[0];
+}
+
+function peerCursorRefresh() {
+  if (!cy) return;
+  // 1. Group peers by anchor key. One DOM marker per group. Idle HUMAN
+  // peers are skipped (presence.active=false); agents are never filtered
+  // on the active flag — see applyPeerSelectionToCy for the rationale.
+  const groups = new Map(); // anchorKey → [{ writerId, sel, name, color }, ...]
+  for (const [writerId, sel] of peerSelectionState) {
+    const writer = presenceState.get(writerId);
+    if (writer && writer.type !== 'agent' && writer.active === false) continue;
+    const key = peerCursorAnchorKey(sel);
+    if (!key) continue;
+    const peer = {
+      writerId,
+      sel,
+      name: writer?.name || 'Anonymous',
+      color: colorForId(writerId),
+    };
+    let arr = groups.get(key);
+    if (!arr) { arr = []; groups.set(key, arr); }
+    arr.push(peer);
+  }
+
+  // 2. Render each group; collect anchor bboxes for slot picking. Build the
+  // "other nodes" bbox list once.
+  const allBboxes = cy.nodes().map((n) => ({ id: n.id(), bb: n.renderedBoundingBox() }));
+  const seen = new Set();
+  for (const [key, peers] of groups) {
+    const [kind, idStr] = key.split(':');
+    const anchorEl = cy.getElementById(idStr);
+    if (!anchorEl || anchorEl.empty()) continue;
+    seen.add(key);
+    let entry = _peerCursorSlots.get(key);
+    if (!entry) {
+      const el = peerCursorMakeEl();
+      if (!el) continue;
+      entry = { el };
+      _peerCursorSlots.set(key, entry);
+    }
+    peerCursorRenderGroup(entry.el, peers);
+    const anchorBb = anchorEl.renderedBoundingBox();
+    // Measure after rendering so a freshly-resized stack contributes its
+    // real bbox to the slot probe.
+    const r = entry.el.getBoundingClientRect();
+    const markerW = r.width || 80;
+    const markerH = r.height || 18;
+    const others = allBboxes.filter((o) => o.id !== anchorEl.id()).map((o) => o.bb);
+    const slot = peerCursorPickSlot(anchorBb, markerW, markerH, others);
+    entry.el.style.transform = `translate3d(${slot.x}px, ${slot.y}px, 0)`;
+  }
+  // 3. Remove DOM for anchors that no longer have peers.
+  for (const key of Array.from(_peerCursorSlots.keys())) {
+    if (!seen.has(key)) {
+      _peerCursorSlots.get(key).el.remove();
+      _peerCursorSlots.delete(key);
+    }
+  }
+}
+
+// ---- end peer cursor overlay --------------------------------------------
 
 function openRenameModal() {
   if (!activeGraphId) return;
@@ -5200,6 +5764,10 @@ function openGraphEventStream(id) {
     try { payload = JSON.parse(e.data); } catch { return; }
     if (payload && payload.kind === 'presence') {
       handlePresenceEvent(payload);
+      return;
+    }
+    if (payload && payload.kind === 'selection') {
+      handleSelectionEvent(payload);
       return;
     }
     _graphEventLastPayload = payload;
@@ -5317,45 +5885,199 @@ async function refreshFromEvent(payload) {
     const e = cy.getElementById(id);
     if (e && !e.empty()) e.addClass('selected');
   });
+  // fetchGraph wiped & rebuilt every cy element, which dropped the
+  // peer-selected / peer-editing classes set by handleSelectionEvent
+  // before this refresh. Re-apply them so peer outlines don't blink off
+  // every time an agent edit comes through. The cursor markers (DOM
+  // overlay) survived intact since they live outside cy, but their
+  // anchor positions need a refresh too.
+  if (typeof applyPeerSelectionToCy === 'function') applyPeerSelectionToCy();
   if (typeof updateToolbar === 'function') updateToolbar();
 
   // Agent-follow: when an external (SSE-delivered) edit lands on a task and
-  // the user isn't actively interacting, animate the camera to the affected
-  // node, briefly flash it, and (for UPDATE) open the side panel so the user
-  // can see what the agent changed — same UX as if they'd clicked it.
+  // the user isn't actively interacting, pan the camera to the affected
+  // node and (for UPDATE) open the side panel. The "who is editing this"
+  // visual cue now comes from the peer-selected/peer-editing classes in
+  // the writer's color when the agent broadcasts its selection — no more
+  // legacy purple-flash class layered on top.
   if (
     payload &&
     payload.kind === 'tasks' &&
     payload.id != null &&
     payload.op !== 'DELETE' &&
-    !userInteractedRecently()
+    !userInteractedRecently() &&
+    shouldFollowAgentEvent(payload)
   ) {
     const node = cy.getElementById(String(payload.id));
     if (node && !node.empty()) {
-      followAgentEdit(node, payload.op, classifyFlashKind(payload.op, preStatus, node));
+      followAgentEdit(node, payload.op);
     }
   }
 }
 
-// Pick a visually-meaningful flash class:
-//   INSERT          → dashed blue border, mimicking a user-created new node
-//   status changed  → underlay matching the new status color
-//   body-only       → purple underlay
-function classifyFlashKind(op, preStatus, node) {
-  if (op === 'INSERT') return 'agent-flash-insert';
-  const newStatus = node.data('status');
-  if (newStatus !== preStatus) return `agent-flash-status-${newStatus}`;
-  return 'agent-flash-body';
+// User-controlled toggle for whether the camera should follow agent edits.
+// Default true to preserve the historical behavior. Per-graph + per-user
+// prefs (T259) update this on graph load and on toggle clicks.
+let followToggleEnabled = true;
+
+// ---- Follow-toggle prefs (authed: REST; anon: localStorage) -------------
+// Schema:
+//   - authed: GET/PUT /api/me/prefs (default), GET/PUT /api/graphs/:gid/prefs/me (per-graph)
+//             PUT to per-graph also writes through to the user's default in
+//             one server-side tx — see src/routes/graphPrefs.js.
+//   - anon:   localStorage 'gt_follow_default' (boolean) and
+//             'gt_follow_graph_<gid>' (boolean | absent). Toggling a graph
+//             writes BOTH keys; old graphs with their own per-graph value
+//             stay as they were.
+const PREF_KEY_DEFAULT = 'gt_follow_default';
+const PREF_KEY_GRAPH = (gid) => `gt_follow_graph_${gid}`;
+
+function _readAnonPref(key) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === null) return null;
+    return v === 'true';
+  } catch { return null; }
+}
+function _writeAnonPref(key, value) {
+  try { localStorage.setItem(key, value ? 'true' : 'false'); } catch {}
 }
 
-function followAgentEdit(node, op, flashClass) {
-  node.addClass(flashClass);
-  setTimeout(() => { try { node.removeClass(flashClass); } catch {} }, 1200);
+async function loadFollowPref(gid) {
+  if (!gid) return true;
+  if (window.gtUser?.id) {
+    try {
+      const [rDef, rPer] = await Promise.all([
+        fetch('/api/me/prefs', { credentials: 'include' }),
+        fetch(`/api/graphs/${encodeURIComponent(gid)}/prefs/me`, { credentials: 'include' }),
+      ]);
+      const def = rDef.ok ? (await rDef.json()).agent_follow_default : true;
+      const per = rPer.ok ? (await rPer.json()).agent_follow : null;
+      return per != null ? per : def;
+    } catch { return true; }
+  }
+  // Anon: localStorage. Per-graph wins over default.
+  const per = _readAnonPref(PREF_KEY_GRAPH(gid));
+  if (per != null) return per;
+  const def = _readAnonPref(PREF_KEY_DEFAULT);
+  return def != null ? def : true;
+}
 
+async function saveFollowPref(gid, value) {
+  if (!gid) return;
+  if (window.gtUser?.id) {
+    try {
+      // Server PUT writes BOTH per-graph + user default in a single tx.
+      await fetch(`/api/graphs/${encodeURIComponent(gid)}/prefs/me`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_follow: value }),
+      });
+    } catch {}
+    return;
+  }
+  // Anon: write per-graph AND default so the next new graph adopts it.
+  _writeAnonPref(PREF_KEY_GRAPH(gid), value);
+  _writeAnonPref(PREF_KEY_DEFAULT, value);
+}
+
+function updateFollowToggleUI() {
+  const btn = document.getElementById('btn-follow-toggle');
+  if (!btn) return;
+  // Show iff at least one agent is in presenceState. Stop hook (.claude
+  // graphtask SKILL.md) DELETEs presence at end of turn, so membership
+  // alone is the "agent is here and working" signal — no 60s window.
+  const hasAgent = Array.from(presenceState.values()).some((w) => w.type === 'agent');
+  const wasHidden = btn.classList.contains('hidden');
+  if (!hasAgent) {
+    btn.classList.add('hidden');
+    // Visibility changed → re-evaluate the panel cap, since the button now
+    // doesn't push the presence bar's allowable left edge anymore.
+    if (!wasHidden && typeof adjustPresenceBarOffset === 'function') {
+      adjustPresenceBarOffset();
+    }
+    return;
+  }
+  btn.classList.remove('hidden');
+  // Button appeared → its bumper now reserves space; clamp the panel if it
+  // was sized wider than the new cap allows.
+  if (wasHidden && typeof adjustPresenceBarOffset === 'function') {
+    adjustPresenceBarOffset();
+  }
+  // Pause icon = following is ACTIVE (click to pause).
+  // Play icon  = following is PAUSED  (click to resume).
+  const pause = btn.querySelector('.icon-pause');
+  const play  = btn.querySelector('.icon-play');
+  if (pause && play) {
+    if (followToggleEnabled) {
+      pause.classList.remove('hidden');
+      play.classList.add('hidden');
+      btn.title = 'Pause agent-follow';
+    } else {
+      pause.classList.add('hidden');
+      play.classList.remove('hidden');
+      btn.title = 'Resume agent-follow';
+    }
+  }
+}
+
+function wireFollowToggleButton() {
+  const btn = document.getElementById('btn-follow-toggle');
+  if (!btn || btn._gtWired) return;
+  btn._gtWired = true;
+  btn.addEventListener('click', async () => {
+    followToggleEnabled = !followToggleEnabled;
+    updateFollowToggleUI();
+    if (activeGraphId) await saveFollowPref(activeGraphId, followToggleEnabled);
+  });
+}
+// ---- end follow-toggle prefs --------------------------------------------
+
+// Multi-agent follow rules:
+//   0 active agents → never follow (toggle button is also hidden by T259).
+//   1 active agent  → follow it (any owner) — single-agent sessions Just Work.
+//   2+ active agents → follow ONLY events written by the agent owned by me
+//                      (so I track *my* agent's path; peers' agents still
+//                      render colored highlights, but my screen doesn't pan
+//                      around to follow their work).
+//   Anon viewer + 2+ agents → no follow target; rely on highlights only.
+function shouldFollowAgentEvent(payload) {
+  if (!followToggleEnabled) return false;
+  // Stop hook (.claude SKILL.md) DELETEs presence at end of turn, so
+  // membership in presenceState IS the active signal. Don't filter on the
+  // 60s `active` flag — an agent pondering for >60s without writing is
+  // still mid-turn and should still steer camera follow.
+  const activeAgents = Array.from(presenceState.values())
+    .filter((w) => w.type === 'agent');
+  if (activeAgents.length === 0) return false;
+  if (activeAgents.length === 1) return true;
+  const me = window.gtUser?.id ?? null;
+  if (me == null) return false;
+  // T255 made tasks/edges rows carry last_modified_by_user; refreshFromEvent
+  // refetches the row before this point, and updateGraphNode/addGraphNode
+  // stash it on the cy node as `lastModifiedByUser`. Read it from the node
+  // — the SSE pg_notify payload itself only has {graph_id, kind, op, id}.
+  if (cy) {
+    const node = cy.getElementById(String(payload.id));
+    if (node && !node.empty()) {
+      const eventOwner = node.data('lastModifiedByUser');
+      return eventOwner != null && eventOwner === me;
+    }
+  }
+  return false;
+}
+
+function followAgentEdit(node, op) {
   // UPDATE → open the side panel showing the new content.
   // INSERT → just pan; don't force the panel open every time a new node lands.
   if (op === 'UPDATE') {
-    showPanel(node);
+    // programmatic: true so postLocalSelection doesn't broadcast THIS user
+    // as the editor — they're passively viewing what the agent changed,
+    // not actively editing it themselves. Without this, every viewer who
+    // had agent-follow enabled would be tagged as a co-editor on every
+    // node the agent touched.
+    showPanel(node, { programmatic: true });
   } else {
     centerNodeInVisibleArea(node);
   }
@@ -5436,12 +6158,12 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     { selector: 'node.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 6 } },
-    { selector: 'node.agent-flash-insert', style: { 'border-color': '#ff4700', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
-    { selector: 'node.agent-flash-status-todo', style: { 'underlay-color': '#cccccc', 'underlay-opacity': 0.35, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#ffffff', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-review', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.5, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-done', style: { 'underlay-color': '#cccccc', 'underlay-opacity': 0.2, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-body', style: { 'underlay-color': '#ffffff', 'underlay-opacity': 0.25, 'underlay-padding': 10 } },
+    // Peer-selection visuals: a soft colored halo + dashed border when a
+    // peer has the side panel open. Color comes from data(peerColor) which
+    // the renderer sets to colorForId(writer_id) — same hue as that
+    // writer's avatar in the presence bar.
+    { selector: 'node.peer-selected', style: { 'underlay-color': 'data(peerColor)', 'underlay-opacity': 0.30, 'underlay-padding': 8 } },
+    { selector: 'node.peer-editing', style: { 'border-color': 'data(peerColor)', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.selected.status-editing-todo, node.selected.status-editing-in_progress, node.selected.status-editing-done', style: { 'border-color': '#ff4700', 'border-width': 2.5 } },
     { selector: 'node.editing', style: { 'border-color': '#ff4700', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
@@ -5452,6 +6174,8 @@ function cytoscapeStyleDark() {
     { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.peer-selected', style: { 'underlay-color': 'data(peerColor)', 'underlay-opacity': 0.35, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.peer-editing', style: { 'line-color': 'data(peerColor)', 'target-arrow-color': 'data(peerColor)', 'source-arrow-color': 'data(peerColor)', 'width': 2, 'z-index': 9 } },
     { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
     { selector: 'edge.highlighted', style: { 'line-color': '#ff4700', 'target-arrow-color': '#ff4700', 'width': 2.25, 'z-index': 10 } },
     { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)' } },
@@ -5471,7 +6195,7 @@ function cytoscapeStyleLight() {
   //   done                → bg indigo-light #e0e7ff, border/text indigo-strong #4f46e5
   //                         (settled indigo — "complete, archived")
   //   selection / main    → main-orange #fb5305 (selection underlay, edge.selected, status-editing-todo)
-  //   agent-edit / hover  → purple-strong #a45fff (.editing, agent-flash-insert/body, edge-hover-target)
+  //   agent-edit / hover  → purple-strong #a45fff (.editing, edge-hover-target)
   //   warning             → red-strong #ef3230 (edge.highlighted)
   //   default todo border → neutral-grey #e5e5e5 (todo has no status hue)
   return [
@@ -5503,12 +6227,12 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "done"]',        style: { 'background-color': '#e0e7ff', 'border-color': '#4f46e5', 'color': '#4f46e5' } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     { selector: 'node.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
-    { selector: 'node.agent-flash-insert', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
-    { selector: 'node.agent-flash-status-todo',        style: { 'underlay-color': '#e5e5e5', 'underlay-opacity': 0.55, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-in_progress', style: { 'underlay-color': '#e88a1b', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-review',      style: { 'underlay-color': '#49ca80', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-status-done',        style: { 'underlay-color': '#4f46e5', 'underlay-opacity': 0.45, 'underlay-padding': 10 } },
-    { selector: 'node.agent-flash-body', style: { 'underlay-color': '#a45fff', 'underlay-opacity': 0.35, 'underlay-padding': 10 } },
+    // Peer-selection visuals: a soft colored halo + dashed border when a
+    // peer has the side panel open. Color comes from data(peerColor) which
+    // the renderer sets to colorForId(writer_id) — same hue as that
+    // writer's avatar in the presence bar.
+    { selector: 'node.peer-selected', style: { 'underlay-color': 'data(peerColor)', 'underlay-opacity': 0.35, 'underlay-padding': 8 } },
+    { selector: 'node.peer-editing', style: { 'border-color': 'data(peerColor)', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.selected.status-editing-todo',        style: { 'border-color': '#fb5305', 'border-width': 1.5 } },
     { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': '#e88a1b', 'border-width': 2.5 } },
     { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#4f46e5', 'border-width': 2.5 } },
@@ -5521,6 +6245,8 @@ function cytoscapeStyleLight() {
     { selector: 'edge[edgeType = "dependency"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge[edgeType = "related"]', style: { 'target-arrow-shape': 'vee', 'target-arrow-color': 'data(color)', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)', 'arrow-scale': 1.2, 'line-color': 'data(color)', 'width': 1.25 } },
     { selector: 'edge.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.peer-selected', style: { 'underlay-color': 'data(peerColor)', 'underlay-opacity': 0.40, 'underlay-padding': 5, 'z-index': 9 } },
+    { selector: 'edge.peer-editing', style: { 'line-color': 'data(peerColor)', 'target-arrow-color': 'data(peerColor)', 'source-arrow-color': 'data(peerColor)', 'width': 2, 'z-index': 9 } },
     { selector: 'edge.edge-type-editing', style: { 'line-style': 'dashed', 'line-dash-pattern': [8, 6] } },
     { selector: 'edge.highlighted', style: { 'line-color': '#ef3230', 'target-arrow-color': '#ef3230', 'width': 2.25, 'z-index': 10 } },
     { selector: 'edge.dir-backward', style: { 'target-arrow-shape': 'none', 'source-arrow-shape': 'vee', 'source-arrow-color': 'data(color)' } },
@@ -5543,6 +6269,7 @@ document.addEventListener('DOMContentLoaded', () => {
   bootAuth();
   loadSettings();
   startPanelClassObserver();
+  wireFollowToggleButton();
   cy = cytoscape({
     container: document.getElementById('cy'),
     style: cytoscapeStyle(appSettings.theme),
@@ -5553,6 +6280,9 @@ document.addEventListener('DOMContentLoaded', () => {
     minZoom: 0.2,
     maxZoom: 1.5,
   });
+  // Own-selection color is the local user's avatar color, not the historical
+  // orange — applied once after cy init and again on every full re-style.
+  if (typeof applyOwnSelectionColor === 'function') applyOwnSelectionColor();
 
   // --- Node interactions ---
   cy.on('tap', 'node', (evt) => {
@@ -6017,9 +6747,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('mousemove', (e) => {
     if (!resizing) return;
     const next = window.innerWidth - e.clientX;
-    const min = 320;
-    const max = window.innerWidth * 0.95;
-    panel.style.width = Math.min(max, Math.max(min, next)) + 'px';
+    // Cap by the bumper rule (see computePanelMaxWidth) so the avatar bar
+    // can't be pushed past the sidebar or into the play/pause button.
+    const bumperMax = computePanelMaxWidth();
+    const max = Math.min(
+      window.innerWidth * 0.95,
+      bumperMax != null ? bumperMax : window.innerWidth,
+    );
+    panel.style.width = Math.min(max, Math.max(PANEL_MIN_WIDTH, next)) + 'px';
     if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   });
   document.addEventListener('mouseup', () => {
@@ -6243,20 +6978,39 @@ document.addEventListener('DOMContentLoaded', () => {
   cy.on('add remove', 'node', () => updateEmptyState());
   cy.on('remove', 'node', () => maybeCleanupLazyGraph());
 
+  // Multi-peer presence: broadcast our local cytoscape selection so peers
+  // see what we have selected/are editing on this graph. The .selected CSS
+  // class is set by the tap handlers above (line ~5716, ~5744) and by
+  // data-refresh at line ~5454; we hook tap with a 0ms defer so our read
+  // sees the post-handler class state. postLocalSelection is debounced +
+  // dedup'd so shift-selecting a range doesn't spam POSTs.
+  cy.on('tap', () => setTimeout(postLocalSelection, 0));
+  cy.on('cxttap', () => setTimeout(postLocalSelection, 0));
+
   // Reposition the inline overlay when the canvas moves or the active node moves
   cy.on('pan zoom resize', () => {
     syncNodeToOverlay();
     positionTitleOverlay();
     updateCurveHandlePosition();
+    // Peer cursors are anchored in rendered coordinates — pan/zoom shifts
+    // every anchor. Keep refresh cheap; the simulation snaps to rest fast.
+    if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
   });
   cy.on('position', 'node', (evt) => {
     const node = getActiveNode();
     if (node && evt.target.id() === node.id()) positionTitleOverlay();
     updateCurveHandlePosition();
+    // A peer cursor anchored to a node should follow it as the user drags.
+    if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
   });
   window.addEventListener('resize', () => {
     positionTitleOverlay();
     updateCurveHandlePosition();
+    // Viewport width feeds into the panel cap (computePanelMaxWidth). A
+    // shrunk window can push the avatar bar over the play/pause button
+    // if we don't re-clamp.
+    if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
+    if (typeof fitBottomBar === 'function') fitBottomBar();
   });
 
   document.getElementById('task-form').addEventListener('submit', (e) => e.preventDefault());

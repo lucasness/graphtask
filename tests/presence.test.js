@@ -204,6 +204,26 @@ describe('presence module (unit)', () => {
       { op: 'active', name: 'Alicia', active: true },
     ]);
   });
+
+  it('announce stores owner_user_id verbatim (and snapshot exposes it)', () => {
+    const ownerId = '11111111-1111-1111-1111-111111111111';
+    presence.announce('g1', { id: 'w1', name: 'A', type: 'agent', owner_user_id: ownerId });
+    const snap = presence.getSnapshot('g1');
+    expect(snap[0]).toMatchObject({ id: 'w1', type: 'agent', owner_user_id: ownerId });
+  });
+
+  it('owner_user_id defaults to null when not provided', () => {
+    presence.announce('g1', { id: 'w1', name: 'A', type: 'human' });
+    expect(presence.getSnapshot('g1')[0].owner_user_id).toBeNull();
+  });
+
+  it('touch backfills owner_user_id when previously null', () => {
+    const ownerId = '22222222-2222-2222-2222-222222222222';
+    presence.announce('g1', { id: 'w1', name: 'A', type: 'human' });
+    expect(presence.getSnapshot('g1')[0].owner_user_id).toBeNull();
+    presence.touch('g1', 'w1', 'A', 'human', ownerId);
+    expect(presence.getSnapshot('g1')[0].owner_user_id).toBe(ownerId);
+  });
 });
 
 describe('presence routes (HTTP)', () => {

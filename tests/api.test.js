@@ -156,4 +156,62 @@ describe('API integration', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/html/);
   });
+
+  describe('selection routes', () => {
+    const selUrl = () => `/api/graphs/${gid}/selection`;
+
+    it('POST without X-Writer-Id returns 400', async () => {
+      const res = await request(app).post(selUrl()).send({ node_ids: [1] });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/X-Writer-Id/);
+    });
+
+    it('POST with X-Writer-Id returns 204 and snapshot reflects it', async () => {
+      const post = await request(app)
+        .post(selUrl())
+        .set('X-Writer-Id', 'w-api-test')
+        .send({ node_ids: [1, 2], editing: { kind: 'node', id: 1 } });
+      expect(post.status).toBe(204);
+      const snap = await request(app).get(selUrl());
+      expect(snap.status).toBe(200);
+      expect(snap.body).toHaveLength(1);
+      expect(snap.body[0]).toMatchObject({
+        writer_id: 'w-api-test',
+        node_ids: [1, 2],
+        editing: { kind: 'node', id: 1 },
+      });
+    });
+
+    it('DELETE clears the selection (idempotent)', async () => {
+      await request(app)
+        .post(selUrl())
+        .set('X-Writer-Id', 'w-del')
+        .send({ node_ids: [1] });
+      const del1 = await request(app).delete(`${selUrl()}/w-del`);
+      expect(del1.status).toBe(204);
+      const del2 = await request(app).delete(`${selUrl()}/w-del`);
+      expect(del2.status).toBe(204); // idempotent
+      const snap = await request(app).get(selUrl());
+      expect(snap.body).toEqual([]);
+    });
+  });
+
+  describe('prefs API (anon paths)', () => {
+    it('GET /api/me/prefs without auth → 401', async () => {
+      const r = await request(app).get('/api/me/prefs');
+      expect(r.status).toBe(401);
+    });
+    it('PUT /api/me/prefs without auth → 401', async () => {
+      const r = await request(app).put('/api/me/prefs').send({ agent_follow_default: false });
+      expect(r.status).toBe(401);
+    });
+    it('GET /api/graphs/:gid/prefs/me without auth → 401', async () => {
+      const r = await request(app).get(`/api/graphs/${gid}/prefs/me`);
+      expect(r.status).toBe(401);
+    });
+    it('PUT /api/graphs/:gid/prefs/me without auth → 401', async () => {
+      const r = await request(app).put(`/api/graphs/${gid}/prefs/me`).send({ agent_follow: true });
+      expect(r.status).toBe(401);
+    });
+  });
 });

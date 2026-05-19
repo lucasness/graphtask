@@ -195,7 +195,7 @@ Status enum: `todo` → `in_progress` → `review` → `done`. Each transition s
 | `review` | You (when you think it's done) | What you did, files changed, how to verify. **This is what the human reads to confirm.** Make it self-contained. |
 | `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that task only* — don't infer permission for siblings, parents, or the rest of the graph. |
 
-**Read before you write.** Before PATCHing a task, fetch its current content with `GET /api/graphs/$GID/tasks/$TID` and read the body — the user may have edited it in the UI since you last touched it, and PATCH replaces the whole `content` blob. Merge your changes into what's actually there now; don't clobber the user's notes.
+**Read before you write, and send OCC fields.** Always GET the task right before you PATCH it AND include `base_version` + `base_content` in the PATCH body. Without those, the server falls back to "blind replace" and your write silently overwrites any UI-managed frontmatter keys (positions `x`/`y`, `color`, `curve`) that exist on the row but aren't in your new content. With OCC fields the server runs a three-way merge that preserves fields you didn't touch — so you can safely rewrite the title/status/body without enumerating every other meta key.
 
 **Keep related task bodies in sync.** When work on one task surfaces information that affects another (e.g., you find that the schema migration also needs a new index, which is a different task), update *that* task's body to reflect the new finding. The graph is a living context document, not a one-shot plan. Each task body should be accurate to the current state of the work.
 
@@ -211,19 +211,107 @@ Only proceed if (a) blockers is zero, or (b) the user explicitly OKs starting wh
 
 For readiness queries (section 4), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
 
-PATCH replaces the entire `content` blob (frontmatter + body). Re-serialize the whole thing on every update:
+PATCH replaces the entire `content` blob (frontmatter + body). The OCC pattern below is the **only safe way to update a task**: GET first, capture `version` + `content`, then PATCH with those as `base_version` + `base_content`. The server's three-way merge then preserves any UI-managed keys (`x`/`y` positions, `color`, `curve`) that aren't in your new content.
+
+**Required: announce your focus.** Before you start touching a task — and every time you switch which task you're working on — POST to `/api/graphs/:gid/selection` with `cursor_anchor` + `editing` set to that task. This is what tells humans watching the canvas which node you're on; without it, your edits show up as flickers on the canvas with no source attribution and no colored outline. The server keeps one selection per writer (so a new POST replaces the previous), and your Stop hook DELETEs presence at end of turn which cascades to clearing the selection. The helpers below combine selection-announce with `patch_task` so you can't accidentally forget.
 
 ```bash
+announce_focus() {
+  # Tell viewers "I'm working on this task right now". Replaces any previous
+  # selection from this agent (one selection per writer_id on the server).
+  local TID="$1"
+  local ANCHOR
+  ANCHOR=$(jq -nc --argjson id "$TID" '{kind: "node", id: $id}')
+  curl -sS -X POST "$GT_BASE/api/graphs/$GID/selection" \
+    "${WRITE_HEADERS[@]}" \
+    -d "{\"node_ids\":[$TID],\"edge_ids\":[],\"editing\":$ANCHOR,\"cursor_anchor\":$ANCHOR}" \
+    >/dev/null
+}
+
+announce_focus_edge() {
+  # Same as announce_focus but for an edge. Use before any edge PATCH so
+  # the viewer can see which edge you're about to touch — they may want
+  # to intercept ("wait, don't change THAT one") before you commit.
+  local EID="$1"
+  local ANCHOR
+  ANCHOR=$(jq -nc --argjson id "$EID" '{kind: "edge", id: $id}')
+  curl -sS -X POST "$GT_BASE/api/graphs/$GID/selection" \
+    "${WRITE_HEADERS[@]}" \
+    -d "{\"node_ids\":[],\"edge_ids\":[$EID],\"editing\":$ANCHOR,\"cursor_anchor\":$ANCHOR}" \
+    >/dev/null
+}
+
+clear_focus() {
+  # Optional explicit clear when you're done with a task and won't touch
+  # another. Usually not needed — Stop hook cleanup handles it at end of turn.
+  curl -sS -X DELETE "$GT_BASE/api/graphs/$GID/selection/$AGENT_ID" >/dev/null
+}
+
+patch_task() {
+  # Usage: patch_task <TID> <new-content>
+  # Fetches the current task, then PATCHes with OCC so the server can
+  # protect UI-managed frontmatter keys (positions etc.) you didn't touch.
+  # ALWAYS call announce_focus first (or use work_on_task which bundles them).
+  local TID="$1"
+  local NEW_CONTENT="$2"
+  local CUR_JSON
+  CUR_JSON=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks/$TID")
+  local CUR_VERSION
+  CUR_VERSION=$(echo "$CUR_JSON" | jq -r .version)
+  local CUR_CONTENT
+  CUR_CONTENT=$(echo "$CUR_JSON" | jq -r .content)
+  curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$TID" \
+    "${WRITE_HEADERS[@]}" \
+    -d "$(jq -nc \
+      --arg c "$NEW_CONTENT" \
+      --argjson v "$CUR_VERSION" \
+      --arg b "$CUR_CONTENT" \
+      '{content: $c, base_version: $v, base_content: $b}')"
+}
+
+work_on_task() {
+  # Preferred wrapper: announces focus, then PATCHes. Use this for every
+  # task edit so the canvas viewers always see who's on what.
+  announce_focus "$1"
+  patch_task "$1" "$2"
+}
+
 # Moving from todo → in_progress with running notes
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
-  "${WRITE_HEADERS[@]}" \
-  -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: in_progress\n---\n## Approach\nGrep src/auth/** for token reads.\n\n## Findings so far\n- 4 call sites in src/auth/middleware.js read req.headers.authorization\n- 2 call sites in src/api/* call those middleware functions directly\n"}'
+work_on_task "$T1" "$(cat <<'EOF'
+---
+title: Audit current session-token usage
+status: in_progress
+---
+## Approach
+Grep src/auth/** for token reads.
+
+## Findings so far
+- 4 call sites in src/auth/middleware.js read req.headers.authorization
+- 2 call sites in src/api/* call those middleware functions directly
+EOF
+)"
 
 # Moving to review with a self-contained summary
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$T1" \
-  "${WRITE_HEADERS[@]}" \
-  -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: review\n---\n## Findings\n6 call sites total — 4 in src/auth/middleware.js, 2 in src/api/users.js and src/api/projects.js.\n\n## Suggested next step\nReplace the middleware-internal reads with a cookie-aware helper, then keep the api/* call sites unchanged (they go through the middleware anyway).\n\n## Verify\nRun `rg -n \"req.headers.authorization\" src/` — should return zero results after T2 lands.\n"}'
+work_on_task "$T1" "$(cat <<'EOF'
+---
+title: Audit current session-token usage
+status: review
+---
+## Findings
+6 call sites total — 4 in src/auth/middleware.js, 2 in src/api/users.js and src/api/projects.js.
+
+## Suggested next step
+Replace the middleware-internal reads with a cookie-aware helper, then keep the api/* call sites unchanged (they go through the middleware anyway).
+
+## Verify
+Run `rg -n "req.headers.authorization" src/` — should return zero results after T2 lands.
+EOF
+)"
 ```
+
+Notice the PATCH body has no `x`/`y` or `color` keys, but the user's drag positions and color tweaks will survive — the server's mergeFields sees they're unchanged in `base_content` vs your new content, present in current, and preserves them.
+
+**Without OCC fields, the PATCH falls back to blind replace** and you'll silently wipe any UI keys the human is managing. Always send `base_version` + `base_content`.
 
 **After everything is in `review`, stop.** Summarize in chat what you submitted and let the user review on the canvas. Don't poll the graph waiting for the human to mark things `done` — they'll use the UI. Your job ends at `review`.
 
@@ -272,11 +360,22 @@ done
 
 Switch a `related` edge to `dependency` (or vice versa), or repoint an edge to a different source/target. Cycle detection re-runs if you set `type: 'dependency'`.
 
+**Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
+
+Same OCC rule as tasks: GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge.
+
 ```bash
+announce_focus_edge "$EID"
+CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges/$EID")
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
   "${WRITE_HEADERS[@]}" \
-  -d '{"type":"related"}'
+  -d "$(jq -nc \
+    --argjson v "$(echo "$CUR" | jq .version)" \
+    --argjson r "$CUR" \
+    '{type: "related", base_version: $v, base_row: $r}')"
 ```
+
+(Edges use `base_row` instead of `base_content` because they have structured fields, not a content blob.)
 
 ## 6. Error handling
 
@@ -294,7 +393,8 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 
 ## 7. What you must not touch
 
-- `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Leave them alone.
+- `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
+- `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
 

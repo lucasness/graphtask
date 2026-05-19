@@ -39,9 +39,9 @@ router.post('/', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `INSERT INTO tasks (graph_id, content, meta, last_modified_by)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [gid, normalized, JSON.stringify(meta), req.writerType]
+      `INSERT INTO tasks (graph_id, content, meta, last_modified_by, last_modified_by_user)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [gid, normalized, JSON.stringify(meta), req.writerType, req.user?.id ?? null]
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
@@ -129,7 +129,10 @@ router.patch('/:id', validateId, async (req, res) => {
   if (validationErr) return res.status(400).json({ error: validationErr });
 
   const currentRes = await pool.query(
-    'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2',
+    `SELECT t.*, g.owner_user_id AS graph_owner_user_id
+       FROM tasks t
+       JOIN graphs g ON g.id = t.graph_id
+      WHERE t.id = $1 AND t.graph_id = $2`,
     [id, gid]
   );
   if (currentRes.rows.length === 0) {
@@ -159,8 +162,13 @@ router.patch('/:id', validateId, async (req, res) => {
       flattenTask(baseMeta, baseParsed.body),
       flattenTask(writerMeta, writerBody),
       flattenTask(currentMeta, currentParsed.body),
-      req.writerType,
-      cur.last_modified_by,
+      {
+        writerType: req.writerType,
+        currentWriterType: cur.last_modified_by,
+        writerOwnerId: req.user?.id ?? null,
+        currentOwnerId: cur.last_modified_by_user ?? null,
+        graphOwnerId: cur.graph_owner_user_id ?? null,
+      },
     );
     const out = unflattenTask(merged);
     const mergedErr = validateMeta(out.meta);
@@ -182,10 +190,11 @@ router.patch('/:id', validateId, async (req, res) => {
             meta = $2,
             version = version + 1,
             last_modified_by = $3,
+            last_modified_by_user = $4,
             updated_at = NOW()
-      WHERE id = $4 AND graph_id = $5
+      WHERE id = $5 AND graph_id = $6
     RETURNING *`,
-    [normalized, JSON.stringify(mergedMeta), req.writerType, id, gid]
+    [normalized, JSON.stringify(mergedMeta), req.writerType, req.user?.id ?? null, id, gid]
   );
   if (result.rows.length === 0) {
     return res.status(410).json({ error: 'task no longer exists' });

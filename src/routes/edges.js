@@ -138,9 +138,9 @@ router.post('/', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by)
-         VALUES ($1, $2, $3, $4::edge_type, $5, $6) RETURNING *`,
-        [gid, source_id, target_id, type, JSON.stringify(normalizedMeta.meta), req.writerType]
+        `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by, last_modified_by_user)
+         VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7) RETURNING *`,
+        [gid, source_id, target_id, type, JSON.stringify(normalizedMeta.meta), req.writerType, req.user?.id ?? null]
       );
       return result.rows[0];
     });
@@ -213,9 +213,9 @@ router.post('/bulk', async (req, res) => {
         const e = normalized[i];
         try {
           const r = await client.query(
-            `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by)
-             VALUES ($1, $2, $3, $4::edge_type, $5, $6) RETURNING *`,
-            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta), req.writerType]
+            `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by, last_modified_by_user)
+             VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7) RETURNING *`,
+            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta), req.writerType, req.user?.id ?? null]
           );
           inserted.push(r.rows[0]);
         } catch (err) {
@@ -286,7 +286,10 @@ router.patch('/:id', validateId, async (req, res) => {
     return res.status(400).json({ error: 'type must be dependency or related' });
 
   const current = await pool.query(
-    'SELECT * FROM edges WHERE id = $1 AND graph_id = $2',
+    `SELECT e.*, g.owner_user_id AS graph_owner_user_id
+       FROM edges e
+       JOIN graphs g ON g.id = e.graph_id
+      WHERE e.id = $1 AND e.graph_id = $2`,
     [id, gid]
   );
   if (current.rows.length === 0) return res.status(410).json({ error: 'edge no longer exists' });
@@ -326,8 +329,13 @@ router.patch('/:id', validateId, async (req, res) => {
       flattenEdge(base),
       flattenEdge(writerRow),
       flattenEdge(existing),
-      req.writerType,
-      existing.last_modified_by,
+      {
+        writerType: req.writerType,
+        currentWriterType: existing.last_modified_by,
+        writerOwnerId: req.user?.id ?? null,
+        currentOwnerId: existing.last_modified_by_user ?? null,
+        graphOwnerId: existing.graph_owner_user_id ?? null,
+      },
     );
     finalRow = unflattenEdge(merged);
   } else {
@@ -371,10 +379,11 @@ router.patch('/:id', validateId, async (req, res) => {
                 type = $3::edge_type,
                 meta = $4,
                 version = version + 1,
-                last_modified_by = $5
-          WHERE id = $6 AND graph_id = $7
+                last_modified_by = $5,
+                last_modified_by_user = $6
+          WHERE id = $7 AND graph_id = $8
         RETURNING *`,
-        [newSource, newTarget, newType, JSON.stringify(newMeta), req.writerType, id, gid]
+        [newSource, newTarget, newType, JSON.stringify(newMeta), req.writerType, req.user?.id ?? null, id, gid]
       );
       return result.rows[0];
     });

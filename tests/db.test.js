@@ -48,7 +48,7 @@ describe('Database schema', () => {
     const columns = result.rows.map((r) => r.column_name);
     expect(columns).toEqual([
       'id', 'graph_id', 'content', 'meta', 'created_at', 'updated_at',
-      'version', 'last_modified_by',
+      'version', 'last_modified_by', 'last_modified_by_user',
     ]);
   });
 
@@ -60,7 +60,7 @@ describe('Database schema', () => {
     const columns = result.rows.map((r) => r.column_name);
     expect(columns).toEqual([
       'id', 'graph_id', 'source_id', 'target_id', 'type', 'meta', 'created_at',
-      'version', 'last_modified_by',
+      'version', 'last_modified_by', 'last_modified_by_user',
     ]);
   });
 

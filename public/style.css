@@ -25,7 +25,7 @@
   --space-8: 32px;
 
   /* --- Layout --- */
-  --sidebar-w: 240px;
+  --sidebar-w: 200px;
 
   /* --- Semantic accents used in misc UI moments (warning text,
      edge-type icons). Both themes share these. --- */
@@ -899,172 +899,6 @@ body {
 .access-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
 .access-member-row-pending .access-member-avatar { opacity: 0.6; }
 
-/* Share modal (Phase B5c) — manages invite links + members for an owned
-   graph. Owner-only; hidden entirely for legacy graphs. */
-.share-button {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  background: var(--ui);
-  color: var(--tx);
-  border-radius: 6px;
-  font-size: var(--text-body-sm);
-  cursor: pointer;
-}
-.share-button:hover { background: var(--ui-2, var(--border)); }
-.share-button .ph { font-size: 16px; line-height: 1; }
-
-.share-section {
-  margin-top: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.share-section-title {
-  font-size: var(--text-meta);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--tx-2);
-}
-.share-select {
-  width: 100%;
-  padding: 8px 10px;
-  font-size: var(--text-body-sm);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--tx);
-}
-.share-link-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.share-link-row.hidden { display: none; }
-.share-link-row input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: var(--text-meta);
-  font-family: var(--mono, monospace);
-}
-.share-link-row button {
-  padding: 6px 8px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--tx-2);
-}
-.share-link-row button:hover { color: var(--tx); background: var(--ui); }
-.share-link-hint {
-  font-size: var(--text-meta);
-  color: var(--tx-2);
-  margin: 0;
-}
-
-.share-invite-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.share-invite-row input[type="email"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: var(--text-body-sm);
-}
-.share-invite-row select {
-  padding: 6px 8px;
-  font-size: var(--text-meta);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--tx);
-}
-.share-invite-row button {
-  padding: 6px 14px;
-  font-size: var(--text-body-sm);
-}
-
-.share-member-row-pending .share-member-name {
-  font-style: italic;
-  color: var(--tx-2);
-}
-.share-member-row-pending .share-member-avatar {
-  opacity: 0.6;
-}
-
-.share-members-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 220px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px;
-}
-.share-member-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 4px;
-}
-.share-member-row:hover { background: var(--ui); }
-.share-member-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 10px;
-  font-weight: 600;
-  flex: 0 0 auto;
-}
-.share-member-meta { flex: 1 1 auto; min-width: 0; }
-.share-member-name {
-  font-size: var(--text-body-sm);
-  color: var(--tx);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.share-member-email {
-  font-size: var(--text-meta);
-  color: var(--tx-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.share-member-role {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--tx-2);
-  flex: 0 0 auto;
-}
-.share-member-kick {
-  background: transparent;
-  border: none;
-  color: var(--tx-2);
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 4px;
-  flex: 0 0 auto;
-}
-.share-member-kick:hover { color: rgb(220, 38, 38); background: rgba(220, 38, 38, 0.1); }
-
 /* Read-only mode (Phase B5f) — applied when the viewer has read access but
    not edit access on the active graph. Pinned banner at the top of the
    canvas + the body.readonly class hides edit affordances. */
@@ -1154,24 +988,6 @@ body.forbidden #cy {
   font-size: var(--text-meta);
   padding: 4px 8px;
 }
-.agent-token-cancel {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--tx-2);
-  cursor: pointer;
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0;
-  flex: 0 0 auto;
-}
-.agent-token-cancel:hover { color: var(--tx); background: var(--ui); }
-
 /* Trash icon button — replaces the previous "Revoke" text button. Sits on
    the right of the row, vertically centered, red tint on hover. */
 .agent-token-trash {
@@ -1193,27 +1009,6 @@ body.forbidden #cy {
 .agent-token-trash:hover { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .agent-token-trash.is-confirming { color: var(--red); }
 
-/* Confirm row buttons: pill style matching .modal-actions pattern. */
-.agent-token-confirm-row .agent-token-cancel {
-  background: transparent;
-  border: 1px solid var(--color-slate, var(--border));
-  color: var(--color-slate, var(--tx-2));
-  width: auto;
-  height: auto;
-  padding: 6px 14px;
-  border-radius: var(--radius-buttons, 100px);
-  font-family: var(--font-label);
-  font-size: var(--text-meta);
-  font-weight: 600;
-  letter-spacing: 0.053em;
-  text-transform: uppercase;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.agent-token-confirm-row .agent-token-cancel:hover {
-  color: var(--color-graphite-nav);
-  border-color: var(--color-graphite-nav);
-}
 .agent-token-confirm-btn {
   flex: 0 0 auto;
   padding: 6px 14px;
@@ -1413,15 +1208,6 @@ body.forbidden #cy {
   background: var(--color-ash);
 }
 .sb-item.active .sb-dot { background: var(--color-ember-orange); }
-.sb-lock {
-  position: absolute;
-  left: 18px;
-  bottom: 12px;
-  font-size: var(--text-meta);
-  line-height: 1;
-  color: var(--color-steel);
-  opacity: 0.7;
-}
 
 #sidebar-empty {
   padding: 20px 14px;
@@ -1887,16 +1673,11 @@ button {
   border-color: var(--color-cobalt-link);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent);
 }
-.modal-readonly {
-  font-size: var(--text-body-sm);
-  color: var(--tx-2);
-  font-variant-numeric: tabular-nums;
-}
 /* Dynamic / monospace-ish strings get tabular numerals so digits don't
    reflow as values change (relative times, share URL). */
 .sb-meta,
 #graph-modal-url { font-variant-numeric: tabular-nums; }
-.share-hint, .modal-body-text,
+.modal-body-text,
 .settings-heading p { text-wrap: pretty; }
 .modal-error {
   margin: 0 0 12px;
@@ -1945,10 +1726,6 @@ button {
    and break alignment with the Text/Background columns above. */
 .modal-actions-center button { flex: 0 0 auto; min-width: 96px; }
 
-/* Legacy split layout — kept for any modal that hasn't migrated yet. */
-.modal-actions-split { justify-content: flex-end; }
-.modal-actions-split button { flex: 0 0 auto; min-width: 88px; }
-.modal-actions-split .danger { margin-right: 8px; }
 /* Primary CTA — Green Outlined Pill (constructive: Save / Confirm). */
 .modal-actions button.primary {
   background: transparent;
@@ -2007,29 +1784,6 @@ button {
 .share-row button:hover {
   color: var(--color-graphite-nav);
 }
-.share-hint {
-  margin: 10px 0 0;
-  font-family: var(--font-body);
-  font-size: var(--text-body-sm);
-  line-height: 1.55;
-  color: var(--color-steel);
-}
-.visibility-row {
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--text-body);
-  color: var(--color-graphite-nav);
-}
-.visibility-hint {
-  color: var(--color-steel);
-  font-size: var(--text-body-sm);
-  margin-left: 2px;
-}
-.visibility-row input[type="checkbox"],
 .suppress-row input[type="checkbox"] {
   /* Reset to a custom box — the OS-default checkbox renders large on macOS
      even when width/height is set, because the system style ignores it.
@@ -2054,16 +1808,13 @@ button {
   transition-duration: 120ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
-.visibility-row input[type="checkbox"]:hover,
 .suppress-row input[type="checkbox"]:hover { border-color: var(--tx-3); }
-.visibility-row input[type="checkbox"]:checked,
 .suppress-row input[type="checkbox"]:checked {
   /* Cobalt is the only "filled" interactive color in the system —
      ember stays outline-only. */
   background: var(--color-cobalt-link);
   border-color: var(--color-cobalt-link);
 }
-.visibility-row input[type="checkbox"]:checked::after,
 .suppress-row input[type="checkbox"]:checked::after {
   content: "";
   position: absolute;
@@ -2071,7 +1822,6 @@ button {
   background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'><path d='M6.4 11.2L2.6 7.4 4 6l2.4 2.4L11.6 3.2 13 4.6z'/></svg>") center / 8px 8px no-repeat;
 }
 /* Extend the 12px visible box to a ~24px hit area without affecting layout. */
-.visibility-row input[type="checkbox"]::before,
 .suppress-row input[type="checkbox"]::before {
   content: "";
   position: absolute;
@@ -2100,26 +1850,6 @@ button {
   letter-spacing: 0;
   margin: 0;
 }
-.appearance-input {
-  flex: 1;
-  height: 34px;
-  padding: 0 12px;
-  font-family: var(--font-ui);
-  font-size: var(--text-body);
-  background: var(--color-pure-white);
-  color: var(--color-graphite-nav);
-  border: 1px solid var(--color-mist);
-  border-radius: var(--radius-cardsalt);
-  min-width: 0;
-  box-sizing: border-box;
-}
-input.appearance-input[type="color"] {
-  flex: 0 0 56px;
-  width: 56px;
-  padding: 2px;
-  cursor: pointer;
-}
-
 /* Custom font picker — native <select> popups ignore per-option font-family
    on macOS, so we replace the select with a controlled trigger + menu we
    can fully style. Trigger reads as a bare label + chevron (no enclosing
@@ -2229,25 +1959,6 @@ input.appearance-input[type="color"] {
   padding: 0;
   background-clip: padding-box;
 }
-.appearance-clear {
-  margin-left: auto;
-  background: transparent;
-  border: 1px solid var(--color-slate);
-  color: var(--color-slate);
-  border-radius: var(--radius-buttons);
-  padding: 5px 14px;
-  font-family: var(--font-label);
-  font-size: var(--text-meta);
-  font-weight: 600;
-  letter-spacing: 0.053em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color 0.2s ease, border-color 0.2s ease;
-}
-.appearance-clear:hover {
-  color: var(--color-graphite-nav);
-  border-color: var(--color-graphite-nav);
-}
 .modal-body-text {
   margin: 0 0 18px;
   font-family: var(--font-body);
@@ -2276,8 +1987,16 @@ input.appearance-input[type="color"] {
 #bottom-bar {
   position: fixed;
   bottom: 24px;
+  /* Center in the FULL canvas region (sidebar-right → viewport-right). The
+     toolbar stays at this canvas-centered position regardless of whether
+     the right side panel is open — the panel's higher z-index (10) just
+     covers it. Keeps toolbar position unaffected by panel collapse/expand. */
   left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2);
+  /* JS overrides this transform with `translateX(-50%) scale(N)` when the
+     toolbar's natural width exceeds the canvas width (very narrow
+     viewports). At normal widths the scale stays at 1. */
   transform: translateX(-50%);
+  transform-origin: 50% 100%;
   display: flex;
   align-items: center;
   background: var(--color-pure-white);
@@ -2285,7 +2004,9 @@ input.appearance-input[type="color"] {
   border-radius: var(--radius-buttons);
   padding: 6px 12px;
   box-shadow: var(--shadow-sm);
-  z-index: 10;
+  /* Below the side panel (z-index: 10) and the right-side rename/settings
+     modals (z-index: 20) so neither is covered by toolbar buttons. */
+  z-index: 8;
 }
 
 .tb-slot {
@@ -2659,7 +2380,6 @@ kbd {
 .sb-bottom-btn,
 .sb-menu-btn,
 .tool-btn,
-.appearance-clear,
 .share-row button {
   transition-property: background-color, color, scale, box-shadow, border-color, opacity;
   transition-duration: 120ms;
@@ -2670,7 +2390,6 @@ kbd {
 .sb-bottom-btn:active,
 .sb-menu-btn:active,
 .tool-btn:active,
-.appearance-clear:active,
 .share-row button:active { scale: 0.96; }
 
 /* === Multiplayer presence === */
@@ -2801,4 +2520,182 @@ kbd {
 .presence-stack-deck .presence-avatar:hover {
   transform: translateY(-4px);
   z-index: 100;
+}
+
+/* ───────── Peer cursor layer (multi-peer presence) ─────────
+   Renders a small glowing dot + name pill anchored at a free corner of
+   the node a peer has selected or is editing. JS picks the slot
+   deterministically with an 8-direction probe (see peerCursorRefresh in
+   public/app.js) so the pill never overlaps any node. pointer-events:
+   none so the layer never intercepts clicks; modals (z-index 20) still
+   cover it as expected. */
+/* Track the cytoscape container exactly: cy.renderedBoundingBox returns
+   coordinates relative to #cy's top-left, but #cy is shifted right by
+   --sidebar-w. If this layer used `inset: 0` (full viewport) the cursors
+   would render at viewport-relative x with a sidebar-width offset error,
+   landing on top of the sidebar instead of on the actual node. */
+#peer-cursor-layer {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
+  pointer-events: none;
+  z-index: 15;
+  overflow: hidden;
+}
+.peer-cursor {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transform: translate3d(0, 0, 0);
+  transition: opacity 120ms ease-out;
+}
+.peer-cursor-enter {
+  opacity: 0;
+}
+/* Solid colored dot in the peer color, with a soft pulse ring behind it
+   to signal "live presence". The pulse comes from a ::before pseudo-
+   element that expands and fades — no border, no static halo (those
+   read as visual noise without the motion). The dot itself keeps a tiny
+   drop shadow so it stays legible on white node fills. */
+.peer-cursor-dot {
+  position: relative;
+  display: block;
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--peer-color, #888);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.30);
+}
+/* Soft lamp pulse: gradient glow that breathes in and out, going from
+   nothing → full → nothing each cycle. ease-in-out on a 3-keyframe
+   animation gives each half its own ease, approximating a sine wave so
+   there's no abrupt start or stop. The gradient itself fades from the
+   peer color at the center to transparent at the edge, so the glow
+   reads as a halo around the dot rather than a hard-edged ring. */
+.peer-cursor-dot::before {
+  content: '';
+  position: absolute;
+  /* Pseudo extends slightly past the dot so the gradient has room to
+     fall off into transparency without being clipped at the dot edge. */
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--peer-color, #888) 0%,
+    color-mix(in srgb, var(--peer-color, #888) 50%, transparent) 35%,
+    transparent 70%
+  );
+  animation: peer-cursor-pulse 3.1s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+@keyframes peer-cursor-pulse {
+  0%, 100% { transform: scale(0.85); opacity: 0; }
+  50%      { transform: scale(1.15); opacity: 0.7; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .peer-cursor-dot::before { animation: none; }
+}
+.peer-cursor-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--peer-color, #888);
+  color: var(--color-pure-white, #fff);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+/* 2-4 peers on the same anchor: vertically stacked rows, each peer in
+   their own color. Editing peer placed first (at the top) so it's the row
+   visually closest to the node when the slot is N. */
+.peer-cursor-stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.peer-cursor-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* Stack rows reuse the base .peer-cursor-dot rule (including the pulse
+   ::before) — nothing extra needed. The :before animation auto-applies. */
+.peer-cursor-row .peer-cursor-pill {
+  background: var(--peer-color, #888);
+  color: var(--color-pure-white, #fff);
+}
+
+/* 5+ peers on the same anchor: one larger dot + an "AB & N others" pill.
+   Dot is ~33% larger than the single-peer dot (6px → 8px) so the
+   overflow chip reads as visually weightier. Pulse comes from the base
+   rule and scales with the larger base size automatically. */
+.peer-cursor-overflow .peer-cursor-dot {
+  width: 8px;
+  height: 8px;
+}
+
+/* ───────── Canvas overlay buttons (e.g. follow toggle) ─────────
+   Floating controls anchored over the cytoscape canvas. Sit at z-index 12
+   (above the canvas at 0, below the peer cursor layer at 15, well below
+   modals at 20). The follow toggle is the first user; future floating
+   canvas controls can reuse the class. */
+.canvas-overlay-btn {
+  position: fixed;
+  /* Sit directly beneath the presence bar (top:16, avatars 32px tall) with
+     an 8px gap. JS keeps the button's `right` in sync with the bar's
+     inline `right`, so when the panel opens and the bar slides left, the
+     button slides with it — always aligned under the own avatar. */
+  top: 56px;
+  right: 16px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle, rgba(0,0,0,0.12));
+  background: var(--color-pure-white, #fff);
+  color: var(--color-ink-strong, #2a2a2a);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  transition: background 120ms ease-out, transform 120ms ease-out;
+}
+.canvas-overlay-btn:hover {
+  background: var(--color-bg-hover, #f5f5f5);
+}
+.canvas-overlay-btn:active {
+  transform: scale(0.96);
+}
+.canvas-overlay-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  fill: currentColor;
+}
+/* Two `.hidden` rules with different specificity:
+   - .canvas-overlay-btn.hidden (same element, both classes) hides the
+     BUTTON itself — e.g. when no agent is active and the follow toggle
+     shouldn't be shown.
+   - .canvas-overlay-btn .hidden (descendant) hides the alternate ICON
+     inside the button — pause vs play swap visibility via this class.
+   The descendant form alone was leaving the button visible when its
+   class said it should be hidden. */
+.canvas-overlay-btn.hidden {
+  display: none;
+}
+.canvas-overlay-btn .hidden {
+  display: none;
 }

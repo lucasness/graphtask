@@ -1,7 +1,11 @@
 // Ephemeral, process-local presence: who is on which graph right now.
 // In-memory only — no DB writes. State is keyed by graphId, then by writerId,
-// and carries {name, type, lastSeen, active}. Listeners (e.g. the SSE layer)
-// subscribe via `onChange` to broadcast state changes to browser viewers.
+// and carries {name, type, owner_user_id, lastSeen, active}. Listeners
+// (e.g. the SSE layer) subscribe via `onChange` to broadcast state changes
+// to browser viewers. `owner_user_id` is null for anonymous writers; for
+// authed humans it's `users.id`; for agent-token writers it's the token's
+// `user_id` (i.e. who the agent is acting on behalf of). Clients use it to
+// answer "is this agent mine?" for the multi-agent follow filter.
 //
 // Time semantics: `announce` and `touch` refresh `lastSeen` and mark the
 // writer active. A reaper drops anyone older than IDLE_TTL_MS. A separate
@@ -43,16 +47,18 @@ function getOrCreateGraph(graphId) {
   return m;
 }
 
-export function announce(graphId, { id, name, type } = {}) {
+export function announce(graphId, { id, name, type, owner_user_id } = {}) {
   if (!id || typeof id !== 'string' || id.length > MAX_ID_LENGTH) return null;
   const m = getOrCreateGraph(graphId);
   const prev = m.get(id);
   const cleanName = clampName(name, prev?.name ?? 'Anonymous');
   const cleanType = type === 'agent' ? 'agent' : 'human';
+  const cleanOwner = owner_user_id ?? prev?.owner_user_id ?? null;
   const writer = {
     id,
     name: cleanName,
     type: cleanType,
+    owner_user_id: cleanOwner,
     lastSeen: Date.now(),
     active: true,
   };
@@ -70,13 +76,17 @@ export function announce(graphId, { id, name, type } = {}) {
 // Implicit refresh from an actual write. If the writer is unknown to presence,
 // synthesize an announce so a write counts as "I'm here." If known, bump
 // lastSeen silently — unless they were idle, in which case re-broadcast as
-// active so other viewers un-fade their avatar.
-export function touch(graphId, writerId, name, type) {
+// active so other viewers un-fade their avatar. Backfills owner_user_id if
+// the existing record was anonymous and the writer has since been identified.
+export function touch(graphId, writerId, name, type, owner_user_id) {
   if (!writerId) return null;
   const m = writers.get(graphId);
   const prev = m?.get(writerId);
-  if (!prev) return announce(graphId, { id: writerId, name, type });
+  if (!prev) return announce(graphId, { id: writerId, name, type, owner_user_id });
   prev.lastSeen = Date.now();
+  if (owner_user_id != null && prev.owner_user_id == null) {
+    prev.owner_user_id = owner_user_id;
+  }
   if (prev.active === false) {
     prev.active = true;
     notify(graphId, 'active', prev);

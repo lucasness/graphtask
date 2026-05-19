@@ -173,8 +173,7 @@ router.patch('/:id', requireGraph('manage'), async (req, res) => {
       flattenJsonb(base, 'settings'),
       flattenJsonb(writerRow, 'settings'),
       flattenJsonb(existing, 'settings'),
-      req.writerType,
-      existing.last_modified_by,
+      { writerType: req.writerType, currentWriterType: existing.last_modified_by },
     );
     const unflat = unflattenJsonb(merged, 'settings');
     finalRow = {

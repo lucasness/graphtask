@@ -842,14 +842,58 @@ because refetching rebuilds Cytoscape elements and clears transient classes.
 
 When an SSE event arrives indicating an external (non-local) edit on a task,
 the client (a) refetches the graph with selection preservation, (b) animates
-the camera to the affected node, (c) briefly flashes the node with a
-semantic color (blue for INSERT, status colors for status changes, purple
-for body-only edits), and (d) for UPDATE events, opens the side panel
-showing the new content. Agent-follow is suppressed if the user
-`pointerdown`/`keydown`/`wheel`d in the last 2 seconds, so manual work isn't
-yanked around. `loadIntoEditor` sets a 200ms suppression window on the
-autosave scheduler so the synthetic `change` event from `setMarkdown`
-doesn't cause a round-trip-PATCH echo loop.
+the camera to the affected node, and (c) for UPDATE events, opens the side
+panel showing the new content. The "who is editing this" visual cue comes
+from the peer-selection classes (writer's color outline + dashed border)
+when the agent broadcasts its current task — see Multi-peer presence below.
+Agent-follow is suppressed if the user `pointerdown`/`keydown`/`wheel`d in
+the last 2 seconds, so manual work isn't yanked around. `loadIntoEditor`
+sets a 200ms suppression window on the autosave scheduler so the synthetic
+`change` event from `setMarkdown` doesn't cause a round-trip-PATCH echo loop.
+
+Multi-agent follow rules: 0 active agents → no auto-pan; 1 active agent →
+follow it regardless of owner; 2+ agents → follow only the one whose
+`owner_user_id` matches the local user. An anon viewer with 2+ agents gets
+no auto-pan (rely on highlights). A pause/play button (top of the canvas,
+under the local user's avatar) toggles agent-follow per-graph; toggling on
+one graph propagates the new state as the default for future graphs but
+doesn't change other graphs you've explicitly toggled.
+
+### Multi-peer presence
+
+Every active writer (human or agent) appears in the avatar bar (top-right,
+capped at 7 individuals + a "+N others" chip). Avatar colors are
+deterministic per writer_id from a 64-color palette (16 base hues × 4
+lightness/saturation variants) so collaborators see the same color across
+reloads and devices.
+
+When a peer selects or opens a node/edge they POST to
+`/api/graphs/:gid/selection`, which fans out via SSE. Other viewers render
+(a) a colored underlay on the node (or dashed border if the peer has the
+side panel open) in the peer's color, and (b) a "peer cursor" — a small
+glowing dot + name pill positioned at a free corner of the node. Multiple
+peers on the same node stack into one marker (2-4 peers: vertical rows
+with initials; 5+: a single overflow chip showing "AB & N others"). Peer
+markers are placed by a deterministic 8-direction probe that avoids
+overlapping other nodes; the marker repositions on cy pan/zoom/drag.
+
+The local user's own selection isn't rendered as a peer marker — instead
+the standard `.selected` underlay renders in their own avatar color.
+Agents (`type: 'agent'`) skip the 60s idle filter so a long-thinking agent
+keeps its marker visible until its Stop hook DELETEs presence at end of
+turn.
+
+OCC: agents must PATCH with `base_version` + `base_content` so the
+server's three-way merge protects UI-managed frontmatter keys (`x`/`y`
+positions, `color`, `curve`) the agent didn't include. Without OCC fields
+the PATCH falls back to blind replace and silently wipes those keys. See
+the [skill](.claude/skills/graphtask/SKILL.md) for the canonical
+`work_on_task` / `announce_focus_edge` helpers.
+
+Agent-vs-agent same-field conflicts use **owner-agent precedence**: the
+agent whose `owner_user_id` matches `graphs.owner_user_id` wins. If both
+or neither agents are the graph owner's, falls through to last-write-wins.
+Human-vs-agent rule unchanged: human always wins.
 
 ---
 
