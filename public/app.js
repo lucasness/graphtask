@@ -834,9 +834,12 @@ async function mintAgentToken() {
 // removes the bound listeners. Use this to replace ugly native <select>
 // dropdowns inside modals.
 function wirePicker(rootEl, options) {
+  console.log('[wirePicker] called with rootEl=', rootEl?.id || rootEl);
+  if (!rootEl) { console.warn('[wirePicker] rootEl is null — bailing'); return () => {}; }
   const trigger = rootEl.querySelector('.font-picker-trigger');
   const valueEl = rootEl.querySelector('.font-picker-value');
   const menu = rootEl.querySelector('.font-picker-menu');
+  console.log('[wirePicker]', rootEl.id, '→ trigger:', !!trigger, 'menu:', !!menu);
   const optionEls = Array.from(menu.querySelectorAll('.font-picker-option'));
   let current = options.initial;
   const labelOf = (v) => optionEls.find((o) => o.dataset.value === v)?.textContent?.trim() || v;
@@ -859,6 +862,7 @@ function wirePicker(rootEl, options) {
     document.removeEventListener('keydown', onDocKey, true);
   }
   function onTriggerClick() {
+    console.log('[wirePicker] trigger clicked, menu hidden?', menu.classList.contains('hidden'));
     if (menu.classList.contains('hidden')) openMenu();
     else closeMenu();
   }
@@ -887,6 +891,7 @@ function wirePicker(rootEl, options) {
 
 // Wires up the inline Access section. Returns a cleanup function.
 function wireAccessSection(graph) {
+  console.log('[wireAccessSection] called for graph', graph?.id, 'owner=', graph?.owner_user_id, 'can_manage=', graph?.viewer_can_manage);
   const anonRolePicker = document.getElementById('graph-modal-anon-picker');
   const inviteRolePicker = document.getElementById('graph-modal-invite-role-picker');
   const membersSection = document.getElementById('graph-modal-members-section');
@@ -4364,6 +4369,7 @@ function openGraphEditModal(graph) {
   // manage. Legacy un-owned graphs hide it (URL = full access already).
   const accessSection = document.getElementById('graph-modal-access');
   const showAccess = graph.owner_user_id != null && graph.viewer_can_manage !== false;
+  console.log('[openGraphEditModal] showAccess=', showAccess, 'graph=', { id: graph.id, owner_user_id: graph.owner_user_id, viewer_can_manage: graph.viewer_can_manage });
   accessSection.classList.toggle('hidden', !showAccess);
 
   let accessCleanup = null;
