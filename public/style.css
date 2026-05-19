@@ -620,6 +620,12 @@ body {
   flex-direction: column;
   gap: 6px;
 }
+/* When the access section is hidden (legacy URL-bearer graphs have no
+   access concept — the URL is the access control), actually hide it.
+   Without this rule the section's `hidden` class only signals intent;
+   the dropdown stays visible but its click listener isn't attached
+   (wireAccessSection is intentionally skipped), making it look broken. */
+#graph-modal-access.hidden { display: none; }
 /* The Access section header inherits the .modal-field > span:first-child
    base style — same sentence-case + ember treatment as every other section
    header. No need to override here. */
