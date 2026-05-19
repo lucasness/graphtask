@@ -854,10 +854,11 @@ sets a 200ms suppression window on the autosave scheduler so the synthetic
 Multi-agent follow rules: 0 active agents → no auto-pan; 1 active agent →
 follow it regardless of owner; 2+ agents → follow only the one whose
 `owner_user_id` matches the local user. An anon viewer with 2+ agents gets
-no auto-pan (rely on highlights). A pause/play button (top of the canvas,
-under the local user's avatar) toggles agent-follow per-graph; toggling on
-one graph propagates the new state as the default for future graphs but
-doesn't change other graphs you've explicitly toggled.
+no auto-pan (rely on highlights). A round push-button below the local
+user's avatar — labeled `LIVE` when tracking, `QUIET` when paused, with
+a soft orange pulse halo while live — toggles agent-follow per-graph;
+toggling on one graph propagates the new state as the default for future
+graphs but doesn't change other graphs you've explicitly toggled.
 
 ### Multi-peer presence
 

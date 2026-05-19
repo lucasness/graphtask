@@ -2671,52 +2671,201 @@ kbd {
    (above the canvas at 0, below the peer cursor layer at 15, well below
    modals at 20). The follow toggle is the first user; future floating
    canvas controls can reuse the class. */
-.canvas-overlay-btn {
+/* Agent-follow push button — modeled on the reference photo of an
+   industrial light-cream face-plate with a single round raised cream
+   collar/dome housing a small recessed orange cap.
+
+   Three nested layers:
+   - .push-button         plate (warm off-white rectangle, ~uniform fill)
+   - .push-button-collar  raised dome (cream, fills most of the plate)
+   - .push-button-cap     small orange cap (sits in the dome center)
+
+   .is-tracking = cap is flush/recessed in the dome + cream ring pulses
+   faint orange around the cap. Toggle off → cap pops up, halo stops. */
+.push-button {
   position: fixed;
-  /* Sit directly beneath the presence bar (top:16, avatars 32px tall) with
-     an 8px gap. JS keeps the button's `right` in sync with the bar's
-     inline `right`, so when the panel opens and the bar slides left, the
-     button slides with it — always aligned under the own avatar. */
-  top: 56px;
-  right: 16px;
+  /* Button center aligns with the "Title" label text center. Math:
+     form top y=86, "Title" font 13 × line-height 1.2 → glyph top
+     y≈87.3, glyph bottom y≈100.3, center y≈94. With a 40px button,
+     top: 74 puts the button center at y=94. The whole group (button +
+     status label) moves up with this, narrowing the gap to the avatar
+     bar above. */
+  top: 74px;
+  right: 12px;
   z-index: 12;
+  /* Hit area only — the visible dome is .push-button-collar. No plate,
+     no border, no background; the round dome sits directly on the
+     canvas surface. Width/height give a slightly generous click target
+     around the 30px dome. */
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border-radius: 6px;
-  border: 1px solid var(--color-border-subtle, rgba(0,0,0,0.12));
-  background: var(--color-pure-white, #fff);
-  color: var(--color-ink-strong, #2a2a2a);
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-  transition: background 120ms ease-out, transform 120ms ease-out;
 }
-.canvas-overlay-btn:hover {
-  background: var(--color-bg-hover, #f5f5f5);
+.push-button.hidden { display: none; }
+
+/* Hover tooltip — mirrors .presence-avatar::after so the visual style
+   matches the avatar-bar tooltips. Native `title` was replaced with
+   `data-tooltip` because the browser tooltip has a ~750ms delay that
+   can't be configured; this CSS-only tooltip appears in 120ms.
+   Right-anchored to the button's right edge so it can never extend
+   past the canvas edge — the button sits near the right side of the
+   screen (under the own avatar), so a centered tooltip would clip. */
+.push-button::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: #1f2024;
+  color: #ffffff;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 120ms, transform 120ms;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
-.canvas-overlay-btn:active {
-  transform: scale(0.96);
+.push-button:hover::after {
+  opacity: 1;
+  transform: translateY(0);
 }
-.canvas-overlay-btn svg {
-  width: 14px;
-  height: 14px;
+
+/* Status label above the button. Tracking → ember-orange "Tracking";
+   not tracking → muted gray "Not tracking". Sits at the MY GRAPHS /
+   Title section-label y so the row of section labels stays aligned.
+   Same uppercase letter-spaced styling as the MY GRAPHS label, at
+   roughly half the font size. */
+.push-button-status {
+  position: absolute;
+  /* Aligns the BOTTOM of the status text with the bottom of the "Title"
+     label text in the right panel. "Title" text bottom y≈100 (form top
+     86 + 13px glyph + 1px line-leading). Button top y=104, so status
+     line-box bottom needs to land at y≈101 → calc(100% + 3px). */
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-label);
+  font-size: 7px;
+  /* Tight line-height so the line-box bottom equals the glyph bottom —
+     keeps the alignment math predictable across fonts. */
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: 0.125em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-ember-orange);
+  pointer-events: none;
+  transition: color 180ms ease-out;
+}
+.push-button:not(.is-tracking) .push-button-status {
+  color: #a09c95;
+}
+
+/* Cream raised dome — the dominant feature. Horizontally-centered
+   radial highlight (slightly top-lit) + symmetric vertical drop shadow,
+   so the dome's visual center matches its geometric center. Otherwise
+   an asymmetric shadow pulls the perceived centroid down-right and the
+   cap (which is geometric-centered) reads as off-center. */
+.push-button-collar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 30%,
+    #f4eee2 0%,
+    #e7dec9 65%,
+    #d7cdb6 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.06),
+    0 2px 4px rgba(0, 0, 0, 0.14);
+}
+
+/* Pulse halo — paints on the cream dome itself in the ring around the
+   cap. Transparent at the cap's footprint (inner ~40%), peaks just
+   outside the cap (~55%), fades toward the dome edge. Opacity-only
+   pulse keeps the ring at fixed size. */
+.push-button-collar::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    transparent 38%,
+    color-mix(in srgb, var(--color-ember-orange) 65%, transparent) 55%,
+    color-mix(in srgb, var(--color-ember-orange) 22%, transparent) 75%,
+    transparent 95%);
+  opacity: 0;
+  pointer-events: none;
+  /* Animation is fully removed when not tracking (rather than just paused)
+     so the halo can't be left frozen mid-pulse at non-zero opacity. */
+}
+.push-button.is-tracking .push-button-collar::before {
+  animation: push-button-pulse 2.6s ease-in-out infinite;
+}
+
+/* Orange cap — flat solid disc in the app's ember-orange (same token
+   as NEW GRAPH / MY GRAPHS labels). No spherical gradient; the cap
+   reads as a coin-flat disc. A thin lighter-cream ring around it via
+   box-shadow acts as the cap's "container" — the bezel lip where the
+   cap sits in the dome. */
+.push-button-cap {
   display: block;
-  fill: currentColor;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--color-ember-orange);
+  /* Default = tracking on. Thin cream bezel ring + a subtle top inset
+     shadow so the cap reads as set into the bezel, not floating on it.
+     No black border. */
+  box-shadow:
+    0 0 0 1.5px #f5ecda,
+    inset 0 1px 1px rgba(0, 0, 0, 0.18);
+  transition:
+    transform 180ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 180ms ease-out;
 }
-/* Two `.hidden` rules with different specificity:
-   - .canvas-overlay-btn.hidden (same element, both classes) hides the
-     BUTTON itself — e.g. when no agent is active and the follow toggle
-     shouldn't be shown.
-   - .canvas-overlay-btn .hidden (descendant) hides the alternate ICON
-     inside the button — pause vs play swap visibility via this class.
-   The descendant form alone was leaving the button visible when its
-   class said it should be hidden. */
-.canvas-overlay-btn.hidden {
-  display: none;
+
+/* Tracking OFF — cap stays geometrically centered in the dome (no
+   vertical offset; an offset would make the beige look thicker on one
+   side). Inactivity reads from the muted gray color + drop shadow.
+   The cream bezel ring stays. */
+.push-button:not(.is-tracking) .push-button-cap {
+  background: #a09c95;
+  box-shadow:
+    0 0 0 1.5px #f5ecda,
+    0 1px 2px rgba(0, 0, 0, 0.20),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.10);
 }
-.canvas-overlay-btn .hidden {
-  display: none;
+
+/* Held-down feedback — extra-pressed inset while the mouse is down. */
+.push-button:active .push-button-cap {
+  transform: translateY(1px);
+  box-shadow:
+    0 0 0 1.5px #f5ecda,
+    inset 0 2px 3px rgba(0, 0, 0, 0.30);
+  transition-duration: 80ms;
+}
+
+@keyframes push-button-pulse {
+  0%, 100% { opacity: 0; }
+  50%      { opacity: 0.50; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .push-button-collar::before { animation: none; }
+  .push-button.is-tracking .push-button-collar::before { opacity: 0.30; }
 }

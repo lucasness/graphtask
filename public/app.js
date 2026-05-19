@@ -5173,11 +5173,19 @@ function adjustPresenceBarOffset() {
   } else {
     bar.style.right = '';
   }
-  // Keep the follow-toggle button aligned with the bar's right edge so it
-  // sits directly under the own (rightmost) avatar. Matches inline style;
-  // empty string falls back to the CSS default `right: 16px`.
+  // Keep the follow-toggle button's CENTER aligned under the own avatar's
+  // center (LU in the screenshots). Avatar is 32px wide; button is 40px
+  // wide; matching `right` values would put the avatar's right edge at
+  // the button's right edge but leave the button's center 4px to the
+  // left of the avatar's center. Offset by (button_w - avatar_w) / 2 = 4
+  // so centers align.
   const btn = document.getElementById('btn-follow-toggle');
-  if (btn) btn.style.right = bar.style.right || '';
+  if (btn) {
+    const barRight = bar.style.right;
+    btn.style.right = barRight
+      ? `${parseFloat(barRight) - 4}px`
+      : '';  // fall back to CSS default `right: 12px` which is 16 - 4
+  }
 }
 
 // Watch the panel's class attribute and re-run the presence-bar adjustment
@@ -6092,20 +6100,24 @@ function updateFollowToggleUI() {
   if (wasHidden && typeof adjustPresenceBarOffset === 'function') {
     adjustPresenceBarOffset();
   }
-  // Pause icon = following is ACTIVE (click to pause).
-  // Play icon  = following is PAUSED  (click to resume).
-  const pause = btn.querySelector('.icon-pause');
-  const play  = btn.querySelector('.icon-play');
-  if (pause && play) {
-    if (followToggleEnabled) {
-      pause.classList.remove('hidden');
-      play.classList.add('hidden');
-      btn.title = 'Pause agent-follow';
-    } else {
-      pause.classList.add('hidden');
-      play.classList.remove('hidden');
-      btn.title = 'Resume agent-follow';
-    }
+  // Push-button: .is-tracking means camera follow is active (cap
+  // pressed in + orange pulse halo runs). Absence means follow is
+  // paused. CSS drives the press animation and halo play-state.
+  const status = btn.querySelector('.push-button-status');
+  if (followToggleEnabled) {
+    btn.classList.add('is-tracking');
+    // Custom CSS tooltip on hover (via [data-tooltip] + ::after). The
+    // native `title` attribute also fires a system tooltip but with a
+    // browser-controlled ~750ms delay, so we use data-tooltip instead
+    // to match the avatar bar's instant tooltip behavior.
+    btn.dataset.tooltip = 'Stop tracking';
+    btn.setAttribute('aria-pressed', 'true');
+    if (status) status.textContent = 'Live';
+  } else {
+    btn.classList.remove('is-tracking');
+    btn.dataset.tooltip = 'Track agent';
+    btn.setAttribute('aria-pressed', 'false');
+    if (status) status.textContent = 'Quiet';
   }
 }
 

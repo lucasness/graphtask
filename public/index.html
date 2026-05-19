@@ -77,19 +77,21 @@
        force-directed simulation. -->
   <div id="peer-cursor-layer"></div>
 
-  <!-- Agent-follow pause/play toggle. Hidden until at least one agent is
-       active on the graph. Top-left of the canvas, below the cursor
-       layer (z-index 12). JS swaps the icon between play (paused) and
-       pause (auto-following). -->
-  <button type="button" id="btn-follow-toggle" class="canvas-overlay-btn hidden"
-          title="Pause/resume agent follow">
-    <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true">
-      <rect x="3.5" y="2.5" width="3" height="11" rx="0.75"/>
-      <rect x="9.5" y="2.5" width="3" height="11" rx="0.75"/>
-    </svg>
-    <svg class="icon-play hidden" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M4 2.5 L4 13.5 L13 8 Z"/>
-    </svg>
+  <!-- Agent-follow push button. Hidden until at least one agent is
+       active on the graph. Layered like a real-world push-button on a
+       plate: outer plate → dark recessed well → cream-colored collar
+       around the cap → orange cap. Pressed (.is-tracking) sinks the cap
+       into the collar and runs a faint orange pulse in the cream ring.
+       Released = follow paused. -->
+  <button type="button" id="btn-follow-toggle"
+          class="push-button is-tracking hidden"
+          data-tooltip="Stop tracking"
+          aria-label="Toggle agent tracking"
+          aria-pressed="true">
+    <span class="push-button-status">Live</span>
+    <span class="push-button-collar" aria-hidden="true">
+      <span class="push-button-cap"></span>
+    </span>
   </button>
 
   <div id="panel" class="panel hidden">
