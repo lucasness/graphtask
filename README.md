@@ -984,3 +984,19 @@ Human-vs-agent rule unchanged: human always wins.
 - Schema changes that alter column types still need a manual `DROP TABLE`
   on existing databases; `IF NOT EXISTS` won't pick up type diffs.
 - The frontend is intentionally not modularized yet.
+
+## Roadmap / planned
+
+- **Subagent fanout.** Today one agent token = one Claude Code session
+  walking the graph sequentially. Future: spawn N subagents in parallel,
+  each picking up a different ready task. Builds on existing infrastructure
+  (multi-agent presence, owner-aware follow filter, owner-agent OCC
+  precedence) but adds the coordination layer that hands out tasks,
+  prevents two subagents from grabbing the same one, and surfaces each
+  subagent as a distinct presence in the avatar bar.
+- **Pause/play that actually pauses the agent.** Today the toggle is
+  local-only — it just stops the viewer's camera from following. Future:
+  use the broadcasted `announce_focus` from the SKILL.md helpers as the
+  ack point. When paused, the server holds the next PATCH from that
+  writer until resumed, giving the human a chance to intercept ("wait,
+  don't touch that edge").
