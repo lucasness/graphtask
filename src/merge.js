@@ -62,7 +62,9 @@ export function mergeFields(base, writerEdit, current, ctx = {}) {
     writerOwnerId = null,
     currentOwnerId = null,
     graphOwnerId = null,
+    protectedFromAgentRemoval = [],
   } = ctx;
+  const protectedKeys = new Set(protectedFromAgentRemoval);
   const merged = { ...current };
   const conflicts = [];
 
@@ -76,6 +78,23 @@ export function mergeFields(base, writerEdit, current, ctx = {}) {
     const b = base?.[k];
     const w = writerEdit?.[k];
     const c = current?.[k];
+
+    // UI-managed key protection: a key that the agent didn't include in its
+    // new edit (w === undefined) but that existed in base is treated as
+    // "agent didn't mention this" rather than "agent removed it". Without
+    // this, an agent rebuilding frontmatter from scratch silently wipes
+    // user-set positions/colors. Explicit `null` (or any defined value)
+    // bypasses the protection — that's the escape hatch when an agent
+    // legitimately wants to clear the key.
+    if (
+      writerType === 'agent' &&
+      w === undefined &&
+      b !== undefined &&
+      protectedKeys.has(k)
+    ) {
+      merged[k] = c;
+      continue;
+    }
 
     const writerChanged = !deepEqual(b, w);
     const otherChanged = !deepEqual(b, c);

@@ -180,4 +180,95 @@ describe('mergeFields', () => {
       expect(merged.title).toBe('W');
     });
   });
+
+  describe('protectedFromAgentRemoval', () => {
+    it('agent omitting a protected key preserves current value', () => {
+      // The drag-then-loop scenario: base had x=100, user dragged so
+      // current.x=250, agent rebuilds frontmatter without x.
+      const base = { title: 'A', status: 'todo', x: 100, y: 200 };
+      const writer = { title: 'A', status: 'in_progress' };
+      const current = { title: 'A', status: 'todo', x: 250, y: 380 };
+      const { merged, conflicts } = mergeFields(base, writer, current, {
+        writerType: 'agent',
+        currentWriterType: 'human',
+        protectedFromAgentRemoval: ['x', 'y', 'color'],
+      });
+      expect(merged.x).toBe(250);
+      expect(merged.y).toBe(380);
+      expect(merged.status).toBe('in_progress');
+      expect(conflicts).toEqual([]);
+    });
+
+    it('agent explicitly setting protected key to null bypasses protection', () => {
+      // Escape hatch: an agent that really does want to clear x sends null
+      // explicitly. `w === null` is defined, so the protection short-circuit
+      // doesn't fire and the merge applies the clear.
+      const base = { x: 100 };
+      const writer = { x: null };
+      const current = { x: 100 };
+      const { merged } = mergeFields(base, writer, current, {
+        writerType: 'agent',
+        currentWriterType: 'human',
+        protectedFromAgentRemoval: ['x'],
+      });
+      expect(merged.x).toBe(null);
+    });
+
+    it('human writer is not protected — omission still removes the key', () => {
+      // Protection only applies to writerType === 'agent'. Humans always
+      // know what they're sending (the canvas always includes x/y).
+      const base = { x: 100 };
+      const writer = {};
+      const current = { x: 100 };
+      const { merged } = mergeFields(base, writer, current, {
+        writerType: 'human',
+        currentWriterType: 'human',
+        protectedFromAgentRemoval: ['x'],
+      });
+      expect(merged.x).toBe(undefined);
+    });
+
+    it('unprotected key omission still removes (normal merge)', () => {
+      // Only keys in the protected list are special. Custom frontmatter
+      // keys the agent drops are still treated as removals.
+      const base = { custom: 'value' };
+      const writer = {};
+      const current = { custom: 'value' };
+      const { merged } = mergeFields(base, writer, current, {
+        writerType: 'agent',
+        currentWriterType: 'human',
+        protectedFromAgentRemoval: ['x', 'y'],
+      });
+      expect(merged.custom).toBe(undefined);
+    });
+
+    it('protection no-ops when base also did not have the key', () => {
+      // Agent omits x AND base had no x — nothing to protect. Falls
+      // through to normal merge (writerChanged is false, current wins).
+      const base = { title: 'A' };
+      const writer = { title: 'A new' };
+      const current = { title: 'A', x: 999 };
+      const { merged } = mergeFields(base, writer, current, {
+        writerType: 'agent',
+        currentWriterType: 'human',
+        protectedFromAgentRemoval: ['x'],
+      });
+      expect(merged.x).toBe(999);
+      expect(merged.title).toBe('A new');
+    });
+
+    it('agent explicitly updating a protected key still wins (when no human conflict)', () => {
+      // Protection prevents *implicit removal*, not normal field updates.
+      // Agent sending an explicit new x value should land normally.
+      const base = { x: 100 };
+      const writer = { x: 500 };
+      const current = { x: 100 };
+      const { merged } = mergeFields(base, writer, current, {
+        writerType: 'agent',
+        currentWriterType: 'agent',
+        protectedFromAgentRemoval: ['x'],
+      });
+      expect(merged.x).toBe(500);
+    });
+  });
 });

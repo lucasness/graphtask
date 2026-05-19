@@ -168,6 +168,11 @@ router.patch('/:id', validateId, async (req, res) => {
         writerOwnerId: req.user?.id ?? null,
         currentOwnerId: cur.last_modified_by_user ?? null,
         graphOwnerId: cur.graph_owner_user_id ?? null,
+        // UI-managed frontmatter keys: the canvas writes these whenever a
+        // user drags or recolors a node. Agents that rebuild content from
+        // scratch typically don't include them, so without this list they'd
+        // silently wipe user state on every PATCH.
+        protectedFromAgentRemoval: ['x', 'y', 'color'],
       },
     );
     const out = unflattenTask(merged);

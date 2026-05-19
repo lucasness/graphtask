@@ -335,6 +335,11 @@ router.patch('/:id', validateId, async (req, res) => {
         writerOwnerId: req.user?.id ?? null,
         currentOwnerId: existing.last_modified_by_user ?? null,
         graphOwnerId: existing.graph_owner_user_id ?? null,
+        // UI-managed edge keys: hover-handle drag writes `meta.curve`,
+        // palette writes `meta.color`. Agents that PATCH edges without
+        // those keys (typical when rewiring source/target/type) would
+        // otherwise wipe user bezier shaping and color.
+        protectedFromAgentRemoval: ['meta.color', 'meta.curve'],
       },
     );
     finalRow = unflattenEdge(merged);

@@ -309,7 +309,11 @@ EOF
 )"
 ```
 
-Notice the PATCH body has no `x`/`y` or `color` keys, but the user's drag positions and color tweaks will survive — the server's mergeFields sees they're unchanged in `base_content` vs your new content, present in current, and preserves them.
+Notice the PATCH body has no `x`/`y` or `color` keys, but the user's drag positions and color tweaks will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`. Edge protections: `meta.color`, `meta.curve`.
+
+This protection only covers that fixed list. Custom frontmatter keys you drop from a rewritten content blob are still treated as removals — if you want them to survive across PATCHes, include them yourself (read existing frontmatter from `base_content`, splice in your changes, send the merged blob).
+
+**Escape hatch.** If you legitimately want to clear a protected key (e.g. user asks you to reset a node's position), send the key with an explicit `null` value. `null` is defined, so the protection short-circuit doesn't fire and the clear lands.
 
 **Without OCC fields, the PATCH falls back to blind replace** and you'll silently wipe any UI keys the human is managing. Always send `base_version` + `base_content`.
 

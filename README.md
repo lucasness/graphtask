@@ -954,6 +954,30 @@ Human-vs-agent rule unchanged: human always wins.
   the server resolves every documented scenario itself, so it normally
   returns 200 with the merged row.
 
+  **UI-managed key protection.** A subtle case: an agent that rebuilds
+  frontmatter from scratch (typical, since the PATCH body is a full
+  content blob) ends up with `writerEdit.x === undefined` even though
+  base had `x=100`. The naive merge reads that as "agent removed x" and
+  wipes the value — every PATCH after a user drag silently snaps the
+  node back. To prevent this, routes pass a `protectedFromAgentRemoval`
+  list into `mergeFields`. When the writer is an agent and the new
+  edit omits a key in that list (and the key existed in base), the
+  merge treats it as "didn't mention" rather than "removed" and
+  preserves the current value. Tasks protect `x`, `y`, `color`; edges
+  protect `meta.color`, `meta.curve`. An agent that genuinely wants to
+  clear one of these sends an explicit `null` — `null` is defined, so
+  the protection short-circuit doesn't fire and the clear lands.
+
+  *Why not a partial-update API instead?* A dedicated
+  `PATCH {body, meta_patch}` endpoint where agents declare scope
+  explicitly is semantically cleaner, but it doubles the agent surface
+  (agents would have to choose between full-content and partial PATCH
+  on every write) and offers no protection when the agent picks the
+  wrong endpoint. The protected-key list is one place, enforced by
+  the server, with zero new API surface; the only cost is needing an
+  explicit `null` escape hatch for the rare "I really do want to clear
+  this" case.
+
 ---
 
 ## Where To Look First
@@ -985,18 +1009,92 @@ Human-vs-agent rule unchanged: human always wins.
   on existing databases; `IF NOT EXISTS` won't pick up type diffs.
 - The frontend is intentionally not modularized yet.
 
-## Roadmap / planned
+## Roadmap
+
+The canonical "what's next" list — everything planned, deferred, or
+explicitly rejected lives here so contributors don't re-litigate the
+same choices.
+
+### Planned
 
 - **Subagent fanout.** Today one agent token = one Claude Code session
   walking the graph sequentially. Future: spawn N subagents in parallel,
-  each picking up a different ready task. Builds on existing infrastructure
-  (multi-agent presence, owner-aware follow filter, owner-agent OCC
-  precedence) but adds the coordination layer that hands out tasks,
-  prevents two subagents from grabbing the same one, and surfaces each
-  subagent as a distinct presence in the avatar bar.
+  each picking up a different ready task. Builds on existing
+  infrastructure (multi-agent presence, owner-aware follow filter,
+  owner-agent OCC precedence, `announce_focus` from SKILL.md) but adds
+  the coordination layer that hands out tasks and surfaces each subagent
+  as a distinct presence in the avatar bar.
+
+  Still missing:
+  - **Coordination layer** — hand out ready tasks and prevent two
+    subagents from claiming the same one. Could be a server-side
+    `claim` endpoint, or rely on `/tasks/ready` polling + race on
+    first-PATCH-to-`in_progress`.
+  - **Spawn mechanism** — currently a user has to manually start N
+    Claude Code sessions each with its own `gt_*` token. Could be an
+    in-app "spawn subagents" action that mints transient tokens and
+    shells out.
+  - **Per-subagent identity beyond `writer_id`** — so the avatar bar
+    shows "Worker A", "Worker B" instead of seven generic robots.
+
 - **Pause/play that actually pauses the agent.** Today the toggle is
   local-only — it just stops the viewer's camera from following. Future:
   use the broadcasted `announce_focus` from the SKILL.md helpers as the
   ack point. When paused, the server holds the next PATCH from that
   writer until resumed, giving the human a chance to intercept ("wait,
   don't touch that edge").
+
+### Deferred
+
+- **Prod-Clerk cutover.** Phase B B7 mode 4 (Hosted, Clerk prod) is the
+  only deployment-matrix row not verified end-to-end. Marked done on
+  2026-05-13 anyway because the blocker is ops, not code — modes 1–3 +
+  dev mode 4 share the same Clerk adapter, so the code path is proven.
+
+  Why deferred: Clerk's production environment requires a verified
+  stable domain in the dashboard's "Domains" section before it'll issue
+  `pk_live_…` / `sk_live_…` keys. `graphtask.dev.wafer.works` is a
+  dev/preview hostname, not the production target. Until a real prod
+  domain exists there's nothing to verify.
+
+  Cutover procedure when ops is unblocked:
+  1. Stand up the prod domain (out of scope for this repo).
+  2. Add the domain to <https://dashboard.clerk.com> → app →
+     Production → Domains.
+  3. Copy `pk_live_…` / `sk_live_…` from Production → API Keys.
+  4. Edit `.env` to replace both `pk_test_…` / `sk_test_…` lines with
+     the live values.
+  5. Redeploy. The boot log will show the Clerk adapter coming up
+     against the prod app and `/api/config` will return the `pk_live_…`
+     publishable key.
+  6. Browser verification: sign-in OTP comes from the prod Clerk app's
+     sender (different sender domain than dev — that's the only
+     user-visible diff during sign-in).
+
+  Gotcha — **Clerk dev and prod are separate user namespaces.** Same
+  email, different `user_xxx`. The `users` table conflict key is
+  `(provider, provider_user_id)`, so signing into prod-Clerk creates a
+  brand-new row in the local `users` table with a new internal UUID.
+  Any graphs owned under a dev-keyed UUID will appear to the prod-keyed
+  identity as either "Shared with me" or "Access denied" depending on
+  `anon_role`. Mitigation if preservation matters:
+  `UPDATE graphs SET owner_user_id = <new> WHERE owner_user_id = <old>`
+  plus the same on `graph_members.user_id`. Skip if the DB is going to
+  be wiped anyway.
+
+- **Electric (Durable Streams + reactive queries).** Considered for
+  race-free concurrent editing, cross-device execution resume, and
+  reconnect-from-offset. Deferred 2026-05-04 after cost/benefit
+  analysis: the wins are too small for graphtask's usage profile (rare
+  same-instant collisions on a notetaking tool), and the concrete
+  lost-update bug it would solve was solvable with ~100 LOC of
+  Postgres-level optimistic concurrency instead. That OCC work shipped
+  (`version` + `last_modified_by` columns on tasks / edges / graphs,
+  three-way merge in `src/merge.js`).
+
+  Reconsider triggers — adopt Electric only when one of these is true:
+  1. Building a server-side Claude runtime for hosted agent sessions.
+  2. Real-time multi-user collaboration becomes a product requirement.
+  3. OCC under load produces user-visible friction (frequent 409
+     retries).
+  4. Electric ships a managed runtime that removes operational cost.
