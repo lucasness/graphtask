@@ -1045,6 +1045,31 @@ same choices.
   writer until resumed, giving the human a chance to intercept ("wait,
   don't touch that edge").
 
+- **Multi-view: same data, different lenses.** Same `tasks` + `edges`
+  rows, multiple rendering modes. The graph-DAG view (current) stays
+  the canonical edit surface; new views are alternate lenses that read
+  the same data and translate edits where they make sense. Ship one
+  view at a time:
+
+  - **Kanban** (first) — tasks grouped into columns by `status` (todo /
+    in_progress / review / done). Cards show title + body excerpt; drag
+    between columns issues a PATCH that flips `status`. Edges are
+    hidden or shown as small "depends on" badges; the graph view stays
+    the place to wire dependencies.
+  - **Tech tree** (follow-up) — Civilization-style layered DAG. Tasks
+    ordered into rows by topological depth (recursive prereq distance);
+    edges drawn between rows. Layout is computed, so the view is
+    primarily read-only — click a node to jump back to graph view with
+    that node selected.
+  - **Future views** — table view, calendar view, etc. — added one at
+    a time once the view-switcher infrastructure lands.
+
+  Shared scaffolding (built with the first view, reused by the rest):
+  per-graph view preference persisted in `graphs.settings`, a view-
+  switcher control in the toolbar, JS that swaps Cytoscape config +
+  DOM regions, and reconciled SSE / peer-cursor / follow-toggle
+  behavior across views.
+
 ### Deferred
 
 - **Prod-Clerk cutover.** Phase B B7 mode 4 (Hosted, Clerk prod) is the
