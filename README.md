@@ -1022,9 +1022,21 @@ same choices.
   walking the graph sequentially. Future: spawn N subagents in parallel,
   each picking up a different ready task. Builds on existing
   infrastructure (multi-agent presence, owner-aware follow filter,
-  owner-agent OCC precedence, `announce_focus` from SKILL.md) but adds
-  the coordination layer that hands out tasks and surfaces each subagent
-  as a distinct presence in the avatar bar.
+  owner-agent OCC precedence, `announce_focus` from SKILL.md) plus a
+  coordination layer that hands out tasks.
+
+  Note: Claude Code's `Agent` tool already works against graphtask
+  *today* — subagents inherit the parent's `.graphtask/agent-session.json`
+  and share its `writer_id`, so all writes go through correctly. The
+  data layer is safe. The caveat is visual telemetry: one avatar in
+  the bar regardless of N subagents, the peer cursor flips between
+  whichever subagent most-recently called `announce_focus`, and the
+  camera-follow toggle jumps between unrelated tasks. With 2-3
+  subagents this reads as "fast-paced"; with 7 it'd be chaotic.
+  Concurrent PATCHes to the *same task* by two subagents fall through
+  to last-write-wins (the owner-agent OCC precedence relies on
+  distinct writer_ids), but in practice subagents work on different
+  tasks so this is rare.
 
   Still missing:
   - **Coordination layer** — hand out ready tasks and prevent two
@@ -1035,8 +1047,14 @@ same choices.
     Claude Code sessions each with its own `gt_*` token. Could be an
     in-app "spawn subagents" action that mints transient tokens and
     shells out.
+
+  Intentionally deferred (only land if users ask):
   - **Per-subagent identity beyond `writer_id`** — so the avatar bar
-    shows "Worker A", "Worker B" instead of seven generic robots.
+    shows "Worker A", "Worker B" instead of one generic robot. Pure
+    polish: nothing breaks without it (see the note above). Would
+    require the parent agent to mint a fresh UUID + name per subagent
+    and pass them through the subagent's environment so the per-task
+    session file picks them up.
 
 - **Pause/play that actually pauses the agent.** Today the toggle is
   local-only — it just stops the viewer's camera from following. Future:
