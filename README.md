@@ -1018,51 +1018,6 @@ same choices.
 
 ### Planned
 
-- **Subagent fanout.** Today one agent token = one Claude Code session
-  walking the graph sequentially. Future: spawn N subagents in parallel,
-  each picking up a different ready task. Builds on existing
-  infrastructure (multi-agent presence, owner-aware follow filter,
-  owner-agent OCC precedence, `announce_focus` from SKILL.md) plus a
-  coordination layer that hands out tasks.
-
-  Note: Claude Code's `Agent` tool already works against graphtask
-  *today* — subagents inherit the parent's `.graphtask/agent-session.json`
-  and share its `writer_id`, so all writes go through correctly. The
-  data layer is safe. The caveat is visual telemetry: one avatar in
-  the bar regardless of N subagents, the peer cursor flips between
-  whichever subagent most-recently called `announce_focus`, and the
-  camera-follow toggle jumps between unrelated tasks. With 2-3
-  subagents this reads as "fast-paced"; with 7 it'd be chaotic.
-  Concurrent PATCHes to the *same task* by two subagents fall through
-  to last-write-wins (the owner-agent OCC precedence relies on
-  distinct writer_ids), but in practice subagents work on different
-  tasks so this is rare.
-
-  Still missing:
-  - **Coordination layer** — hand out ready tasks and prevent two
-    subagents from claiming the same one. Could be a server-side
-    `claim` endpoint, or rely on `/tasks/ready` polling + race on
-    first-PATCH-to-`in_progress`.
-  - **Spawn mechanism** — currently a user has to manually start N
-    Claude Code sessions each with its own `gt_*` token. Could be an
-    in-app "spawn subagents" action that mints transient tokens and
-    shells out.
-
-  Intentionally deferred (only land if users ask):
-  - **Per-subagent identity beyond `writer_id`** — so the avatar bar
-    shows "Worker A", "Worker B" instead of one generic robot. Pure
-    polish: nothing breaks without it (see the note above). Would
-    require the parent agent to mint a fresh UUID + name per subagent
-    and pass them through the subagent's environment so the per-task
-    session file picks them up.
-
-- **Pause/play that actually pauses the agent.** Today the toggle is
-  local-only — it just stops the viewer's camera from following. Future:
-  use the broadcasted `announce_focus` from the SKILL.md helpers as the
-  ack point. When paused, the server holds the next PATCH from that
-  writer until resumed, giving the human a chance to intercept ("wait,
-  don't touch that edge").
-
 - **Multi-view: same data, different lenses.** Same `tasks` + `edges`
   rows, multiple rendering modes. The graph-DAG view (current) stays
   the canonical edit surface; new views are alternate lenses that read
@@ -1124,6 +1079,57 @@ same choices.
   This is ongoing work, not a single PR — every UI change going
   forward should use the system rather than adding new hardcoded
   positions.
+
+### Reach
+
+Aspirational — interesting if we get to them, but we may never. Not
+actively planned; pull into Planned only if user feedback or a
+concrete need surfaces.
+
+- **Subagent fanout.** Today one agent token = one Claude Code session
+  walking the graph sequentially. Future: spawn N subagents in parallel,
+  each picking up a different ready task. Builds on existing
+  infrastructure (multi-agent presence, owner-aware follow filter,
+  owner-agent OCC precedence, `announce_focus` from SKILL.md) plus a
+  coordination layer that hands out tasks.
+
+  Note: Claude Code's `Agent` tool already works against graphtask
+  *today* — subagents inherit the parent's `.graphtask/agent-session.json`
+  and share its `writer_id`, so all writes go through correctly. The
+  data layer is safe. The caveat is visual telemetry: one avatar in
+  the bar regardless of N subagents, the peer cursor flips between
+  whichever subagent most-recently called `announce_focus`, and the
+  camera-follow toggle jumps between unrelated tasks. With 2-3
+  subagents this reads as "fast-paced"; with 7 it'd be chaotic.
+  Concurrent PATCHes to the *same task* by two subagents fall through
+  to last-write-wins (the owner-agent OCC precedence relies on
+  distinct writer_ids), but in practice subagents work on different
+  tasks so this is rare.
+
+  If we ever build this out, the pieces are:
+  - **Coordination layer** — hand out ready tasks and prevent two
+    subagents from claiming the same one. Could be a server-side
+    `claim` endpoint, or rely on `/tasks/ready` polling + race on
+    first-PATCH-to-`in_progress`.
+  - **Spawn mechanism** — currently a user has to manually start N
+    Claude Code sessions each with its own `gt_*` token. Could be an
+    in-app "spawn subagents" action that mints transient tokens and
+    shells out.
+  - **Per-subagent identity beyond `writer_id`** — so the avatar bar
+    shows "Worker A", "Worker B" instead of one generic robot. Pure
+    polish: nothing breaks without it (see the note above). Would
+    require the parent agent to mint a fresh UUID + name per subagent
+    and pass them through the subagent's environment so the per-task
+    session file picks them up.
+
+- **Pause/play that actually pauses the agent.** Today the toggle is
+  local-only — it just stops the viewer's camera from following.
+  Future: use the broadcasted `announce_focus` from the SKILL.md
+  helpers as the ack point. When paused, the server holds the next
+  PATCH from that writer until resumed, giving the human a chance to
+  intercept ("wait, don't touch that edge"). Reach because the local-
+  follow toggle covers most of the perceived need — true pause is a
+  nice-to-have, not a daily pain.
 
 ### Deferred
 
