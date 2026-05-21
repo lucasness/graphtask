@@ -6260,8 +6260,16 @@ function peerCursorRefresh() {
 }
 
 // Kanban variant: anchor cursors off card DOM rects instead of cy world
-// coords. Skips edge groups (kanban hides edges). Placement: just above
-// the card's top edge, left-aligned with the card.
+// coords. Skips edge groups (kanban hides edges).
+//
+// Placement uses a 3-step fallback so tall (stacked-initials or overflow)
+// markers don't end up squeezed into the ~4px column gap between cards:
+//   1. Above the card, left-aligned — the default.
+//   2. Right of the card, vertically centered — when above doesn't fit
+//      (prev card too close, or marker too tall for the column-header gap
+//      on first card).
+//   3. Left of the card — when right would clip the viewport (anchor card
+//      sits in the rightmost column).
 function peerCursorRefreshKanban(groups) {
   const layer = document.getElementById('peer-cursor-layer');
   if (!layer) return;
@@ -6282,13 +6290,33 @@ function peerCursorRefreshKanban(groups) {
     }
     peerCursorRenderGroup(entry.el, peers);
     const cardRect = card.getBoundingClientRect();
+    // Measure AFTER renderGroup so a stack's real bbox is used. Fall back
+    // for the first-paint case where the marker hasn't laid out yet.
     const markerRect = entry.el.getBoundingClientRect();
+    const markerW = markerRect.width || 80;
     const markerH = markerRect.height || 18;
-    // Place the marker just above the card's top, left-aligned. Convert from
-    // viewport-relative card rect to layer-relative coords.
     const GAP = 4;
-    const x = cardRect.left - layerRect.left;
-    const y = cardRect.top - layerRect.top - markerH - GAP;
+    // Available space above the card: distance from card top to the bottom
+    // of whatever is immediately above it (previous sibling card, or the
+    // column's sticky header if this is the first card).
+    const prevCard = card.previousElementSibling;
+    const column = card.closest('.kb-column');
+    const columnHeader = column && column.querySelector('.kb-column-header');
+    const aboveBound = prevCard
+      ? prevCard.getBoundingClientRect().bottom
+      : (columnHeader ? columnHeader.getBoundingClientRect().bottom : 0);
+    const aboveAvailable = cardRect.top - aboveBound;
+    let x, y;
+    if (aboveAvailable >= markerH + GAP) {
+      x = cardRect.left - layerRect.left;
+      y = cardRect.top - layerRect.top - markerH - GAP;
+    } else {
+      const wouldClipRight = cardRect.right + GAP + markerW > window.innerWidth;
+      x = wouldClipRight
+        ? cardRect.left - layerRect.left - markerW - GAP
+        : cardRect.right - layerRect.left + GAP;
+      y = cardRect.top - layerRect.top + (cardRect.height - markerH) / 2;
+    }
     entry.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   }
   // Clear stale markers for anchors no longer present.
