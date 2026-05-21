@@ -5945,6 +5945,26 @@ function shouldFollowSelectionFrom(writerId) {
 // we coalesce to ~2-3 POSTs.
 let _postLocalSelectionTimer = null;
 let _lastPostedSelectionKey = '';
+// Stable cursor anchor across re-broadcasts. Keeps the peer name pill
+// pinned to the same selected element while you grow / shrink a multi-
+// selection; only moves when the anchored element leaves the set.
+let _localAnchor = null; // { kind: 'node'|'edge', id } | null
+
+// Mirror a kanban card's .selected DOM class onto the matching cy node's
+// .selected class so postLocalSelection (which reads cy.nodes('.selected'))
+// broadcasts the full kanban selection — not just the one card whose
+// panel is open. cy stays in lock-step with kanban so the selection
+// survives view switches too.
+function mirrorKbCardSelectionToCy(card) {
+  if (!cy || !card) return;
+  const tid = card.dataset.taskId;
+  if (!tid) return;
+  const el = cy.getElementById(String(tid));
+  if (el.empty()) return;
+  if (card.classList.contains('selected')) el.addClass('selected');
+  else el.removeClass('selected');
+}
+
 function postLocalSelection() {
   if (_postLocalSelectionTimer) clearTimeout(_postLocalSelectionTimer);
   _postLocalSelectionTimer = setTimeout(() => {
@@ -5969,13 +5989,28 @@ function postLocalSelection() {
     const editing = (panelOpen && editingTaskId != null && !_panelOpenedProgrammatically)
       ? { kind: 'node', id: Number(editingTaskId) }
       : null;
-    // Cursor anchor: prefer the editing target, else the most recent
-    // single selection. Multi-selection => no anchor (cursor would be
-    // ambiguous; T257 will hide the label for stacked-empty-anchor peers).
+    // Cursor anchor: prefer the editing target, else stick to a stable
+    // member of the selection so the peer name pill doesn't disappear
+    // mid-multi-select. Nodes win over edges when both are selected.
+    // Keep the previous anchor if it's still in the set; otherwise pick
+    // the first remaining. Clears when the selection empties.
     let cursor_anchor = null;
-    if (editing) cursor_anchor = editing;
-    else if (nodeIds.length === 1) cursor_anchor = { kind: 'node', id: nodeIds[0] };
-    else if (edgeIds.length === 1) cursor_anchor = { kind: 'edge', id: edgeIds[0] };
+    if (editing) {
+      cursor_anchor = editing;
+    } else {
+      const candidates = nodeIds.length > 0
+        ? nodeIds.map((id) => ({ kind: 'node', id }))
+        : edgeIds.map((id) => ({ kind: 'edge', id }));
+      if (candidates.length > 0) {
+        const stillIn = _localAnchor && candidates.some(
+          (c) => c.kind === _localAnchor.kind && c.id === _localAnchor.id
+        );
+        if (!stillIn) _localAnchor = candidates[0];
+        cursor_anchor = _localAnchor;
+      } else {
+        _localAnchor = null;
+      }
+    }
     const key = JSON.stringify([nodeIds, edgeIds, editing, cursor_anchor]);
     if (key === _lastPostedSelectionKey) return;
     _lastPostedSelectionKey = key;
@@ -7189,6 +7224,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // multi-select), so do it here explicitly.
         if (currentView === 'kanban') {
           document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+          if (cy) cy.elements('.selected').removeClass('selected');
           updateKanbanToolbar();
         }
         e.preventDefault();
@@ -7347,6 +7383,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!card) {
       // Empty area: clear selection + close panel.
       document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+      if (cy) cy.elements('.selected').removeClass('selected');
       if (isPanelOpen()) hidePanel();
       updateKanbanToolbar();
       return;
@@ -7354,6 +7391,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isCmd(e)) {
       // Toggle this card; leave others alone.
       card.classList.toggle('selected');
+      mirrorKbCardSelectionToCy(card);
       const selected = document.querySelectorAll('.kb-card.selected');
       if (selected.length === 1) {
         const taskId = Number(selected[0].dataset.taskId);
@@ -7361,11 +7399,17 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (isPanelOpen()) {
         // 0 or 2+ selected — no single card to show in the inspector.
         hidePanel();
+      } else {
+        // Panel closed and selection still multi (or zero): the cy mirror
+        // changed but no panel transition runs postLocalSelection for us.
+        postLocalSelection();
       }
     } else {
       // Single click: replace selection.
       document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+      if (cy) cy.elements('.selected').removeClass('selected');
       card.classList.add('selected');
+      mirrorKbCardSelectionToCy(card);
       const taskId = Number(card.dataset.taskId);
       if (Number.isFinite(taskId)) showPanel({ taskId });
     }
