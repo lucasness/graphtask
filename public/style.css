@@ -3044,6 +3044,26 @@ body.presence-hidden .presence-eye:hover {
   color: var(--color-pure-white, #fff);
 }
 
+/* Kanban variant: lay stacked-peer chips out HORIZONTALLY instead of
+   vertically. Cards in a column have only ~8px of flex gap above each card,
+   so a tall vertical stack would overlap the previous card's body. A
+   horizontal row of small initial chips stays single-line-height — the
+   marker still sits just above the anchor card, only nicking the previous
+   card's bottom edge by a few pixels. Dots are hidden here because in a
+   horizontal arrangement they multiply visual noise without adding info
+   (the colored pill already encodes which peer). */
+.view-kanban .peer-cursor-stack {
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+.view-kanban .peer-cursor-stack .peer-cursor-row {
+  gap: 0;
+}
+.view-kanban .peer-cursor-stack .peer-cursor-dot {
+  display: none;
+}
+
 /* 5+ peers on the same anchor: one larger dot + an "AB & N others" pill.
    Dot is ~33% larger than the single-peer dot (6px → 8px) so the
    overflow chip reads as visually weightier. Pulse comes from the base
