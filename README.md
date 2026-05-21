@@ -45,7 +45,12 @@ brew install jq        # macOS — or: apt install jq / apk add jq
 # 3. Point the agent at the hosted instance
 export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
 
-# 4. Restart Claude Code so the new hooks load, then in any project:
+# 4. Mint and export your agent token — required on the hosted instance
+#    (see "Set up your agent token" below for the modal flow + persistence
+#    options). Without this, the skill's preflight refuses to run.
+export GRAPHTASK_AGENT_TOKEN=gt_...
+
+# 5. Restart Claude Code so the new hooks load, then in any project:
 cd ~/projects/your-project
 claude
 # Prompt: "Turn this plan into a graph" or "Track this in graphtask"
@@ -119,6 +124,10 @@ brew install jq        # macOS — or: apt install jq / apk add jq
 # 3. Point the agent at your local Docker container
 export GRAPHTASK_BASE_URL="http://localhost:3000"
 # (use the same HOST_PORT you set above if not the default)
+
+# 3b. If you opted into AUTH_PROVIDER=clerk on the container, also mint
+#     and export an agent token — see "Set up your agent token" below.
+#     The default Docker setup runs no-auth mode; skip this step in that case.
 
 # 4. Run Claude Code in any project you want to track
 cd ~/projects/your-project
@@ -256,6 +265,15 @@ Wipe these to reset client state without touching the database.
   toast.
 - `graphtask:sidebarCollapsed` — boolean for the sidebar's
   collapsed/expanded state.
+- `graphtask:view:<gid>` — per-graph view preference: `graph` (default)
+  or `kanban`. Set from the View dropdown in the graph settings modal
+  (under Appearance). Per-user, per-graph, never synced via SSE — two
+  collaborators on the same graph can pick different views independently.
+- `graphtask:presence-hidden` — `'1'` if the user has hidden the
+  presence chrome (avatar bar + LIVE push-button) via the top-right
+  eye icon. Per-user, global (applies to every graph + view). Toggled
+  by clicking the eye; the icon stays visible (faintly) so the user
+  can un-hide.
 
 `sessionStorage` (clears on tab close):
 
@@ -397,6 +415,10 @@ brew install jq        # macOS — or: apt install jq / apk add jq
 export GRAPHTASK_BASE_URL="http://localhost:3000"
 # (use the same PORT you set above if not the default)
 
+# 3b. If you set AUTH_PROVIDER=clerk in your .env, also mint and export an
+#     agent token — see "Set up your agent token" below. The default
+#     (AUTH_PROVIDER=none) needs no token; the skill works without one.
+
 # 4. Run Claude Code in any project you want to track
 cd ~/projects/your-project
 claude
@@ -410,6 +432,40 @@ The agent creates a graph on first use and writes its id to
 If you're hacking on graphtask itself, you can skip the personal install
 — `claude` run from inside the cloned repo auto-discovers the skill at
 `.claude/skills/graphtask/SKILL.md`.
+
+---
+
+## Set up your agent token (auth-enabled instances)
+
+If your graphtask instance has `AUTH_PROVIDER=clerk` (the hosted version
+always does; local / Docker setups only if you opted in), the agent
+needs a `gt_*` token to attribute writes to your account. Without one,
+the skill's preflight refuses to run on auth-enabled instances —
+the alternative is silently producing orphan graphs (owner-less,
+invisible in your "My graphs" sidebar).
+
+1. **Mint.** Sign in to the app, click the key icon in the sidebar,
+   click Generate. The modal shows the `gt_…` string **exactly once** —
+   copy it immediately. After that, only the hash is stored server-side;
+   if you lose the plaintext, delete the token and mint a new one.
+2. **Export it somewhere Claude Code will see it.** Pick whichever fits:
+   - **Shell rc** (`~/.zshrc`, `~/.bashrc`): `export GRAPHTASK_AGENT_TOKEN=gt_...`
+     — every future shell, every future Claude Code session.
+   - **`~/.claude/settings.json` `env` block**: scoped to Claude Code
+     specifically, works regardless of which shell you launched it from.
+   - **Current terminal only**: `export GRAPHTASK_AGENT_TOKEN=gt_...`
+     then run `claude` — works until you close the terminal.
+   - **Note:** project-level `.env` files are NOT auto-loaded by Claude
+     Code; don't expect that to work without extra plumbing.
+3. **Verify.** Open a Claude Code session, ask the agent to create a
+   test graph. It should print the URL after creating, and the graph
+   should appear in your "My graphs" sidebar (not "Shared with me" or
+   nowhere).
+
+To rotate a leaked or stale token, delete it from the Agent tokens
+panel and mint a new one. Tokens you've never used can be deleted
+freely — the modal lists creation date and last-used time so you can
+audit.
 
 ---
 
@@ -506,20 +562,26 @@ the agent creates a one-task graph for something trivial, push back:
 
 ## Hot Keys
 
-| Key | Behavior |
-|---|---|
-| `F` | Fit graph to viewport (preserves layout) |
-| `T` | Tidy: re-run layout with tight spacing, persist new positions, then fit. Overrides any custom node placements |
-| `G` | Create a node at the visible-area center |
-| `S` | Cycle selected node status; Enter saves, Esc cancels |
-| `B` | Open color palette for selected nodes/edges |
-| `E` | Start edge creation, cycle in-progress edge direction, or cycle selected edge direction |
-| `Enter` | Commit pending explicit edit session |
-| `Cmd/Ctrl+Enter` | Commit new-node creation from anywhere |
-| `Esc` | Cancel current edit, close panel, or clear selection |
-| `Backspace/Delete` | Open delete confirmation |
-| Arrow keys | Move selection to nearest node/edge in that direction; inside color palette, navigate swatches |
-| Cmd/Ctrl drag | Rubber-band select nodes and edge midpoints |
+The "View" column indicates which views the key is active in. Graph =
+the canonical cytoscape view; Kanban = the column-grouped lens.
+Cmd/Ctrl-modified shortcuts and overlay-internal keys (Enter/Esc inside
+an edit overlay) always apply.
+
+| Key | View | Behavior |
+|---|---|---|
+| `F` | Graph | Fit graph to viewport (preserves layout) |
+| `T` | Graph | Tidy: re-run layout with tight spacing, persist new positions, then fit. Overrides any custom node placements |
+| `G` | Both | Graph: create a node at the visible-area center. Kanban: create a new task in the selected card's column (or Todo if no selection) |
+| `S` | Both | Graph: cycle selected node status; Enter saves, Esc cancels. Kanban: directly cycle selected card's status (drag is the primary UX; S is "next status, no confirm") |
+| `B` | Graph | Open color palette for selected nodes/edges |
+| `E` | Graph | Start edge creation, cycle in-progress edge direction, or cycle selected edge direction |
+| `Enter` | Graph | Commit pending explicit edit session |
+| `Cmd/Ctrl+Enter` | Both | Commit new-node creation from anywhere (graph view); save panel edits (both views) |
+| `Esc` | Both | Cancel current edit, close panel, or clear selection |
+| `Backspace/Delete` | Graph | Open delete confirmation |
+| Arrow keys | Graph | Move selection to nearest node/edge in that direction; inside color palette, navigate swatches |
+| Cmd/Ctrl drag | Graph | Rubber-band select nodes and edge midpoints |
+| `Cmd/Ctrl+K` | Both | Open settings |
 
 ---
 
@@ -783,6 +845,51 @@ playbook.
 
 ---
 
+## Views — per-graph view preference
+
+The canvas region renders one of two views: **Graph** (cytoscape DAG —
+the canonical edit surface) or **Kanban** (four-column board grouped by
+status). Tasks + edges are unchanged; the view is a render lens.
+
+**Where it lives.** Graph settings modal → Appearance section → View
+dropdown (above Font). Two options: `Graph` (default), `Kanban`.
+
+**Per-user, per-graph, never synced.** The choice writes to
+`localStorage['graphtask:view:<gid>']` — client-only, no server PATCH,
+no SSE broadcast. Two collaborators on the same graph can sit in
+different views; flipping yours doesn't change theirs. Each graph
+remembers its own setting per browser.
+
+**Kanban specifics:**
+- Columns are status (todo / in_progress / review / done). Column title
+  text is colored per status (grey / orange / yellow / green).
+- Cards: title + 2-line body excerpt + optional left color bar from
+  `meta.color`. Sorted within column by `updated_at DESC`.
+- Click a card → opens the existing right-side inspector. The kanban
+  board shifts left if the panel would cover the selected card's
+  column, so the column stays visible.
+- Drag a card to a different column → optimistic move + PATCH `status`
+  with OCC fields; flash on the destination card. SSE re-buckets for
+  other tabs/agents with the same flash.
+- Hotkeys: `G` creates a new task in the selected column (or Todo); `S`
+  cycles status of the selected card (one-press, no confirm — drag is
+  the primary UX). F/T/E/B are graph-only and no-op in kanban.
+- Empty columns show a "Drop tasks here" placeholder.
+- Mobile (<768px): horizontal scroll, one column at a time via
+  `scroll-snap`.
+
+**Cross-view presence.** Peer selection underlays + cursor pills work
+across both views off the same `peerSelectionState`. A peer selecting
+a task in graph view shows up as a colored outline + name pill on the
+corresponding card in kanban, and vice versa.
+
+**Eye toggle.** Top-right corner has a tiny eye icon (visible on hover
+over the avatar bar / LIVE button) that hides both the avatar bar and
+the LIVE push-button. State is `localStorage['graphtask:presence-hidden']`
+— per-user, global, applies to both views.
+
+---
+
 ## Frontend Model
 
 The frontend has four main regions:
@@ -794,7 +901,9 @@ The frontend has four main regions:
   paints nodes and edges. Styling is driven by element data (`status`,
   `color`, `edgeType`, `curve`) and transient classes (`selected`, `editing`,
   `leaf`, `dir-backward`, `edge-type-editing`, `edge-hover-target`,
-  `preview`, `phantom`, `agent-flash-*`).
+  `preview`, `phantom`, `agent-flash-*`). In kanban view, `#cy` is
+  hidden and `#kanban` (a separate fixed container in the same region)
+  renders the column board.
 - **Side panel**: `#panel` is a resizable right-side inspector for node
   title, status, and markdown body. Opening it recenters the selected node
   in the visible canvas area (sidebar-aware via `cy.width()`).
@@ -1021,27 +1130,44 @@ same choices.
 - **Multi-view: same data, different lenses.** Same `tasks` + `edges`
   rows, multiple rendering modes. The graph-DAG view (current) stays
   the canonical edit surface; new views are alternate lenses that read
-  the same data and translate edits where they make sense. Ship one
-  view at a time:
+  the same data and translate edits where they make sense.
 
-  - **Kanban** (first) — tasks grouped into columns by `status` (todo /
+  **Shipped:**
+  - **Kanban** — tasks grouped into columns by `status` (todo /
     in_progress / review / done). Cards show title + body excerpt; drag
-    between columns issues a PATCH that flips `status`. Edges are
-    hidden or shown as small "depends on" badges; the graph view stays
-    the place to wire dependencies.
-  - **Tech tree** (follow-up) — Civilization-style layered DAG. Tasks
-    ordered into rows by topological depth (recursive prereq distance);
-    edges drawn between rows. Layout is computed, so the view is
-    primarily read-only — click a node to jump back to graph view with
-    that node selected.
-  - **Future views** — table view, calendar view, etc. — added one at
-    a time once the view-switcher infrastructure lands.
+    between columns issues a PATCH that flips `status` (OCC three-way
+    merge handles concurrent drags). Edges hidden; the graph view stays
+    the place to wire dependencies. Selected via the View dropdown in
+    graph settings (Appearance → View); preference is per-user, per-graph,
+    client-only (`localStorage['graphtask:view:<gid>']`) — two
+    collaborators on the same graph can be in different views. See
+    *Views — per-graph view preference* below.
 
-  Shared scaffolding (built with the first view, reused by the rest):
-  per-graph view preference persisted in `graphs.settings`, a view-
-  switcher control in the toolbar, JS that swaps Cytoscape config +
-  DOM regions, and reconciled SSE / peer-cursor / follow-toggle
-  behavior across views.
+  **Planned views:**
+  - **Tech tree** — Civilization-style layered DAG. Tasks ordered into
+    rows by topological depth (recursive prereq distance); edges drawn
+    between rows. Layout is computed, so the view is primarily
+    read-only — click a node to jump back to graph view with that node
+    selected.
+  - **Future views** — table view, calendar view, etc. — added one at
+    a time once a second view shakes out the per-view abstractions
+    (see *Modular UI primitives* below).
+
+- **Modular UI primitives.** With Kanban shipped, several surfaces now
+  carry inline `if (currentView === 'kanban') { … }` branches: the
+  toolbar's button visibility (CSS-gated), the global keydown switch
+  (per-view branch), `peerCursorRefresh` (per-view positioning),
+  `applyPeerSelectionToCy` (parallel cy + card paint paths), and
+  `applyView` itself. Two views' worth of branching is fine; a third
+  starts to compound. Before view three (tech tree), refactor toward a
+  small interface pattern: a `View` shape that `GraphView`,
+  `KanbanView`, `TechTreeView`, etc. fulfill. Each view declares its
+  applicable selection modes, hotkeys, peer-anchor lookup, agent-follow
+  target, and rendered controls. Same idea applies to the hotkey legend
+  and any other UI surface that meaningfully diverges by view. Inline
+  conditionals are still cheap for two; pull the abstraction out before
+  view three lands so the third view doesn't double the per-view
+  conditional sprawl.
 
 - **Responsive layout system.** Most of the canvas chrome
   (`#presence-bar`, `.push-button`, `#panel`, peer-cursor placement,
@@ -1079,6 +1205,55 @@ same choices.
   This is ongoing work, not a single PR — every UI change going
   forward should use the system rather than adding new hardcoded
   positions.
+
+  **Current mobile state (iPhone-sized viewport).** Most of the app
+  holds up better than expected at phone width — the work below is
+  scoped to the specific things that don't:
+
+  - **Left sidebar (graphs list)** — open/close already works fine on
+    mobile, no changes needed.
+  - **Right side panel (node inspector)** — takes up way too much of
+    the viewport when it opens, leaving almost no canvas visible. On
+    mobile it should pull up from the **bottom** instead of sliding in
+    from the right: occupy the bottom ~40% of the viewport by default,
+    draggable up to read more, draggable down, dismissable. The top
+    section always keeps some of the graph visible behind it.
+  - **Avatar bar (top-right)** — bleeds over the right side panel on
+    mobile, doesn't seem to respect the panel's bounds the way it does
+    on desktop. Needs to either reflow when the panel is open or move
+    out of that corner entirely on small viewports.
+
+- **Configurable custom fields on graphs.** Today every task carries the
+  same fixed frontmatter (title, status, optional description / color /
+  position). A "custom fields" system would let a graph owner declare
+  additional typed fields — `priority: number`, `assignee: string`,
+  `due_date: date`, etc. — that every task in that graph then carries.
+  Field definitions live on the graph row; task `meta` carries the
+  values. Surfaces in the inspector (extra form rows), in the kanban
+  group-by picker, and in future views (table columns, calendar dates).
+
+- **Custom ordering.** Once custom fields exist, ordering follows. Per
+  graph, **per view**, persist a sort/grouping strategy:
+
+  - **Graph view** — order traversal by a custom numeric field (e.g.
+    `Priority`). Weights nodes for "find the highest-priority unblocked
+    task" queries; lets shortest-path / dependency-walking endpoints
+    optimize for total weight instead of edge count.
+  - **Kanban view** — drag-to-reorder within a column. Default to
+    `updated_at DESC` (current). Once dragged, save an explicit per-column
+    order so all viewers of the same graph see the same kanban layout.
+    Effectively each column gets its own ordered list, shared across
+    collaborators (unlike the per-user *view* preference, which is
+    intentionally personal).
+  - **Other views** — table sort columns, calendar date field
+    selection, etc. — all reduce to "which field on which view".
+
+  This is a big feature stack: custom fields first, then per-view
+  ordering on top. Cross-cuts schema (graph-level field defs, task
+  meta), API (validation per field type, ordering reads/writes), and
+  every view's render pipeline. Worth doing once the multi-view
+  infrastructure is exercised across two or three views and the
+  shape of "view-specific config" becomes clear.
 
 ### Reach
 

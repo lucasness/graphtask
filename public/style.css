@@ -218,6 +218,24 @@
      base :root default. */
   --red: var(--red-strong);
 
+  /* === Status semantic tokens (May 15 palette rotation) ===
+     One source of truth for status color across views. Both the kanban
+     column titles + flash backgrounds AND the graph view's cytoscape
+     style read these. Read DESIGN.md "Status semantic tokens" for the
+     rationale behind each color.
+       todo        — no hue, neutral storm grey
+       in_progress — amber: warm orange-tone, "actively working"
+       review      — green: calm, "ready for sign-off"
+       done        — indigo: settled, archival color
+     If a value here changes, both views update with no JS edits. */
+  --status-todo-stroke:        var(--color-storm);
+  --status-in-progress-stroke: #e88a1b;
+  --status-in-progress-fill:   #ffe7c5;
+  --status-review-stroke:      #49ca80;
+  --status-review-fill:        #deffe3;
+  --status-done-stroke:        #4f46e5;
+  --status-done-fill:          #e0e7ff;
+
   /* Cron-token aliases for any rules that reference them directly.
      Kept harmless under light by mapping to mymind equivalents. */
   --color-cron-black:     var(--color-canvas-white);
@@ -319,6 +337,290 @@ body {
   /* JS sets the inline background based on per-graph settings; this is
      just the initial paint before applySettings runs. */
   background: var(--canvas-bg);
+}
+
+/* Kanban view occupies the same canvas region as #cy; applyView() flips
+   `.hidden` on whichever container shouldn't be active. Cytoscape stays
+   mounted under the hidden #cy so view-flips don't trigger a re-init. */
+#kanban {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
+  background: var(--canvas-bg);
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-3);
+  /* 80px clears the presence chrome at top:16/right:12 AND the bottom-bar
+     toolbar at bottom:24 (~38px tall). Symmetric on all sides for balance. */
+  padding: 80px;
+  box-sizing: border-box;
+  overflow: hidden;
+  /* Transform is driven by adjustKanbanForPanel — shifts the board left so
+     the side panel doesn't cover the selected card's column. Expressive
+     ease matches the panel + sidebar transitions. */
+  transition: transform 0.3s cubic-bezier(0.19, 1, 0.22, 1);
+}
+/* Disable transition during panel drag — mousemove fires every frame and
+   would otherwise queue 300ms animations behind the cursor. */
+#kanban.kanban-no-transition {
+  transition: none;
+}
+
+/* Kanban column. flex:1 gives equal widths on desktop; mobile (B6) will
+   switch to overflow-x scroll with fixed min-width. */
+.kb-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cards);
+  overflow: hidden;
+}
+.kb-column-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: inherit;
+  border-bottom: 1px solid var(--color-mist);
+}
+/* Title color carries the status semantic — no separate status dot needed.
+   Each column's title takes the strong-tier hue of its status, matching the
+   graph-view convention for status underlays. */
+.kb-column-title {
+  font-family: var(--font-label);
+  font-size: var(--text-body);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.125em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kb-column[data-status="todo"]        .kb-column-title { color: var(--status-todo-stroke); }
+.kb-column[data-status="in_progress"] .kb-column-title { color: var(--status-in-progress-stroke); }
+.kb-column[data-status="review"]      .kb-column-title { color: var(--status-review-stroke); }
+.kb-column[data-status="done"]        .kb-column-title { color: var(--status-done-stroke); }
+.kb-column-count {
+  font-family: var(--font-body);
+  font-size: var(--text-meta);
+  color: var(--color-steel);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+.kb-column-add {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-steel);
+  cursor: pointer;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.kb-column-add:hover {
+  background: var(--color-blush-tint);
+  color: var(--color-graphite-nav);
+}
+.kb-column-add:active {
+  transform: scale(0.96);
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+.kb-column-cards {
+  /* `flex: 1 1 0` + `min-height: 0` constrains the flex item to its
+     parent's allocation so `overflow-y: auto` engages once content
+     exceeds the column height. `flex: 1 1 auto` would let content
+     size grow the item past its parent, suppressing scrollbars. */
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* Empty column placeholder. No JS — the `:empty` pseudo handles it. */
+.kb-column-cards:empty::before {
+  content: 'Drop tasks here';
+  display: block;
+  padding: var(--space-4) var(--space-3);
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  color: var(--color-ash);
+  font-style: italic;
+}
+
+/* Kanban card. Uniform 1px border on all sides; the per-task color bar lives
+   in the ::before pseudo so a transparent left border doesn't leave the top
+   border visually indented. padding-left bumped by 4px to clear the bar. */
+.kb-card {
+  position: relative;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  padding-left: calc(var(--space-3) + 4px);
+  cursor: pointer;
+  transition: background-color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+.kb-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--card-color, transparent);
+  border-top-left-radius: calc(var(--radius-md) - 1px);
+  border-bottom-left-radius: calc(var(--radius-md) - 1px);
+}
+.kb-card:hover {
+  background: var(--color-blush-tint);
+  box-shadow: var(--shadow-sm);
+}
+/* Panel footer with the Delete-task action. Outlined Red Pill per the
+   design's destructive-button family. Hidden until an existing task is
+   loaded (toggled by JS based on editingTaskId). */
+.panel-footer {
+  margin-top: auto;
+  padding-top: var(--space-4);
+  display: flex;
+  justify-content: center;
+}
+.panel-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: transparent;
+  border: 1px solid var(--red);
+  color: var(--red);
+  font-family: var(--font-label);
+  font-size: var(--text-body-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.053em;
+  padding: 8px 16px;
+  border-radius: var(--radius-buttons);
+  cursor: pointer;
+  transition: background-color 200ms ease;
+}
+.panel-delete-btn:hover {
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+.panel-delete-btn:active {
+  transform: scale(0.96);
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+.panel-footer.hidden { display: none; }
+
+/* Selected card — uses the local user's deterministic avatar color
+   (matches the graph-view convention where node.selected renders in
+   the user's own color). The --own-selection-color variable is set by
+   applyOwnSelectionColor() at presence-bootstrap; cobalt is the fallback
+   while presence isn't yet resolved. */
+.kb-card.selected {
+  border-color: var(--own-selection-color, var(--color-cobalt-link));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--own-selection-color, var(--color-cobalt-link)) 25%, transparent);
+}
+/* Peer presence on a kanban card. Mirrors the cy node convention:
+   peer-selected = solid colored outline; peer-editing = dashed outline.
+   --peer-color is set inline by applyPeerSelectionToCy. */
+.kb-card.peer-selected {
+  outline: 2px solid var(--peer-color, transparent);
+  outline-offset: -1px;
+}
+.kb-card.peer-editing {
+  outline: 2px dashed var(--peer-color, transparent);
+  outline-offset: -1px;
+}
+
+/* Drag-and-drop feedback. Card being dragged dims; column being hovered
+   gets an inset dashed cobalt outline so the indicator doesn't bump layout. */
+.kb-card.dragging {
+  opacity: 0.5;
+}
+.kb-column.drag-over {
+  outline: 2px dashed var(--color-cobalt-link);
+  outline-offset: -2px;
+}
+
+/* Flash highlight after a status change — pulses the card background in the
+   destination status's light-tier color, then fades back to white over 800ms.
+   Matches the graph-view "what just changed" flash convention. */
+/* Flash animations pulse the destination status's `fill` token, fading
+   back to white. Same status tokens as the column titles — touching the
+   token in :root updates both views' status visuals. */
+@keyframes kbFlashTodo        { from { background-color: var(--color-blush-tint); }       to { background-color: var(--color-pure-white); } }
+@keyframes kbFlashInProgress  { from { background-color: var(--status-in-progress-fill); } to { background-color: var(--color-pure-white); } }
+@keyframes kbFlashReview      { from { background-color: var(--status-review-fill); }      to { background-color: var(--color-pure-white); } }
+@keyframes kbFlashDone        { from { background-color: var(--status-done-fill); }        to { background-color: var(--color-pure-white); } }
+.kb-card.kb-flash-todo        { animation: kbFlashTodo 800ms ease-out; }
+.kb-card.kb-flash-in_progress { animation: kbFlashInProgress 800ms ease-out; }
+.kb-card.kb-flash-review      { animation: kbFlashReview 800ms ease-out; }
+.kb-card.kb-flash-done        { animation: kbFlashDone 800ms ease-out; }
+
+/* Mobile / narrow viewports: scroll columns horizontally with snap-points
+   so the user sees one column at a time. Columns get a fixed minimum width
+   instead of flex:1 equal-share, so they don't squish below readable size. */
+@media (max-width: 768px) {
+  #kanban {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+  }
+  .kb-column {
+    flex: 0 0 auto;
+    min-width: 280px;
+    scroll-snap-align: start;
+  }
+}
+.kb-card-title {
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-graphite-nav);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  word-wrap: break-word;
+  text-wrap: pretty;
+}
+.kb-card-excerpt {
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  color: var(--color-steel);
+  line-height: 1.4;
+  margin-top: var(--space-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#kanban.hidden,
+#cy.hidden {
+  display: none;
+}
+/* Graph-only toolbar contents hide in kanban view. New stays visible —
+   its click handler branches on currentView and calls createKanbanTask in
+   kanban (matching the G hotkey). Fit and Tidy don't apply (no layout
+   to fit, no tidy pass). The first divider (between New and Fit) is
+   hidden too so the remaining [New | Settings] reads with one separator. */
+body.view-kanban #btn-zoom-fit,
+body.view-kanban #btn-tidy,
+body.view-kanban #tb-neutral .tb-divider:first-of-type {
+  display: none;
 }
 
 /* Left sidebar */
@@ -1239,10 +1541,14 @@ body.forbidden #cy {
   background: var(--color-pure-white);
   border-left: 1px solid var(--color-mist);
   /* Top padding matches #sidebar-header so "Edit Task" centers on the same
-     y as NEW GRAPH / collapse icon / avatar bar. Extra bottom padding clears
-     the floating bottom toolbar so the body editor's content never sits
-     behind it. */
-  padding: 18px 24px 96px 24px;
+     y as NEW GRAPH / collapse icon / avatar bar. Bottom padding mirrors the
+     space above the Delete button (body-section margin-bottom 12 + footer
+     padding-top 16 = 28) so the button sits symmetrically between the body
+     editor and the panel's bottom edge. The body editor now reclaims the
+     rest of the vertical space (it was previously bounded by a 96px
+     bottom padding meant to clear the floating toolbar; the toolbar is
+     z-indexed BELOW the panel and was never actually obscuring content). */
+  padding: 18px 24px 28px 24px;
   overflow-y: auto;
   z-index: 10;
   transition: transform 0.7s cubic-bezier(0.19, 1, 0.22, 1);
@@ -2010,7 +2316,11 @@ button {
 #bottom-bar.hidden { display: none; }
 #bottom-bar {
   position: fixed;
-  bottom: 24px;
+  /* 18px puts the gap below the toolbar roughly equal to the gap between
+     the toolbar top and the kanban column bottoms (kanban padding is 80px;
+     toolbar pill is ~44px tall, so (80-44)/2 ≈ 18). Graph view is
+     unaffected — the canvas extends behind the toolbar in that view. */
+  bottom: 18px;
   /* Center in the FULL canvas region (sidebar-right → viewport-right). The
      toolbar stays at this canvas-centered position regardless of whether
      the right side panel is open — the panel's higher z-index (10) just
@@ -2048,7 +2358,6 @@ button {
 }
 
 .tb-hint,
-.tb-count,
 .tb-direction,
 .tb-direction-controls {
   font-family: var(--font-body);
@@ -2056,6 +2365,17 @@ button {
   color: var(--color-steel);
   padding: 0 6px;
   white-space: nowrap;
+}
+/* Selection count — ember-orange to match the brand-mark eyebrow color
+   (MY GRAPHS, ACCESS, etc.). Tabular nums so the badge width is stable
+   as the count ticks between single + double digits. */
+.tb-count {
+  font-family: var(--font-body);
+  font-size: var(--text-meta);
+  color: var(--color-ember-orange);
+  padding: 0 6px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .tb-direction { color: var(--color-storm); font-variant-numeric: tabular-nums; }
 .tb-direction-controls {
@@ -2079,10 +2399,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--tx-2);
-}
-.tb-selection-summary svg {
-  flex-shrink: 0;
+  color: var(--color-ember-orange);
+  font-variant-numeric: tabular-nums;
 }
 .tb-save-hint {
   display: inline-flex;
@@ -2437,6 +2755,69 @@ kbd {
   pointer-events: auto;
 }
 #presence-bar.hidden { display: none; }
+
+/* Hide-presence eye toggle. Sits in the very top-right corner of the
+   viewport (above/right of the rightmost avatar). Default invisible;
+   `.is-visible` fades it in on hover over the presence cluster. When
+   `body.presence-hidden`, the eye stays faintly visible so the user
+   can un-hide. */
+.presence-eye {
+  position: fixed;
+  top: 2px;
+  right: 2px;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-steel);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 16;
+  border-radius: var(--radius-md);
+  transition: opacity 200ms ease, color 200ms ease, background-color 200ms ease;
+}
+.presence-eye .ph {
+  font-size: 14px;
+  line-height: 1;
+}
+/* Icon swap: default state shows open eye; presence-hidden state shows
+   closed eye. Hovering flips to the OPPOSITE icon so the user sees what
+   clicking will do. Specificity: the body.presence-hidden + :hover rules
+   override the simpler ones below. */
+.presence-eye .eye-icon-closed { display: none; }
+.presence-eye:hover .eye-icon-open { display: none; }
+.presence-eye:hover .eye-icon-closed { display: inline; }
+body.presence-hidden .presence-eye .eye-icon-open { display: none; }
+body.presence-hidden .presence-eye .eye-icon-closed { display: inline; }
+body.presence-hidden .presence-eye:hover .eye-icon-open { display: inline; }
+body.presence-hidden .presence-eye:hover .eye-icon-closed { display: none; }
+.presence-eye.is-visible {
+  opacity: 0.8;
+  pointer-events: auto;
+}
+.presence-eye:hover {
+  opacity: 1;
+  color: var(--color-graphite-nav);
+  background: var(--color-blush-tint);
+}
+/* When the cluster is hidden, both presence-bar and push-button go away;
+   the eye stays in place (faded) so the user has a way back. */
+body.presence-hidden #presence-bar,
+body.presence-hidden #btn-follow-toggle {
+  display: none !important;
+}
+body.presence-hidden .presence-eye {
+  opacity: 0.4;
+  pointer-events: auto;
+}
+body.presence-hidden .presence-eye:hover {
+  opacity: 0.9;
+}
 
 .presence-avatar {
   /* --avatar-glow is set inline per element to the writer's deterministic

@@ -1224,6 +1224,93 @@ const RECENT_GRAPHS_STORAGE_KEY = 'graphtask:recent';
 const RECENTS_CAP = 20;
 const PRIVATE_WARN_SUPPRESS_KEY = 'graphtask:hide-private-warn';
 const SIDEBAR_COLLAPSED_KEY = 'graphtask:sidebarCollapsed';
+const VIEW_KEY_PREFIX = 'graphtask:view:';
+// Per-user, per-graph view preference. Values: 'graph' (default) | 'kanban'.
+// Client-only — never synced via SSE — so two collaborators on the same
+// graph can pick different views independently.
+function getViewPref(gid) {
+  if (!gid) return 'graph';
+  try {
+    const v = localStorage.getItem(VIEW_KEY_PREFIX + gid);
+    return v === 'kanban' ? 'kanban' : 'graph';
+  } catch { return 'graph'; }
+}
+function setViewPref(gid, mode) {
+  if (!gid) return;
+  if (mode !== 'graph' && mode !== 'kanban') return;
+  try { localStorage.setItem(VIEW_KEY_PREFIX + gid, mode); } catch {}
+}
+let currentView = 'graph';
+// Toggle which container fills the canvas region. Idempotent. Cytoscape
+// stays mounted under the hidden #cy so view-flips don't pay the re-init
+// cost; per-view DOM (kanban columns, etc.) renders into #kanban lazily.
+function applyView(mode) {
+  const prev = currentView;
+  const next = mode === 'kanban' ? 'kanban' : 'graph';
+  currentView = next;
+  const cyEl = document.getElementById('cy');
+  const kbEl = document.getElementById('kanban');
+  if (cyEl) cyEl.classList.toggle('hidden', next !== 'graph');
+  if (kbEl) kbEl.classList.toggle('hidden', next !== 'kanban');
+  document.body.classList.toggle('view-graph', next === 'graph');
+  document.body.classList.toggle('view-kanban', next === 'kanban');
+  // Switching INTO kanban needs an explicit render — fetchGraph may not run
+  // again on its own, and the columns would otherwise look empty.
+  if (next === 'kanban' && prev !== 'kanban') {
+    renderKanban();
+  }
+  // Sync the bottom toolbar to the new view (hides cy-only slots when
+  // entering kanban, hides tb-kanban-selection when leaving).
+  updateToolbar();
+  // Reset any shift accumulated in the previous view, then recompute for the
+  // current view (handles "panel is already open while user switches views").
+  adjustKanbanForPanel();
+}
+
+// When the side panel opens on a kanban card, the panel may visually cover
+// the card's own column. Shift the whole kanban left by just enough that the
+// column's right edge sits a margin to the left of the panel. Tracks current
+// shift in a module var so successive recomputes (panel resize, window
+// resize) work against the un-shifted baseline. No-op when not in kanban, no
+// selected card, or panel is closed — in which case the transform clears.
+let _kanbanCurrentShift = 0;
+const KANBAN_PANEL_MARGIN = 16;
+function adjustKanbanForPanel() {
+  const kanban = document.getElementById('kanban');
+  if (!kanban) return;
+  const clear = () => {
+    if (_kanbanCurrentShift !== 0) {
+      _kanbanCurrentShift = 0;
+      kanban.style.transform = '';
+    }
+  };
+  if (currentView !== 'kanban') return clear();
+  // Skip on narrow viewports — mobile uses horizontal scroll inside #kanban
+  // and the panel will become a bottom-sheet in the responsive roadmap, so
+  // shifting doesn't apply.
+  if (window.innerWidth < 768) return clear();
+  const panel = document.getElementById('panel');
+  if (!panel || panel.classList.contains('hidden')) return clear();
+  const selectedCard = document.querySelector('.kb-card.selected');
+  if (!selectedCard) return clear();
+  const column = selectedCard.closest('.kb-column');
+  if (!column) return clear();
+  // getBoundingClientRect reflects the current transform; un-shift to get the
+  // baseline so the next shift is computed correctly when panel width grows.
+  const colRect = column.getBoundingClientRect();
+  const baselineColRight = colRect.right + _kanbanCurrentShift;
+  // The panel slides in via translateX(100%) → 0 over 700ms. Its bounding
+  // rect during the slide reports its OFF-SCREEN position (left ≈ viewport
+  // width), so reading it would tell us there's no overlap. Use offsetWidth
+  // + the panel's pinned right:0 to compute its INTENDED left edge.
+  const panelLeft = window.innerWidth - panel.offsetWidth;
+  const desiredRight = panelLeft - KANBAN_PANEL_MARGIN;
+  const overlap = baselineColRight - desiredRight;
+  const newShift = Math.max(0, overlap);
+  if (newShift === _kanbanCurrentShift) return;
+  _kanbanCurrentShift = newShift;
+  kanban.style.transform = newShift > 0 ? `translateX(-${newShift}px)` : '';
+}
 
 function apiBase() {
   if (activeGraphId == null) {
@@ -1613,6 +1700,8 @@ async function fetchGraph() {
   updateLeafHighlights();
   // fetchGraph wipes element classes (incl. .selected) — resync the toolbar
   updateToolbar();
+  // Kanban renderer is a no-op when not in kanban view.
+  renderKanban();
 }
 
 async function updateLeafHighlights() {
@@ -1671,12 +1760,6 @@ function selectionSummaryHtml(showSave = false) {
   const { total } = getSelectionCounts();
   return `
     <span class="tb-selection-summary">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <circle cx="4" cy="4" r="2"/>
-        <circle cx="12" cy="4" r="2"/>
-        <circle cx="8" cy="12" r="2"/>
-        <path d="M5.8 5.1 7.1 9.9M10.2 5.1 8.9 9.9M6 4h4"/>
-      </svg>
       <span>${total}</span>
       ${showSave ? '<span class="tb-save-hint"><kbd>Enter</kbd> Save</span>' : ''}
     </span>
@@ -1746,6 +1829,13 @@ function fitBottomBar() {
 }
 
 function updateToolbar() {
+  if (currentView === 'kanban') {
+    updateKanbanToolbar();
+    return;
+  }
+  // Graph-view path. Make sure the kanban slot is hidden after a view flip.
+  const kanbanSlot = document.getElementById('tb-kanban-selection');
+  if (kanbanSlot) kanbanSlot.classList.add('hidden');
   const mode = getSelectionMode();
   const tbNeutral = document.getElementById('tb-neutral');
   const tbMixed = document.getElementById('tb-mixed');
@@ -1895,10 +1985,14 @@ function applySettings() {
 // CSS variables for canvas rendering, so we patch the style at runtime —
 // once after cy init and after every full re-style (theme switch).
 function applyOwnSelectionColor() {
-  if (!cy) return;
   const ownId = presenceCurrentOwnId();
   if (!ownId) return;
   const color = colorForId(ownId);
+  // Expose the local user's avatar color as a CSS var so non-cy surfaces
+  // (kanban cards, future views) can paint their selection state in the
+  // same color the avatar bar shows.
+  document.documentElement.style.setProperty('--own-selection-color', color);
+  if (!cy) return;
   cy.style()
     .selector('node.selected').style('underlay-color', color)
     .selector('edge.selected').style('underlay-color', color)
@@ -2685,7 +2779,11 @@ let _panelOpenedProgrammatically = false;
 
 function showPanel(task, opts = {}) {
   _panelOpenedProgrammatically = !!opts.programmatic;
-  editingTaskId = task ? task.data('taskId') : null;
+  // `task` may be a Cytoscape node (graph view) OR a plain { taskId } object
+  // (kanban view) — extract the id from whichever shape we got.
+  const isCyNode = task && typeof task.data === 'function';
+  const taskId = task ? (isCyNode ? task.data('taskId') : task.taskId) : null;
+  editingTaskId = taskId;
   const panel = document.getElementById('panel');
   const title = document.getElementById('panel-title');
   const status = document.getElementById('save-status');
@@ -2693,18 +2791,34 @@ function showPanel(task, opts = {}) {
 
   if (task) {
     title.textContent = 'Edit Task';
-    fetch(`${apiBase()}/tasks/${editingTaskId}`)
-      .then((r) => r.json())
-      .then((full) => { loadIntoEditor(full.content, full); });
+    // `opts.preloaded` short-circuits the fetch when the caller already has
+    // the task row in hand (kanban's "create + open" path) — avoids a stale
+    // empty field-title flash before the fetch resolves.
+    if (opts.preloaded) {
+      loadIntoEditor(opts.preloaded.content, opts.preloaded);
+    } else {
+      fetch(`${apiBase()}/tasks/${editingTaskId}`)
+        .then((r) => r.json())
+        .then((full) => { loadIntoEditor(full.content, full); });
+    }
   } else {
     title.textContent = 'New Task';
     loadIntoEditor('---\ntitle: \nstatus: todo\n---\n');
   }
+  // Show the Delete footer only for existing tasks. A brand-new pending
+  // node has nothing to delete server-side — backing out of the panel
+  // discards it.
+  const footer = panel.querySelector('.panel-footer');
+  if (footer) footer.classList.toggle('hidden', !task);
 
   setEditorMode('rich');
   panel.classList.remove('hidden');
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
-  if (task) centerNodeInVisibleArea(task);
+  // Camera pan is graph-view only — kanban cards are already visible in their column.
+  if (isCyNode) centerNodeInVisibleArea(task);
+  // Kanban: shift the board left so the panel doesn't cover the selected
+  // card's column. No-op for graph view, no-op if no overlap.
+  if (typeof adjustKanbanForPanel === 'function') adjustKanbanForPanel();
   if (typeof postLocalSelection === 'function') postLocalSelection();
   // Do NOT auto-focus a panel field — selection alone shouldn't redirect keystrokes.
   // The user enters edit mode by clicking into a field, or by double-clicking the node.
@@ -2721,6 +2835,12 @@ function hidePanel() {
   const panelWidth = wasOpen ? panel.getBoundingClientRect().width : 0;
   panel.classList.add('hidden');
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
+  // Note: deliberately does NOT clear .kb-card.selected. Mid-flight panel
+  // hides (e.g. cmd-click that transitions 1→2 selected) would otherwise
+  // wipe the multi-select. Esc-with-panel-open clears selection itself.
+  // Reset the kanban shift now that the panel is gone.
+  if (typeof adjustKanbanForPanel === 'function') adjustKanbanForPanel();
+  if (typeof updateKanbanToolbar === 'function') updateKanbanToolbar();
   editingTaskId = null;
   _panelOpenedProgrammatically = false;
   if (typeof postLocalSelection === 'function') postLocalSelection();
@@ -3512,6 +3632,275 @@ async function createTask(content) {
     headers: writeHeaders(),
     body: JSON.stringify({ content }),
   });
+}
+
+// Kanban-only: create a stub task in the given status column. B2 renders
+// the card; B5 wires SSE so the new card appears live in this and any
+// other kanban-view tab. For now the new task is "Untitled" — the user
+// renames via the inspector once B3 wires card-click → panel.
+const KANBAN_STATUSES = ['todo', 'in_progress', 'review', 'done'];
+async function createKanbanTask(status) {
+  if (!activeGraphId) return;
+  if (!KANBAN_STATUSES.includes(status)) return;
+  const content = `---\ntitle: Untitled\nstatus: ${status}\n---\n`;
+  const res = await createTask(content);
+  if (!res.ok) {
+    if (maybeForbid(res)) return;
+    showHint('Create failed');
+    return;
+  }
+  const saved = await res.json();
+  // Re-render kanban so the new card lands in DOM before we try to select it.
+  // Awaited (not fire-and-forget) so the .selected paint + panel-open happen
+  // against the new card, not the pre-create render.
+  await fetchGraph().catch(() => {});
+  if (!saved || saved.id == null) return;
+  const card = document.querySelector(`.kb-card[data-task-id="${saved.id}"]`);
+  if (card) {
+    document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+    card.classList.add('selected');
+    updateKanbanToolbar();
+  }
+  // Open the inspector preloaded — avoids the title-flash from showPanel's
+  // own fetch — then focus + select the title input so the user's first
+  // keystroke replaces "Untitled" (deferred to next tick so loadIntoEditor
+  // has populated the field).
+  showPanel({ taskId: saved.id }, { preloaded: saved });
+  setTimeout(() => {
+    const fld = document.getElementById('field-title');
+    if (fld) { fld.focus(); fld.select(); }
+  }, 0);
+}
+
+// Strip frontmatter and pull the first non-empty body line as a card
+// excerpt. Returns '' if no body — caller suppresses the excerpt element.
+function extractBodyExcerpt(content) {
+  if (typeof content !== 'string') return '';
+  const m = content.match(/^---\n[\s\S]*?\n---\n?/);
+  const body = m ? content.slice(m[0].length) : content;
+  const firstLine = body.split('\n').map((l) => l.trim()).find((l) => l.length > 0) || '';
+  return firstLine.length > 120 ? firstLine.slice(0, 117) + '…' : firstLine;
+}
+
+function renderKanbanCard(task) {
+  const card = document.createElement('div');
+  card.className = 'kb-card';
+  card.draggable = true;
+  card.dataset.taskId = String(task.id);
+  const meta = task.meta || {};
+  if (meta.color) card.style.setProperty('--card-color', meta.color);
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'kb-card-title';
+  titleEl.textContent = meta.title || 'Untitled';
+  card.appendChild(titleEl);
+
+  const excerpt = extractBodyExcerpt(task.content);
+  if (excerpt) {
+    const excerptEl = document.createElement('div');
+    excerptEl.className = 'kb-card-excerpt';
+    excerptEl.textContent = excerpt;
+    card.appendChild(excerptEl);
+  }
+  return card;
+}
+
+// Pulse the card's background in the destination status's light-tier color
+// for ~800ms. Mirrors the graph-view "what just changed" flash convention
+// (orange = in_progress, yellow = review, green = done, neutral = todo).
+function flashKanbanCard(card, status) {
+  if (!card) return;
+  const cls = `kb-flash-${status}`;
+  // Restart the animation if the same class is already there (rapid moves).
+  card.classList.remove(cls);
+  void card.offsetWidth; // force reflow so the next add re-triggers the animation
+  card.classList.add(cls);
+  setTimeout(() => card.classList.remove(cls), 850);
+}
+
+// Queue actions for the next renderKanban. Two parallel queues:
+//   - flash: both own-origin (drag commit) and remote-origin (SSE) writes.
+//     Every change deserves a flash to draw attention.
+//   - scroll: remote-origin only. Own drags don't scroll — the user just
+//     placed the card and knows where it is.
+// Set-based so own + SSE double-queue dedupes naturally.
+const _kanbanFlashQueue = new Set();
+const _kanbanScrollQueue = new Set();
+function queueKanbanFlash(taskId) {
+  if (taskId == null) return;
+  _kanbanFlashQueue.add(String(taskId));
+}
+function queueKanbanScrollIntoView(taskId) {
+  if (taskId == null) return;
+  _kanbanScrollQueue.add(String(taskId));
+}
+function applyKanbanPendingFlashes() {
+  if (_kanbanFlashQueue.size === 0 && _kanbanScrollQueue.size === 0) return;
+  const userActive = typeof userInteractedRecently === 'function' && userInteractedRecently();
+  for (const taskId of _kanbanFlashQueue) {
+    const card = document.querySelector(`.kb-card[data-task-id="${taskId}"]`);
+    if (!card) continue;
+    const col = card.closest('.kb-column');
+    const status = col && col.dataset.status;
+    if (status) flashKanbanCard(card, status);
+    if (_kanbanScrollQueue.has(taskId) && !userActive) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }
+  _kanbanFlashQueue.clear();
+  _kanbanScrollQueue.clear();
+}
+
+// Delete the task currently open in the side panel. Works in both views;
+// graph view's cy node disappears via fetchGraph, kanban's card via
+// renderKanban (re-fetch). Same confirm modal as the bulk-select path.
+async function deletePanelTask() {
+  if (editingTaskId == null) return;
+  if (!document.getElementById('delete-modal').classList.contains('hidden')) return;
+  if (!(await confirmDelete('Delete this task?'))) return;
+  const id = editingTaskId;
+  await deleteTask(id);
+  hidePanel();
+  await fetchGraph().catch(() => {});
+}
+
+// Toolbar slot management for kanban. When at least one card is selected,
+// show tb-kanban-selection (count + Delete) and hide tb-neutral; otherwise
+// the reverse. Also force-hide cy-only slots that may have been left visible
+// when switching out of graph view.
+function updateKanbanToolbar() {
+  if (currentView !== 'kanban') {
+    // Make sure the kanban-specific slot stays hidden in graph view.
+    const slot = document.getElementById('tb-kanban-selection');
+    if (slot) slot.classList.add('hidden');
+    return;
+  }
+  ['tb-mixed', 'tb-node', 'tb-edge', 'tb-edge-creating'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
+  const selCount = document.querySelectorAll('.kb-card.selected').length;
+  const slot = document.getElementById('tb-kanban-selection');
+  const neutral = document.getElementById('tb-neutral');
+  if (selCount > 0) {
+    if (slot) {
+      slot.classList.remove('hidden');
+      const c = document.getElementById('tb-kanban-selection-count');
+      if (c) c.textContent = String(selCount);
+    }
+    if (neutral) neutral.classList.add('hidden');
+  } else {
+    if (slot) slot.classList.add('hidden');
+    if (neutral) neutral.classList.remove('hidden');
+  }
+}
+
+// Delete every selected kanban card after a confirm. Same modal as graph
+// view's deleteSelected. Sequential deletes (small N; matches graph path).
+async function deleteSelectedKanbanCards() {
+  if (currentView !== 'kanban') return;
+  if (!document.getElementById('delete-modal').classList.contains('hidden')) return;
+  const cards = Array.from(document.querySelectorAll('.kb-card.selected'));
+  const taskIds = cards.map((c) => Number(c.dataset.taskId)).filter(Number.isFinite);
+  if (taskIds.length === 0) return;
+  const word = taskIds.length === 1 ? 'task' : 'tasks';
+  if (!(await confirmDelete(`Delete ${taskIds.length} ${word}?`))) return;
+  for (const id of taskIds) {
+    await deleteTask(id);
+  }
+  if (isPanelOpen()) hidePanel();
+  await fetchGraph().catch(() => {});
+  updateKanbanToolbar();
+}
+
+// Drag-and-drop: optimistic DOM move + OCC PATCH on the task's status.
+// Same-status drop is a no-op. Failure rolls back via renderKanban().
+async function moveKanbanCardToStatus(taskId, newStatus) {
+  if (!KANBAN_STATUSES.includes(newStatus)) return;
+  const card = document.querySelector(`.kb-card[data-task-id="${taskId}"]`);
+  if (!card) return;
+  const sourceContainer = card.parentElement;
+  const sourceColumn = sourceContainer ? sourceContainer.closest('.kb-column') : null;
+  const sourceStatus = sourceColumn ? sourceColumn.dataset.status : null;
+  if (!sourceStatus || sourceStatus === newStatus) return;
+
+  const dest = document.getElementById(`kb-cards-${newStatus}`);
+  if (!dest) return;
+  dest.prepend(card);
+  // Update column counts inline; full renderKanban will reconcile on next refresh.
+  for (const s of KANBAN_STATUSES) {
+    const container = document.getElementById(`kb-cards-${s}`);
+    const count = document.getElementById(`kb-count-${s}`);
+    if (container && count) count.textContent = String(container.children.length);
+  }
+
+  try {
+    const res = await fetch(`${apiBase()}/tasks/${taskId}`);
+    if (!res.ok) throw new Error('load');
+    const task = await res.json();
+    const parsed = parseFrontmatter(task.content);
+    const newContent = buildContent({ ...(parsed.meta || {}), status: newStatus }, parsed.body);
+    const upd = await updateTask(taskId, newContent, task);
+    if (!upd.ok) {
+      if (maybeForbid(upd)) { renderKanban(); return; }
+      throw new Error('save');
+    }
+    // Flash on the next renderKanban (which the SSE event will trigger).
+    // Direct flashKanbanCard here would be wiped by that re-render anyway.
+    queueKanbanFlash(taskId);
+  } catch {
+    showHint('Status change failed');
+    renderKanban();
+  }
+}
+
+// Render task cards into their status columns. Called from fetchGraph
+// success and (later) from applyView when switching into kanban. No-op
+// when not in kanban view — keeps the render cost off graph-view users.
+// Uses /tasks (not /graph) because /graph omits content + updated_at,
+// both needed here (excerpt + sort).
+async function renderKanban() {
+  if (currentView !== 'kanban') return;
+  if (!activeGraphId) return;
+  // Snapshot local selection before the DOM replace wipes it.
+  const preservedSelection = new Set(
+    Array.from(document.querySelectorAll('.kb-card.selected')).map((c) => c.dataset.taskId)
+  );
+  let tasks;
+  try {
+    const res = await fetch(`${apiBase()}/tasks`);
+    if (!res.ok) return;
+    tasks = await res.json();
+  } catch { return; }
+
+  const buckets = { todo: [], in_progress: [], review: [], done: [] };
+  for (const t of tasks) {
+    const s = (t.meta && t.meta.status) || 'todo';
+    (buckets[s] || buckets.todo).push(t);
+  }
+  for (const s of KANBAN_STATUSES) {
+    buckets[s].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    const container = document.getElementById(`kb-cards-${s}`);
+    const count = document.getElementById(`kb-count-${s}`);
+    if (container) {
+      container.replaceChildren(...buckets[s].map(renderKanbanCard));
+    }
+    if (count) count.textContent = String(buckets[s].length);
+  }
+  // Restore local selection on the freshly-rendered cards. Tasks that were
+  // deleted between renders just drop out of the set naturally.
+  for (const id of preservedSelection) {
+    const card = document.querySelector(`.kb-card[data-task-id="${id}"]`);
+    if (card) card.classList.add('selected');
+  }
+  // Apply any flashes queued before this re-render (drag commits, SSE events).
+  applyKanbanPendingFlashes();
+  // The full DOM replace wiped peer-selected/peer-editing classes from
+  // existing cards. Re-paint from peerSelectionState so peer presence on
+  // cards survives a re-render. peerCursorRefresh is called inside.
+  if (typeof applyPeerSelectionToCy === 'function') applyPeerSelectionToCy();
+  // Selection count may have changed (deleted cards drop out); sync toolbar.
+  updateKanbanToolbar();
 }
 
 // `base` is { version, content } from the most recent server read of this
@@ -4371,6 +4760,17 @@ function openGraphEditModal(graph) {
     accessCleanup = wireAccessSection(graph);
   }
 
+  // View picker (per-user, per-graph; client-only). Sits above the font
+  // picker in the appearance grid. wirePicker handles open/close/keyboard;
+  // onChange persists the choice and flips the canvas region immediately.
+  const viewCleanup = wirePicker(document.getElementById('graph-modal-view'), {
+    initial: getViewPref(graph.id),
+    onChange: (v) => {
+      setViewPref(graph.id, v);
+      applyView(v);
+    },
+  });
+
   nameInput.textContent = graph.name || '';
   nameError.textContent = '';
   nameError.classList.add('hidden');
@@ -4507,6 +4907,7 @@ function openGraphEditModal(graph) {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     modal.classList.add('hidden');
     if (typeof accessCleanup === 'function') accessCleanup();
+    if (typeof viewCleanup === 'function') viewCleanup();
     saveBtn.removeEventListener('click', onSave);
     deleteBtn.removeEventListener('click', onDelete);
     copyBtn.removeEventListener('click', onCopy);
@@ -4978,6 +5379,7 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   accessDenied = false;
   activeGraphId = id;
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
+  applyView(getViewPref(id));
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
   renderSidebar();
   if (cy) cy.elements().remove();
@@ -5185,6 +5587,18 @@ function adjustPresenceBarOffset() {
     btn.style.right = barRight
       ? `${parseFloat(barRight) - 4}px`
       : '';  // fall back to CSS default `right: 12px` which is 16 - 4
+  }
+  // Eye icon sits at top-right of the chrome cluster — when the cluster
+  // shifts left to dodge the panel, the eye has to follow or it ends up
+  // under the panel where the user can't see it or hover-trigger it.
+  // Default CSS has bar at right:16 + eye at right:2 (14px offset between
+  // them). Preserve that offset when shifting.
+  const eye = document.getElementById('presence-eye');
+  if (eye) {
+    const barRight = bar.style.right;
+    eye.style.right = barRight
+      ? `${Math.max(2, parseFloat(barRight) - 14)}px`
+      : '';  // CSS default `right: 2px`
   }
 }
 
@@ -5396,6 +5810,12 @@ function applyPeerSelectionToCy() {
     el.removeClass('peer-selected peer-editing');
     el.removeData('peerColor');
   });
+  // Same wipe for kanban cards. Cards are paint-target #2 alongside cy
+  // elements — same source-of-truth (peerSelectionState), parallel render.
+  document.querySelectorAll('.kb-card.peer-selected, .kb-card.peer-editing').forEach((c) => {
+    c.classList.remove('peer-selected', 'peer-editing');
+    c.style.removeProperty('--peer-color');
+  });
   // Group peers by element id so each element computes its color from the
   // same "lead" peer that the cursor marker uses (editing-first, then by
   // writer_id). Otherwise the node's outline and the marker pill end up
@@ -5439,6 +5859,15 @@ function applyPeerSelectionToCy() {
     // target — the dashed border reads on top of the underlay.
     el.addClass('peer-selected');
     if (g.isEditing) el.addClass('peer-editing');
+    // Kanban: paint the corresponding card if it's rendered. peerSelectionState
+    // tracks node + edge ids; cards exist only for nodes (tasks). Edges are
+    // hidden in kanban, so skip those groups silently.
+    const card = document.querySelector(`.kb-card[data-task-id="${elemId}"]`);
+    if (card) {
+      card.style.setProperty('--peer-color', lead.color);
+      card.classList.add('peer-selected');
+      if (g.isEditing) card.classList.add('peer-editing');
+    }
   }
   // Refresh labeled cursors in lock-step with the cytoscape highlights.
   if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
@@ -5450,6 +5879,14 @@ function handleSelectionEvent(payload) {
   // Skip our own selection coming back from the server — local cy already
   // shows it via the 'selected' class set by cy.on('select').
   if (payload.writer_id === ownId) return;
+  // The peer just did something — they're active by definition. Bump their
+  // local presence state to active=true so applyPeerSelectionToCy doesn't
+  // skip them due to a stale idle flag from an earlier ACTIVE_WINDOW timeout.
+  // Server-side `touch()` flips them active and emits a presence event too,
+  // but the presence vs selection event order over SSE isn't guaranteed — if
+  // selection arrives first we'd otherwise drop the paint.
+  const peerWriter = presenceState.get(payload.writer_id);
+  if (peerWriter && peerWriter.active === false) peerWriter.active = true;
   if (payload.op === 'cleared') {
     if (!peerSelectionState.delete(payload.writer_id)) return;
   } else {
@@ -5743,6 +6180,13 @@ function peerCursorRefresh() {
     if (!arr) { arr = []; groups.set(key, arr); }
     arr.push(peer);
   }
+  // Kanban view uses card DOM rects instead of cy renderedBoundingBox.
+  // Skip edge groups (no edges visible in kanban) and let cy-coord groups
+  // fall through to the graph-view path below.
+  if (currentView === 'kanban') {
+    peerCursorRefreshKanban(groups);
+    return;
+  }
 
   // 2. Render each group; collect anchor bboxes for slot picking. Build the
   // "other nodes" bbox list once.
@@ -5772,6 +6216,47 @@ function peerCursorRefresh() {
     entry.el.style.transform = `translate3d(${slot.x}px, ${slot.y}px, 0)`;
   }
   // 3. Remove DOM for anchors that no longer have peers.
+  for (const key of Array.from(_peerCursorSlots.keys())) {
+    if (!seen.has(key)) {
+      _peerCursorSlots.get(key).el.remove();
+      _peerCursorSlots.delete(key);
+    }
+  }
+}
+
+// Kanban variant: anchor cursors off card DOM rects instead of cy world
+// coords. Skips edge groups (kanban hides edges). Placement: just above
+// the card's top edge, left-aligned with the card.
+function peerCursorRefreshKanban(groups) {
+  const layer = document.getElementById('peer-cursor-layer');
+  if (!layer) return;
+  const layerRect = layer.getBoundingClientRect();
+  const seen = new Set();
+  for (const [key, peers] of groups) {
+    const [kind, idStr] = key.split(':');
+    if (kind !== 'node') continue; // edges not visible in kanban
+    const card = document.querySelector(`.kb-card[data-task-id="${idStr}"]`);
+    if (!card) continue;
+    seen.add(key);
+    let entry = _peerCursorSlots.get(key);
+    if (!entry) {
+      const el = peerCursorMakeEl();
+      if (!el) continue;
+      entry = { el };
+      _peerCursorSlots.set(key, entry);
+    }
+    peerCursorRenderGroup(entry.el, peers);
+    const cardRect = card.getBoundingClientRect();
+    const markerRect = entry.el.getBoundingClientRect();
+    const markerH = markerRect.height || 18;
+    // Place the marker just above the card's top, left-aligned. Convert from
+    // viewport-relative card rect to layer-relative coords.
+    const GAP = 4;
+    const x = cardRect.left - layerRect.left;
+    const y = cardRect.top - layerRect.top - markerH - GAP;
+    entry.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }
+  // Clear stale markers for anchors no longer present.
   for (const key of Array.from(_peerCursorSlots.keys())) {
     if (!seen.has(key)) {
       _peerCursorSlots.get(key).el.remove();
@@ -5883,6 +6368,20 @@ function openGraphEventStream(id) {
 
 async function refreshFromEvent(payload) {
   if (!cy) return;
+  // Kanban flash + scroll hook — queue a flash AND a scroll-into-view on
+  // the next renderKanban for any task INSERT/UPDATE. DELETE doesn't need
+  // a flash (the card just vanishes when /tasks no longer returns it).
+  // Scroll is gated on !userInteractedRecently() inside the apply step so
+  // an agent edit doesn't yank the viewport mid-drag or while the user is typing.
+  if (
+    currentView === 'kanban'
+    && payload && payload.kind === 'tasks'
+    && (payload.op === 'INSERT' || payload.op === 'UPDATE')
+    && payload.id != null
+  ) {
+    queueKanbanFlash(payload.id);
+    queueKanbanScrollIntoView(payload.id);
+  }
   // Graph-row UPDATE (anon_role / settings / name / description). Refetch
   // the row first so currentGraph + viewer_can_edit are fresh, then run a
   // normal canvas refresh — fetchGraph's 403 branch handles access
@@ -6288,7 +6787,22 @@ function cytoscapeStyleDark() {
     { selector: 'core', style: { 'active-bg-opacity': 0, 'active-bg-size': 0 } },
   ];
 }
+// Resolve the --status-* CSS tokens at call time. Returns { in_progress,
+// review, done } each with { fill, stroke } hex values. Reading the cascade
+// makes style.css the single source of truth — touching a token there
+// updates both the kanban view (via CSS) and the graph view (via this
+// function feeding cytoscapeStyleLight).
+function statusPalette() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
+  return {
+    in_progress: { fill: v('--status-in-progress-fill'), stroke: v('--status-in-progress-stroke') },
+    review:      { fill: v('--status-review-fill'),      stroke: v('--status-review-stroke') },
+    done:        { fill: v('--status-done-fill'),        stroke: v('--status-done-stroke') },
+  };
+}
 function cytoscapeStyleLight() {
+  const _statusPalette = statusPalette();
   // Palette mapping (May 2026):
   //   Tier rule: light → fill, strong → border + text.
   //   in_progress         → bg amber-light #ffe7c5, border/text amber-strong #e88a1b
@@ -6323,11 +6837,14 @@ function cytoscapeStyleLight() {
         'text-overflow-wrap': 'whitespace',
       },
     },
-    // Three-tier per-status palette: light = fill, medium = text, strong = border.
-    // (todo has no status hue and falls through to the default body text color.)
-    { selector: 'node[status = "in_progress"]', style: { 'background-color': '#ffe7c5', 'border-color': '#e88a1b', 'color': '#e88a1b' } },
-    { selector: 'node[status = "review"]',      style: { 'background-color': '#deffe3', 'border-color': '#49ca80', 'color': '#49ca80' } },
-    { selector: 'node[status = "done"]',        style: { 'background-color': '#e0e7ff', 'border-color': '#4f46e5', 'color': '#4f46e5' } },
+    // Per-status palette. Hex values pulled from --status-* CSS tokens
+    // at boot (see statusPalette() below) so the kanban + graph views
+    // stay in lockstep — change `--status-review-stroke` in style.css and
+    // both views update with no JS edit. (todo has no status hue and
+    // falls through to the default body text color.)
+    { selector: 'node[status = "in_progress"]', style: { 'background-color': _statusPalette.in_progress.fill, 'border-color': _statusPalette.in_progress.stroke, 'color': _statusPalette.in_progress.stroke } },
+    { selector: 'node[status = "review"]',      style: { 'background-color': _statusPalette.review.fill,      'border-color': _statusPalette.review.stroke,      'color': _statusPalette.review.stroke } },
+    { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     { selector: 'node.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
     // Peer-selection visuals: a soft colored halo + dashed border when a
@@ -6337,8 +6854,9 @@ function cytoscapeStyleLight() {
     { selector: 'node.peer-selected', style: { 'underlay-color': 'data(peerColor)', 'underlay-opacity': 0.35, 'underlay-padding': 8 } },
     { selector: 'node.peer-editing', style: { 'border-color': 'data(peerColor)', 'border-style': 'dashed', 'border-width': 3, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.selected.status-editing-todo',        style: { 'border-color': '#fb5305', 'border-width': 1.5 } },
-    { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': '#e88a1b', 'border-width': 2.5 } },
-    { selector: 'node.selected.status-editing-done',        style: { 'border-color': '#4f46e5', 'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-in_progress', style: { 'border-color': _statusPalette.in_progress.stroke, 'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-review',      style: { 'border-color': _statusPalette.review.stroke,      'border-width': 2.5 } },
+    { selector: 'node.selected.status-editing-done',        style: { 'border-color': _statusPalette.done.stroke,        'border-width': 2.5 } },
     { selector: 'node.editing', style: { 'border-color': '#a45fff', 'border-style': 'dashed', 'border-width': 3.5, 'border-dash-pattern': [6, 4] } },
     { selector: 'node.inline-title-edit', style: { 'text-opacity': 0 } },
     // Edge visuals: thinner lines + `vee` arrowheads (narrow V) for a sleeker
@@ -6666,9 +7184,20 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (isPanelOpen()) {
         hidePanel();
+        // Kanban: close panel AND clear selection in one Esc press.
+        // hidePanel no longer auto-clears (mid-flight hides would wipe
+        // multi-select), so do it here explicitly.
+        if (currentView === 'kanban') {
+          document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+          updateKanbanToolbar();
+        }
         e.preventDefault();
       } else {
         clearSelection();
+        if (currentView === 'kanban') {
+          document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+          updateKanbanToolbar();
+        }
       }
       return;
     }
@@ -6682,6 +7211,37 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     if (inField) return;
+    // Kanban-specific hotkeys handle G (new task in selected card's column,
+    // fallback todo) and S (cycle status of selected card). Other keys fall
+    // through to no-op in kanban — cytoscape concepts (T/F/E/B) don't apply.
+    if (currentView === 'kanban') {
+      switch (e.key) {
+        case 'g': case 'G': {
+          const selected = document.querySelector('.kb-card.selected');
+          const col = selected && selected.closest('.kb-column');
+          createKanbanTask((col && col.dataset.status) || 'todo');
+          break;
+        }
+        case 's': case 'S': {
+          const selected = document.querySelector('.kb-card.selected');
+          if (!selected) break;
+          const col = selected.closest('.kb-column');
+          const curStatus = col && col.dataset.status;
+          if (!curStatus) break;
+          const idx = KANBAN_STATUSES.indexOf(curStatus);
+          const next = KANBAN_STATUSES[(idx + 1) % KANBAN_STATUSES.length];
+          const taskId = Number(selected.dataset.taskId);
+          if (Number.isFinite(taskId)) moveKanbanCardToStatus(taskId, next);
+          break;
+        }
+        case 'Delete':
+        case 'Backspace':
+          e.preventDefault();
+          deleteSelectedKanbanCards();
+          break;
+      }
+      return;
+    }
 
     switch (e.key) {
       case 'f':
@@ -6763,8 +7323,109 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // --- Kanban column add buttons (one per column) ---
+  document.querySelectorAll('.kb-column-add').forEach((btn) => {
+    btn.addEventListener('click', () => createKanbanTask(btn.dataset.status));
+  });
+  // Kanban-selection toolbar Delete button.
+  document.getElementById('btn-kanban-delete')
+    .addEventListener('click', deleteSelectedKanbanCards);
+  // Panel-footer Delete button (both views).
+  document.getElementById('panel-delete')
+    .addEventListener('click', deletePanelTask);
+
+  // --- Kanban card click → inspector. Event delegation on #kanban handles
+  //     dynamically-rendered cards without per-card listeners. Cmd/Ctrl-click
+  //     toggles the card in/out of the selection without affecting others
+  //     (mirrors the rubber-band multi-select in graph view). Clicking empty
+  //     canvas clears the selection. ---
+  const kanbanEl = document.getElementById('kanban');
+  kanbanEl.addEventListener('click', (e) => {
+    // Ignore clicks on the per-column + button — it has its own handler.
+    if (e.target.closest('.kb-column-add')) return;
+    const card = e.target.closest('.kb-card');
+    if (!card) {
+      // Empty area: clear selection + close panel.
+      document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+      if (isPanelOpen()) hidePanel();
+      updateKanbanToolbar();
+      return;
+    }
+    if (isCmd(e)) {
+      // Toggle this card; leave others alone.
+      card.classList.toggle('selected');
+      const selected = document.querySelectorAll('.kb-card.selected');
+      if (selected.length === 1) {
+        const taskId = Number(selected[0].dataset.taskId);
+        if (Number.isFinite(taskId)) showPanel({ taskId });
+      } else if (isPanelOpen()) {
+        // 0 or 2+ selected — no single card to show in the inspector.
+        hidePanel();
+      }
+    } else {
+      // Single click: replace selection.
+      document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+      card.classList.add('selected');
+      const taskId = Number(card.dataset.taskId);
+      if (Number.isFinite(taskId)) showPanel({ taskId });
+    }
+    updateKanbanToolbar();
+  });
+
+  // --- Kanban drag-and-drop. Cards carry their task id; columns are drop
+  //     targets keyed by data-status. moveKanbanCardToStatus does the OCC
+  //     PATCH + optimistic DOM move + snap-back on failure. ---
+  kanbanEl.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('.kb-card');
+    if (!card) return;
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.taskId);
+  });
+  kanbanEl.addEventListener('dragend', (e) => {
+    const card = e.target.closest('.kb-card');
+    if (card) card.classList.remove('dragging');
+    document.querySelectorAll('.kb-column.drag-over').forEach((c) => c.classList.remove('drag-over'));
+  });
+  kanbanEl.addEventListener('dragover', (e) => {
+    const column = e.target.closest('.kb-column');
+    if (!column) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.kb-column.drag-over').forEach((c) => {
+      if (c !== column) c.classList.remove('drag-over');
+    });
+    column.classList.add('drag-over');
+  });
+  kanbanEl.addEventListener('dragleave', (e) => {
+    const column = e.target.closest('.kb-column');
+    if (!column) return;
+    // dragleave fires on every child boundary — only clear when actually leaving.
+    if (!column.contains(e.relatedTarget)) column.classList.remove('drag-over');
+  });
+  kanbanEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const column = e.target.closest('.kb-column');
+    if (!column) return;
+    column.classList.remove('drag-over');
+    const taskId = Number(e.dataTransfer.getData('text/plain'));
+    if (!Number.isFinite(taskId)) return;
+    moveKanbanCardToStatus(taskId, column.dataset.status);
+  });
+
   // --- Toolbar buttons ---
-  document.getElementById('btn-new-node').addEventListener('click', createNodeAtCenter);
+  // New button branches on view: graph → cytoscape ghost flow; kanban →
+  // createKanbanTask in the selected card's column (or Todo). Matches the
+  // G hotkey's per-view behavior.
+  document.getElementById('btn-new-node').addEventListener('click', () => {
+    if (currentView === 'kanban') {
+      const selected = document.querySelector('.kb-card.selected');
+      const col = selected && selected.closest('.kb-column');
+      createKanbanTask((col && col.dataset.status) || 'todo');
+    } else {
+      createNodeAtCenter();
+    }
+  });
   document.getElementById('btn-status').addEventListener('click', cycleSelectedNodeStatus);
   document.getElementById('btn-color-node').addEventListener('click', (e) => openColorPalette(e.currentTarget));
   document.getElementById('btn-color-edge').addEventListener('click', (e) => openColorPalette(e.currentTarget));
@@ -6849,6 +7510,10 @@ document.addEventListener('DOMContentLoaded', () => {
   handle.addEventListener('mousedown', (e) => {
     resizing = true;
     panel.classList.add('resizing');
+    // Disable kanban transition during drag — every mousemove would otherwise
+    // queue a 300ms animation, lagging behind the cursor.
+    const kanban = document.getElementById('kanban');
+    if (kanban) kanban.classList.add('kanban-no-transition');
     e.preventDefault();
   });
   document.addEventListener('mousemove', (e) => {
@@ -6863,11 +7528,15 @@ document.addEventListener('DOMContentLoaded', () => {
     );
     panel.style.width = Math.min(max, Math.max(PANEL_MIN_WIDTH, next)) + 'px';
     if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
+    // Panel width changed → kanban shift may need recompute.
+    if (typeof adjustKanbanForPanel === 'function') adjustKanbanForPanel();
   });
   document.addEventListener('mouseup', () => {
     if (!resizing) return;
     resizing = false;
     panel.classList.remove('resizing');
+    const kanban = document.getElementById('kanban');
+    if (kanban) kanban.classList.remove('kanban-no-transition');
   });
 
   // --- Autosave ---
@@ -7118,7 +7787,67 @@ document.addEventListener('DOMContentLoaded', () => {
     // if we don't re-clamp.
     if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
     if (typeof fitBottomBar === 'function') fitBottomBar();
+    // Kanban peer-cursor anchors are viewport-relative — resize shifts them.
+    if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
+    // Kanban shift depends on panel left edge which moves with the viewport.
+    if (typeof adjustKanbanForPanel === 'function') adjustKanbanForPanel();
   });
+
+  // --- Kanban scroll repositioning for peer cursors. Each column's card
+  //     list scrolls vertically; the whole kanban scrolls horizontally on
+  //     mobile. Both shift `.kb-card.getBoundingClientRect()` and therefore
+  //     the cursor positions anchored off them. ---
+  document.querySelectorAll('.kb-column-cards').forEach((c) => {
+    c.addEventListener('scroll', () => {
+      if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
+    }, { passive: true });
+  });
+  document.getElementById('kanban').addEventListener('scroll', () => {
+    if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
+  }, { passive: true });
+
+  // --- Hide-presence eye toggle. Click hides/shows both #presence-bar and
+  //     #btn-follow-toggle; state is per-user (localStorage), applies to
+  //     both views. Eye fades in on hover over either presence element or
+  //     itself; stays faintly visible while the cluster is hidden so the
+  //     user can un-hide. ---
+  const presenceEye = document.getElementById('presence-eye');
+  const presenceBar = document.getElementById('presence-bar');
+  const followBtn = document.getElementById('btn-follow-toggle');
+  function setPresenceHidden(hidden) {
+    document.body.classList.toggle('presence-hidden', !!hidden);
+    try { localStorage.setItem('graphtask:presence-hidden', hidden ? '1' : '0'); } catch {}
+    if (!presenceEye) return;
+    // Icon swap is CSS-driven off `body.presence-hidden` + `:hover`.
+    // Only the label/title need updating here.
+    const label = hidden ? 'Show collaborators' : 'Hide collaborators';
+    presenceEye.setAttribute('aria-label', label);
+    presenceEye.title = label;
+  }
+  try {
+    if (localStorage.getItem('graphtask:presence-hidden') === '1') setPresenceHidden(true);
+  } catch {}
+  if (presenceEye) {
+    presenceEye.addEventListener('click', () => {
+      setPresenceHidden(!document.body.classList.contains('presence-hidden'));
+    });
+    const showEye = () => presenceEye.classList.add('is-visible');
+    const hideEye = () => {
+      // Don't remove `.is-visible` while the cluster is hidden — the eye
+      // needs to stay reachable to un-hide. CSS handles the faded state
+      // via body.presence-hidden.
+      if (!document.body.classList.contains('presence-hidden')) {
+        presenceEye.classList.remove('is-visible');
+      }
+    };
+    [presenceBar, followBtn, presenceEye].forEach((el) => {
+      if (!el) return;
+      el.addEventListener('mouseenter', showEye);
+      el.addEventListener('mouseleave', hideEye);
+      el.addEventListener('focusin', showEye);
+      el.addEventListener('focusout', hideEye);
+    });
+  }
 
   document.getElementById('task-form').addEventListener('submit', (e) => e.preventDefault());
 

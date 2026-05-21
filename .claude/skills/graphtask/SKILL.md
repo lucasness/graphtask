@@ -69,10 +69,11 @@ WRITE_HEADERS=(
 )
 
 # Authed deployments (AUTH_PROVIDER=clerk): the user generates an agent token
-# in the in-app Settings → Agent tokens panel and exports it. If the env var
-# is set, send it as a bearer token on every write so the server can attribute
-# the request to the user. On no-auth deployments the var is unset and the
-# block below is a no-op.
+# in the in-app Settings → Agent tokens panel and exports it as
+# GRAPHTASK_AGENT_TOKEN. **Required on auth-enabled instances** — the section 1
+# preflight refuses to proceed without it (anonymous writes would create
+# orphan graphs that don't appear in the user's "My graphs" sidebar). On
+# no-auth deployments the var is unset and the block below is a no-op.
 if [ -n "$GRAPHTASK_AGENT_TOKEN" ]; then
   WRITE_HEADERS+=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
   READ_HEADERS=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
@@ -130,23 +131,46 @@ When you create the file, also add `.graphtask/` to `.gitignore` if it isn't the
 ```bash
 GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 
-# Preflight: confirm the app is reachable before doing anything else.
-if ! curl -sS --max-time 2 -o /dev/null "$GT_BASE/api/graphs"; then
+# Preflight: probe /api/config to confirm reachability AND learn whether auth
+# is enabled. /api/config returns {auth_enabled, provider, viewer_user_id}.
+CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
   echo "graphtask not reachable at $GT_BASE — start the app or set GRAPHTASK_BASE_URL." >&2
+  exit 1
+}
+
+# Auth gate: on auth-enabled instances, refuse to proceed without a token.
+# Anonymous agent writes create orphan graphs (owner_user_id NULL) that won't
+# appear in the user's "My graphs" sidebar — fail loud, not silent.
+AUTH_ENABLED=$(echo "$CONFIG" | jq -r .auth_enabled)
+if [ "$AUTH_ENABLED" = "true" ] && [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
+  cat >&2 <<EOF
+graphtask at $GT_BASE has auth enabled; GRAPHTASK_AGENT_TOKEN is required.
+Open the in-app Agent tokens panel (key icon), generate a token, then persist it
+via whichever env mechanism your project uses, e.g.:
+  export GRAPHTASK_AGENT_TOKEN=gt_...        # this shell only
+  echo GRAPHTASK_AGENT_TOKEN=gt_... >> ~/.zshrc   # all future shells
+Then re-run.
+EOF
   exit 1
 fi
 
 mkdir -p .graphtask
 if [ ! -f .graphtask/graph-id ]; then
-  curl -sS -X POST "$GT_BASE/api/graphs" \
+  GID=$(curl -sS -X POST "$GT_BASE/api/graphs" \
     "${WRITE_HEADERS[@]}" \
     -d '{"name":"Project plan"}' \
-    | jq -r .id > .graphtask/graph-id
+    | jq -r .id)
+  echo "$GID" > .graphtask/graph-id
   grep -qxF '.graphtask/' .gitignore 2>/dev/null || echo '.graphtask/' >> .gitignore
+  # Show the user the URL to open. /g/:gid is the same route for every view
+  # (graph, kanban, …) — view is a per-user localStorage flag, not in the URL.
+  echo "Graph created: $GT_BASE/g/$GID"
 fi
 GID="$(cat .graphtask/graph-id)"
 grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
 ```
+
+**Always print the URL after creating a graph** so the user can open the canvas immediately — don't just hand them the id and make them assemble the URL themselves. The same applies any time you create a *new* graph mid-session (e.g., if you rotate-id or start a separate plan).
 
 If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/rotate-id` to invalidate it and update the local file with the new id from the response.
 
@@ -511,7 +535,7 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
 3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.dev.wafer.works`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`.
-4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances only) — tell them to open the in-app key-icon panel, generate a token, copy the `gt_…` string, and `export GRAPHTASK_AGENT_TOKEN=gt_…` so your writes attribute to their account.
+4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **required**, not optional) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). The section 1 preflight will refuse to run without it on auth-enabled instances, so this is a blocker if missed.
 
 If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
 

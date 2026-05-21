@@ -72,13 +72,30 @@ The semantic layer gives each role a stable name; theme switching rebinds the na
 
 **Status-family raw tokens used directly** — components reach into the reference layer for these because they ARE the role: `--green-strong` for the Save/Confirm pill, `--red-strong` for Delete/Rotate, `--orange-strong` / `--orange-medium` / `--orange-light` and their purple/blue/green/red/yellow siblings for the user-pickable swatches.
 
+**Task-status semantic tokens** — the four task statuses (`todo` / `in_progress` / `review` / `done`) each have a `stroke` and `fill` token. These are the single source of truth for status visuals across **both** the graph view (cytoscape node fills + borders) and the kanban view (column title color + flash backgrounds). Change a value here and both views update with no JS edits. Palette rotated 2026-05-15 to emphasize "warm = active, calm = ready, settled = done":
+
+| Token | Value | Role |
+|---|---|---|
+| `--status-todo-stroke` | `var(--color-storm)` | Neutral grey — todo column title; no fill (default body text on plain canvas). |
+| `--status-in-progress-stroke` | `#e88a1b` | Warm amber — "actively working". |
+| `--status-in-progress-fill` | `#ffe7c5` | Soft amber wash for backgrounds + flash. |
+| `--status-review-stroke` | `#49ca80` | Calm green — "ready for sign-off, awaiting another set of eyes". |
+| `--status-review-fill` | `#deffe3` | |
+| `--status-done-stroke` | `#4f46e5` | Settled indigo — "complete, archived". Visually distinct from active amber + ready-state green so finished work recedes. |
+| `--status-done-fill` | `#e0e7ff` | |
+
+Note: in_progress amber + done indigo are **independent of the orange/green/blue/yellow/red/purple status families** above. The status-family tokens are for user-pickable node and font colors (swatches in the appearance picker); the `--status-*-stroke/fill` tokens are for the system's own task-status semantics. They happened to overlap before May 15 but are now decoupled — don't substitute one for the other.
+
+The graph view's cytoscape `style` array can't take CSS variables directly (it's a JS object), so `statusPalette()` in `public/app.js` reads the tokens via `getComputedStyle(document.documentElement)` at boot and feeds them in. As long as you touch these tokens (not the JS), both views stay in sync.
+
 **Picking a color token (decision order):**
 
 1. If the role is in the *Brand + interactive aliases* table above, use that name.
 2. If you need a text color, use a Typographic Slate Family token (see that section for the role each one carries).
 3. If you need a constructive/destructive button color, use `--green-strong` / `--red-strong` directly.
-4. If you need a status hue for a chip / swatch / fill, reach into the status families directly (`--{color}-{light|medium|strong}`).
-5. If none of the above fits, the design system is missing a token — add a semantic alias rather than hardcoding a hex.
+4. If you need a task-status hue (column title / status flash / cytoscape node), use the `--status-*` tokens above. **Never** substitute a status-family token (`--green-strong` etc.) — that drifts the two views apart.
+5. If you need a status hue for a chip / swatch / fill that is NOT a task status, reach into the status families directly (`--{color}-{light|medium|strong}`).
+6. If none of the above fits, the design system is missing a token — add a semantic alias rather than hardcoding a hex.
 
 ## Tokens — Typography
 
