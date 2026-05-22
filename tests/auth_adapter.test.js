@@ -33,6 +33,7 @@ describe('auth adapter (none)', () => {
       auth_enabled: false,
       provider: 'none',
       publishable_key: null,
+      public_url: null,
       viewer_user_id: null,
     });
   });

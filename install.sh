@@ -100,6 +100,10 @@ Next steps:
   1. Restart Claude Code so the new hooks load.
   2. Set the base URL if you're not using a local instance:
        export GRAPHTASK_BASE_URL=https://your-graphtask.example.com
+     If you ALSO operate that instance (self-hosted, Docker, behind a
+     reverse proxy, etc.), set PUBLIC_BASE_URL on the SERVER side to the
+     same URL so the skill prints links your browser can reach. See the
+     graphtask README's "Environment variables" section.
   3. (If the instance has AUTH_PROVIDER=clerk) Sign in, open
      Settings → Agent tokens, mint a token, then export it:
        export GRAPHTASK_AGENT_TOKEN=gt_...

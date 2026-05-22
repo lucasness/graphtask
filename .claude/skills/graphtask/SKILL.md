@@ -1,15 +1,15 @@
 ---
 name: graphtask
-description: Materialize any multi-step plan as a graphtask graph, then drive execution from the graph. The graph IS your execution scaffold — not a side tracker. Tasks move todo → in_progress → review (never done; that's a human gate). Includes status-aware traversal, transactional bulk edges, and live canvas updates the user can watch.
-when_to_use: Use IMMEDIATELY after exiting Plan mode, after the user approves a plan, or any time you're about to execute multi-step work — turn the plan into a graph FIRST, then walk the graph task-by-task. Also fires on explicit triggers: "turn this plan into a graph", "track this in graphtask", "what should I work on next?", "what's blocking X?".
+description: Build any structured artifact as a live graph of markdown nodes connected by typed edges — execution plans, research and concept maps, relationship networks, decision trees, or whatever shape the user invents next. Nodes hold markdown bodies with status (todo → in_progress → review → done); edges are dependency (DAG, cycle-checked) or related (free-form). The browser canvas updates live so the user watches the work form. Includes status-aware traversal (ready/blockers/unblocks), transactional bulk edges, presence + selection so humans see your focus, and OCC merges that protect UI-managed fields.
+when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked". Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
 allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *)
 ---
 
 # graphtask
 
-graphtask is a graph-based task manager. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface — you create graphs, add tasks (markdown with frontmatter), wire dependency or related edges between them, and update status as you work. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
+graphtask is a graph workspace — markdown nodes connected by typed edges, on a live canvas anyone can watch. Use it for execution plans, research and concept maps, relationship networks, decision trees, or whatever shape the user invents next. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface: create a graph, add tasks (markdown with frontmatter — "task" is the API noun for any node, regardless of graph kind), wire dependency or related edges between them, and update status as work or research progresses. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
 
-The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, viewer_user_id}` and tells you which access model is active.
+The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, public_url, viewer_user_id}` and tells you which access model is active and what URL to print for the user. On hosted or containerized deployments your API base (`$GT_BASE`) may be a loopback or private host that the user's browser can't reach; `public_url` is the user-facing one. Always print `public_url` (or `$GT_BASE` as fallback when null), never raw `$GT_BASE`.
 
 ## Access model
 
@@ -100,23 +100,80 @@ Graph names are not globally unique — duplicate-name `POST` and `PATCH` both s
 
 ## When this skill applies
 
-**Primary use case: executing a plan.** Whenever you have a multi-step plan — whether you just exited Plan mode, the user approved a plan, or you're about to do work that has more than one logical step — *use this skill before writing any implementation code*. The graph is your execution scaffold. The flow:
+### Why a graph beats a flat plan or notes
+
+When the work has any structure, **propose the graph** — and tell the user why if they haven't asked:
+
+- **Dependencies are visible.** What blocks what is a glance, not a paragraph. The server answers "what's ready" / "what's blocking X" / "what does finishing Y unlock" so neither of you has to reason about ordering by hand.
+- **The structure is the artifact.** For research, mapping, and concept work, the graph itself is the deliverable the user keeps. Prose gets buried; a graph stays explorable.
+- **Live two-way collaboration.** Humans watching the canvas see nodes appear, status flip, edges connect — and can rename, rewire, or add without breaking your flow. A flat plan can't offer that.
+- **Persistent, living context.** Each node body is a document that evolves with the work. A week later the graph still reflects current understanding, not a snapshot.
+- **Traversal queries.** "Critical path." "What's unexplored." "What does finishing X unlock." All one API call away once the graph exists.
+
+The cost is one batched setup at the start and a few seconds per status flip. The benefit compounds across the session.
+
+### Common shapes
+
+The same primitive (markdown nodes + dependency/related edges + status) covers many shapes. Pick whichever fits the user's request; the user can invent new ones.
+
+| Shape | Nodes are… | Edges are… | Status reads as… |
+|---|---|---|---|
+| **Execution plan** | tasks, one unit of work each | mostly `dependency`; `related` for cross-cutting context | progress: todo → in_progress → review → done |
+| **Research / concept map** | concepts, entities, papers, findings | mostly `related`; `dependency` when one concept presupposes another | depth: unexplored → digging in → drafted → human-verified |
+| **Relationship network** (keiretsu, ecosystem, org chart) | entities (companies, people, systems) | `related`, typed by body label — "invests in", "competes with", "feeds into" | confirmation: claim → being checked → sourced → human-confirmed |
+| **Decision tree / option map** | options, criteria, outcomes | `dependency` for "requires"; `related` for "alternative to" | exploration depth |
+| **Anything else with structure** | whatever the user calls them | whatever fits | whatever progress means here |
+
+If the user describes work that doesn't fit a row above but has structure, **propose the graph anyway** — the data model is general; the rows above are starting points, not the menu.
+
+### Strong triggers — reach for the graph when you see these
+
+- Just exited Plan mode, or the user approved a multi-step plan.
+- "Turn this plan into a graph" / "track this in graphtask" / "build a graph of …".
+- "Map the relationships between …" / "show me how X connects to Y" / "research how Z works" (with > ~3 things to track).
+- "Model the …" / "diagram the …" / "show the structure of …".
+- "What's ready / what's blocking X / what does finishing Y unlock?" — these only make sense on an existing graph.
+
+For ambiguous cases ("help me understand X", "what should I think about for Y"), **suggest** the graph with the pitch above and let the user decide. Don't force it; the goal is to make it the obvious choice, not the only choice.
+
+### Skip the graph when
+
+- The work is genuinely one-step — typo fixes, single-line tweaks, single-question lookups.
+- The user explicitly asks for a verbal answer or a flat list.
+- There's no real structure (one node + zero edges isn't worth the canvas).
+
+### Once a graph is active, keep it synced — HARD RULE
+
+The moment a graph exists for this body of work, it becomes the source of truth, and **all subsequent work on the subject must update the graph in real time**. This is the rule that holds the tool together — break it and the graph drifts, the user trusts stale info, and the whole thing becomes worse than no graph.
+
+- **Status transitions happen as the work happens**, not batched at the end. Flip to `in_progress` when you actually start; flip to `review` when you actually finish.
+- **Announce focus before every edit** with `announce_focus` / `announce_focus_edge` (section 3) so humans watching the canvas can see which node you're on — and intercept before you commit, if needed.
+- **New findings update the right node's body**, not just a chat message. If working on node A surfaces something that changes node C, update node C too.
+- **New connections become new edges.** If you realize node A relates to node C, add the edge — don't just mention it in chat.
+- **Re-read before each write** (the OCC dance in section 3). The user may have edited the graph in the UI since your last touch.
+- **Touched gids get appended** to `.graphtask/agent-session-graphs` so the Stop hook can depart your presence cleanly.
+- **Run tests / code / research alongside the graph, not instead of it.** If you find yourself working for more than a few minutes without touching the graph, that's a bug — pause and reconcile.
+
+This applies to every shape, not just execution graphs. A research graph that doesn't get updated as you read sources is just a stale diagram.
+
+### The execution loop (for plan-shaped graphs)
+
+Plan-shaped graphs have an ordering, so they get an explicit loop on top of the sync rule:
 
 1. Resolve the active graph (section 1).
-2. Materialize the **entire plan** as tasks + dependency edges in one batch (section 2). The user now sees the structure on the canvas.
-3. Walk the graph task-by-task (section 4): pick the first ready task, check its blockers (section 3), mark `in_progress`, do the actual work, mark `review` when finished, move on.
-4. After every task is in `review`, stop and tell the user it's ready for them to confirm.
+2. Materialize the **entire plan** as tasks + dependency edges in one batch (section 2). The user sees the structure on the canvas before any code is written.
+3. Walk the graph task-by-task (section 4): pick the first ready task, check its blockers (section 3), announce focus, mark `in_progress`, do the work, mark `review` when finished, move on.
+4. After every task is in `review`, stop and tell the user it's ready to confirm.
 
-This sequence is the pattern. Don't dive into implementation, then "remember" to make a graph after — the user wants to watch the structure appear *before* the work starts, then watch each task light up as you progress.
+Don't dive into implementation, then "remember" to make a graph after — the user wants to watch the structure appear *before* work starts, then watch each task light up as you progress.
 
-**Other triggers (subordinate to the primary pattern):**
+For research / mapping / freeform graphs, the loop is looser: explore → add nodes → connect → refine → repeat, with the same sync discipline above. There's no enforced ordering and no "stop at review" gate — the graph keeps growing until the user says it's complete.
+
+**Other quick queries** (any graph shape):
 
 - *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize.
-- *"What can I work on next?"* — `GET /tasks/ready`. If empty, look for `review` tasks whose `/unblocks` is non-empty (section 4).
-- *"Track this in graphtask"* / *"Turn this plan into a graph"* — same as the primary flow, just user-initiated.
-- *"Mark X done"* / *"Finish X"* — you move it to `review`, never `done`. See section 3.
-
-**Skip if the work is one-step** — a typo fix, a quick question, a one-line tweak. Graph overhead isn't worth it.
+- *"What can I work on next?"* — `GET /tasks/ready` (plan graphs) or `GET /tasks/leaves` then filter to `status=todo` (any graph).
+- *"Mark X done"* / *"Finish X"* — you move it to `review`. Only flip to `done` if the user explicitly says so for *that* node. See section 3.
 
 ## 1. Resolve the active graph
 
@@ -132,7 +189,8 @@ When you create the file, also add `.graphtask/` to `.gitignore` if it isn't the
 GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 
 # Preflight: probe /api/config to confirm reachability AND learn whether auth
-# is enabled. /api/config returns {auth_enabled, provider, viewer_user_id}.
+# is enabled. /api/config returns {auth_enabled, provider, public_url,
+# viewer_user_id}.
 CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
   echo "graphtask not reachable at $GT_BASE — start the app or set GRAPHTASK_BASE_URL." >&2
   exit 1
@@ -142,6 +200,14 @@ CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
 # Anonymous agent writes create orphan graphs (owner_user_id NULL) that won't
 # appear in the user's "My graphs" sidebar — fail loud, not silent.
 AUTH_ENABLED=$(echo "$CONFIG" | jq -r .auth_enabled)
+
+# User-facing base URL — what humans open in a browser. May differ from
+# $GT_BASE (loopback inside a container, hosted gateway, etc.). The server
+# returns null when the operator hasn't set PUBLIC_BASE_URL; in that case
+# the API base is also the user-facing one (typical for local dev). Always
+# use $GT_PUBLIC for URLs printed to the user; $GT_BASE stays for API calls.
+GT_PUBLIC=$(echo "$CONFIG" | jq -r '.public_url // empty')
+[ -z "$GT_PUBLIC" ] && GT_PUBLIC="$GT_BASE"
 if [ "$AUTH_ENABLED" = "true" ] && [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
   cat >&2 <<EOF
 graphtask at $GT_BASE has auth enabled; GRAPHTASK_AGENT_TOKEN is required.
@@ -164,7 +230,9 @@ if [ ! -f .graphtask/graph-id ]; then
   grep -qxF '.graphtask/' .gitignore 2>/dev/null || echo '.graphtask/' >> .gitignore
   # Show the user the URL to open. /g/:gid is the same route for every view
   # (graph, kanban, …) — view is a per-user localStorage flag, not in the URL.
-  echo "Graph created: $GT_BASE/g/$GID"
+  # Use $GT_PUBLIC, not $GT_BASE: on hosted/containerized deployments the
+  # API base is loopback or a private host that the user's browser can't reach.
+  echo "Graph created: $GT_PUBLIC/g/$GID"
 fi
 GID="$(cat .graphtask/graph-id)"
 grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
@@ -174,13 +242,15 @@ grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .
 
 If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/rotate-id` to invalidate it and update the local file with the new id from the response.
 
-## 2. Convert a plan into a graph
+## 2. Build the graph
 
-**Plan first, then execute.** When the user gives you a multi-step plan, materialize the *entire* DAG before starting the first task. The graph is the artifact the user reviews — they want to see structure on the canvas, not just the next step.
+**Materialize what you already know up front.** The graph is the artifact the user reviews — they want to see structure on the canvas, not get nodes one at a time. For plan-shaped graphs, lay down the **entire DAG** before starting the first task. For research / mapping / freeform graphs, lay down the **starting nodes and connections you already know about**, then grow the graph as you learn.
 
-**One task = one user-meaningful unit of work.** Don't create a task per file edit or git commit. Granularity should match what a human would read in a status update.
+**One node = one user-meaningful concept or unit of work.** Don't create a node per file edit, per git commit, or per sentence of notes. Granularity should match what a human would read in a status update or scan as a single concept.
 
-For each task, write a real markdown body — title alone is not enough. The body is what the human sees when reviewing your work. See section 3 for what to put in the body at each status.
+For each node, write a real markdown body — title alone is never enough. The body is what the human sees when reviewing or exploring. See section 3 for what to put in the body at each status.
+
+The example below is plan-shaped (`dependency` edges for ordering). For a research / mapping shape, swap `"type":"dependency"` for `"type":"related"` and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape.
 
 ```bash
 # Tasks. Body content tells the user what you intend to do, in plain markdown.
@@ -208,16 +278,18 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
 
 `POST /edges/bulk` semantics: validates every edge, opens a transaction, inserts them all, then runs cycle detection across the resulting graph. **Any failure rolls everything back** and returns `400`/`409` with `{ error, failedAt: <index> }`. Fix the offending edge and retry the whole batch — never assume partial application.
 
-## 3. Status discipline and task body content
+## 3. Status discipline and node body content
 
-Status enum: `todo` → `in_progress` → `review` → `done`. Each transition should bring **new body content** that justifies the status. Don't bump status without updating the body — the body is the artifact.
+Status enum: `todo` → `in_progress` → `review` → `done`. Each transition should bring **new body content** that justifies the status. Don't bump status without updating the body — the body is the artifact, regardless of graph shape.
 
-| Status | Who sets it | What the body should contain |
+The body content should always justify the current status. What "justify" means depends on what the node represents:
+
+| Status | Who sets it | Body content (any graph shape) |
 |---|---|---|
-| `todo` | You (during plan creation) | The approach: what needs to be done, why, any known constraints. |
-| `in_progress` | You (when you actually start) | Running notes: what you're investigating, what you've ruled out, files you're touching. Update as you go. |
-| `review` | You (when you think it's done) | What you did, files changed, how to verify. **This is what the human reads to confirm.** Make it self-contained. |
-| `done` | **Only the human** | Their confirmation that they accept your work. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that task only* — don't infer permission for siblings, parents, or the rest of the graph. |
+| `todo` | You (during graph creation) | The starting frame. Execution nodes: the approach, what needs to be done, known constraints. Research / mapping nodes: the question or claim, what we want to know, what's open. |
+| `in_progress` | You (when you actually start) | Running notes: what you're investigating, what you've ruled out, files / sources you're touching. Update as you go. |
+| `review` | You (when you think it's done) | Self-contained synthesis ready for the human. Execution nodes: what you did, files changed, how to verify. Research / mapping nodes: the synthesized finding with sources and reasoning. **This is what the human reads to confirm.** |
+| `done` | **Only the human** | Their confirmation that they accept the node. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that node only* — don't infer permission for siblings, parents, or the rest of the graph. |
 
 **Read before you write, and send OCC fields.** Always GET the task right before you PATCH it AND include `base_version` + `base_content` in the PATCH body. Without those, the server falls back to "blind replace" and your write silently overwrites any UI-managed frontmatter keys (positions `x`/`y`, `color`, `curve`) that exist on the row but aren't in your new content. With OCC fields the server runs a three-way merge that preserves fields you didn't touch — so you can safely rewrite the title/status/body without enumerating every other meta key.
 
@@ -345,7 +417,9 @@ This protection only covers that fixed list. Custom frontmatter keys you drop fr
 
 ## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
-The server does the recursion — never compute readiness yourself. All four queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
+These queries are most natural on plan-shaped graphs where ordering matters, but the **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done."
+
+The server does the recursion — never compute readiness yourself. All four status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
 
 ```bash
 # What can I work on right now? Returns todo tasks with all recursive prereqs done.
@@ -467,7 +541,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}` — probe first to learn the deployment mode |
+| GET | `/api/config` | `{auth_enabled, provider, publishable_key, public_url, viewer_user_id}` — probe first to learn the deployment mode and the user-facing URL |
 | GET | `/api/graphs` | Lists graphs the viewer owns + is a member of (auth on); all graphs (auth off) |
 | POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `anon_role='viewer'` and `settings={}` |
 | GET | `/api/graphs/:id` | One graph; also returns `viewer_can_edit` / `viewer_can_manage` based on the caller's role |
@@ -534,8 +608,19 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    ```
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
-3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.dev.wafer.works`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`.
+3. **`GRAPHTASK_BASE_URL`** — where **the agent** makes API calls. Local dev: leave unset; the recipes default to `http://127.0.0.1:3000`. Hosted/remote agent: `export GRAPHTASK_BASE_URL=https://graphtask.example.com` so the recipes hit the right host. If the user runs the agent inside the same container/host as the server, loopback is fine even on a hosted deployment.
 4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **required**, not optional) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). The section 1 preflight will refuse to run without it on auth-enabled instances, so this is a blocker if missed.
+
+### For operators deploying graphtask (Docker, self-hosted, wafer images, etc.)
+
+`PUBLIC_BASE_URL` is the **server-side** env that declares the instance's user-facing URL. Set it once when starting the server; `/api/config` then surfaces it as `public_url`, and every skill recipe that prints a URL uses it automatically — no matter what `GRAPHTASK_BASE_URL` the agent has, no matter who's connecting.
+
+- **Local dev** (`npm run dev` or similar): leave `PUBLIC_BASE_URL` unset. The agent prints whatever it used as `GRAPHTASK_BASE_URL` (loopback), which is correct because the user shares the same machine.
+- **Self-hosted with Docker/Compose**: set it in the service env, e.g. `PUBLIC_BASE_URL=https://graphtask.example.com` in `docker-compose.yml` or the systemd unit. The agent can talk to the container over loopback or a private network and still print the public DNS name.
+- **Wafer-hosted**: the wafer image sets `PUBLIC_BASE_URL=https://graphtask.<APP_DOMAIN>` at boot so every wafer's graphtask self-describes correctly. Agents inside the wafer hit loopback for speed; users see the proper public host.
+- **Reverse proxy / behind a CDN**: set it to whatever URL the public sees (the proxy's outside, not the upstream). Trailing slash is stripped automatically.
+
+If `PUBLIC_BASE_URL` is unset and the agent's `GRAPHTASK_BASE_URL` happens to also be a private host (loopback inside a container, internal DNS, etc.), the printed URL will be unreachable to the user — that's the misconfiguration to look out for. Symptom: "the URL the agent prints doesn't open."
 
 If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
 
