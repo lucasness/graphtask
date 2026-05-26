@@ -36,25 +36,12 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // Frontend bootstrap: tells the browser whether to load Clerk JS and which
 // publishable key to use. Auth-off deployments get `{auth_enabled: false}` and
 // render no sign-in chrome.
-//
-// `public_url` is the operator-declared user-facing URL for this instance
-// (set via PUBLIC_BASE_URL at boot). Agents that talk to the API via a
-// different host (loopback inside a container, hosted gateway, etc.) read
-// this to print the URL a human would actually open in a browser. Null when
-// unset — agents fall back to whatever base they used to reach this endpoint.
-const PUBLIC_URL = (process.env.PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '') || null;
-// Surface the resolved value at boot so operators see in their logs whether
-// PUBLIC_BASE_URL was picked up. Plain info, not a warning — unset is correct
-// for local dev. Symptom of misconfig in a public deployment is "URLs the
-// skill prints don't open in a browser"; this log makes the cause obvious.
-console.log(`graphtask: public_url = ${PUBLIC_URL ?? '(unset — agents will use their own GRAPHTASK_BASE_URL)'}`);
 app.get('/api/config', (req, res) => {
   const provider = authAdapter.provider;
   res.json({
     auth_enabled: provider !== 'none',
     provider,
     publishable_key: authAdapter.publishableKey?.() ?? null,
-    public_url: PUBLIC_URL,
     // The frontend needs the internal user UUID (not Clerk's user_xxx id)
     // to partition the sidebar by `graph.owner_user_id`. Exposed only when
     // the request resolved to a signed-in user; null otherwise.

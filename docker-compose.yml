@@ -3,13 +3,6 @@ services:
     build: .
     ports:
       - "${HOST_PORT:-3000}:3000"
-    environment:
-      # Surfaced via /api/config.public_url so the bundled Claude Code skill
-      # prints URLs your browser can actually reach. REQUIRED when exposing
-      # this container publicly (reverse proxy, real domain, CDN, etc.);
-      # leave unset for laptop-only use — see .env.example for details.
-      # Set in your shell or a sibling .env file picked up by docker-compose.
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     # Raise the container's open-file-descriptor cap from the conservative
     # 1024 default. Each open SSE connection (one per browser tab watching a
     # graph) costs one fd; 65535 leaves headroom for ~10K+ concurrent viewers

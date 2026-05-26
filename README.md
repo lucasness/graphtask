@@ -82,13 +82,6 @@ language-specific.
 **Environment variables**
 
 - `HOST_PORT` _(optional, default `3000`)_ — host port to publish the app on.
-- `PUBLIC_BASE_URL` _(required if exposing the container publicly)_ — the
-  user-facing URL of this instance, e.g. `https://graphtask.example.com`.
-  Surfaced to the bundled Claude Code skill via `/api/config` so it prints
-  URLs your browser can reach instead of the container's internal host.
-  Leave unset for laptop-only use (the agent's `GRAPHTASK_BASE_URL` is also
-  the right URL in that case). See `.env.example` for the full rationale
-  and failure mode.
 
 **Setup**
 
@@ -171,13 +164,6 @@ from `.env` by `npm start`)
 - If neither is set, falls back to `postgresql://postgres@localhost/graphtask`.
 - `PORT` _(optional, default `3000`)_ — port the Express server binds to on
   `127.0.0.1`.
-- `PUBLIC_BASE_URL` _(required if exposing the server publicly)_ — the
-  user-facing URL of this instance, e.g. `https://graphtask.example.com`.
-  Surfaced to the bundled Claude Code skill via `/api/config` so it prints
-  URLs your browser can reach instead of the loopback the agent talks to.
-  Leave unset for single-machine dev (your `GRAPHTASK_BASE_URL` doubles as
-  the user-facing URL there). Critical when running behind a reverse proxy
-  or under a real domain — see `.env.example` for the failure mode.
 - `AUTH_PROVIDER` _(optional, default `none`)_ — see "Auth modes" below.
 
 See `.env.example` for a fully-commented template.

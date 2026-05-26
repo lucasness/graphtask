@@ -9,7 +9,7 @@ allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *
 
 graphtask is a graph workspace — markdown nodes connected by typed edges, on a live canvas anyone can watch. Use it for execution plans, research and concept maps, relationship networks, decision trees, or whatever shape the user invents next. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface: create a graph, add tasks (markdown with frontmatter — "task" is the API noun for any node, regardless of graph kind), wire dependency or related edges between them, and update status as work or research progresses. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
 
-The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, public_url, viewer_user_id}` and tells you which access model is active and what URL to print for the user. On hosted or containerized deployments your API base (`$GT_BASE`) may be a loopback or private host that the user's browser can't reach; `public_url` is the user-facing one. Always print `public_url` (or `$GT_BASE` as fallback when null), never raw `$GT_BASE`.
+The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, viewer_user_id}` and tells you which access model is active.
 
 ## Access model
 
@@ -189,8 +189,7 @@ When you create the file, also add `.graphtask/` to `.gitignore` if it isn't the
 GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 
 # Preflight: probe /api/config to confirm reachability AND learn whether auth
-# is enabled. /api/config returns {auth_enabled, provider, public_url,
-# viewer_user_id}.
+# is enabled. /api/config returns {auth_enabled, provider, viewer_user_id}.
 CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
   echo "graphtask not reachable at $GT_BASE — start the app or set GRAPHTASK_BASE_URL." >&2
   exit 1
@@ -200,14 +199,6 @@ CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
 # Anonymous agent writes create orphan graphs (owner_user_id NULL) that won't
 # appear in the user's "My graphs" sidebar — fail loud, not silent.
 AUTH_ENABLED=$(echo "$CONFIG" | jq -r .auth_enabled)
-
-# User-facing base URL — what humans open in a browser. May differ from
-# $GT_BASE (loopback inside a container, hosted gateway, etc.). The server
-# returns null when the operator hasn't set PUBLIC_BASE_URL; in that case
-# the API base is also the user-facing one (typical for local dev). Always
-# use $GT_PUBLIC for URLs printed to the user; $GT_BASE stays for API calls.
-GT_PUBLIC=$(echo "$CONFIG" | jq -r '.public_url // empty')
-[ -z "$GT_PUBLIC" ] && GT_PUBLIC="$GT_BASE"
 if [ "$AUTH_ENABLED" = "true" ] && [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
   cat >&2 <<EOF
 graphtask at $GT_BASE has auth enabled; GRAPHTASK_AGENT_TOKEN is required.
@@ -230,9 +221,7 @@ if [ ! -f .graphtask/graph-id ]; then
   grep -qxF '.graphtask/' .gitignore 2>/dev/null || echo '.graphtask/' >> .gitignore
   # Show the user the URL to open. /g/:gid is the same route for every view
   # (graph, kanban, …) — view is a per-user localStorage flag, not in the URL.
-  # Use $GT_PUBLIC, not $GT_BASE: on hosted/containerized deployments the
-  # API base is loopback or a private host that the user's browser can't reach.
-  echo "Graph created: $GT_PUBLIC/g/$GID"
+  echo "Graph created: $GT_BASE/g/$GID"
 fi
 GID="$(cat .graphtask/graph-id)"
 grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
@@ -541,7 +530,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/config` | `{auth_enabled, provider, publishable_key, public_url, viewer_user_id}` — probe first to learn the deployment mode and the user-facing URL |
+| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}` — probe first to learn the deployment mode |
 | GET | `/api/graphs` | Lists graphs the viewer owns + is a member of (auth on); all graphs (auth off) |
 | POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `anon_role='viewer'` and `settings={}` |
 | GET | `/api/graphs/:id` | One graph; also returns `viewer_can_edit` / `viewer_can_manage` based on the caller's role |
@@ -608,19 +597,8 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    ```
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
-3. **`GRAPHTASK_BASE_URL`** — where **the agent** makes API calls. Local dev: leave unset; the recipes default to `http://127.0.0.1:3000`. Hosted/remote agent: `export GRAPHTASK_BASE_URL=https://graphtask.example.com` so the recipes hit the right host. If the user runs the agent inside the same container/host as the server, loopback is fine even on a hosted deployment.
+3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.dev.wafer.works`. Self-hosted: `export GRAPHTASK_BASE_URL=https://graphtask.example.com`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`. The agent uses this for both API calls AND the URL it prints to the user — so it must be reachable from the user's browser, not just the agent.
 4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **required**, not optional) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). The section 1 preflight will refuse to run without it on auth-enabled instances, so this is a blocker if missed.
-
-### For operators deploying graphtask (Docker, self-hosted, wafer images, etc.)
-
-`PUBLIC_BASE_URL` is the **server-side** env that declares the instance's user-facing URL. Set it once when starting the server; `/api/config` then surfaces it as `public_url`, and every skill recipe that prints a URL uses it automatically — no matter what `GRAPHTASK_BASE_URL` the agent has, no matter who's connecting.
-
-- **Local dev** (`npm run dev` or similar): leave `PUBLIC_BASE_URL` unset. The agent prints whatever it used as `GRAPHTASK_BASE_URL` (loopback), which is correct because the user shares the same machine.
-- **Self-hosted with Docker/Compose**: set it in the service env, e.g. `PUBLIC_BASE_URL=https://graphtask.example.com` in `docker-compose.yml` or the systemd unit. The agent can talk to the container over loopback or a private network and still print the public DNS name.
-- **Wafer-hosted**: the wafer image sets `PUBLIC_BASE_URL=https://graphtask.<APP_DOMAIN>` at boot so every wafer's graphtask self-describes correctly. Agents inside the wafer hit loopback for speed; users see the proper public host.
-- **Reverse proxy / behind a CDN**: set it to whatever URL the public sees (the proxy's outside, not the upstream). Trailing slash is stripped automatically.
-
-If `PUBLIC_BASE_URL` is unset and the agent's `GRAPHTASK_BASE_URL` happens to also be a private host (loopback inside a container, internal DNS, etc.), the printed URL will be unreachable to the user — that's the misconfiguration to look out for. Symptom: "the URL the agent prints doesn't open."
 
 If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
 
