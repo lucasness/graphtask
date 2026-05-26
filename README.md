@@ -4,6 +4,10 @@ A graph-based task manager. Tasks are nodes; relationships between them are
 edges. Each user keeps multiple separate **graphs** — pick one from the left
 sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
 
+Beyond software plans, people use graphtask for personal planning too —
+medical treatment, physical therapy, training regimens, career paths —
+anywhere structure itself is the artifact.
+
 The canvas updates **live** via Server-Sent Events, so collaborators (and
 LLM agents driving the API via the bundled
 [skill](.claude/skills/graphtask/SKILL.md)) appear in real time — the camera
