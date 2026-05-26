@@ -15,9 +15,11 @@ pans to whatever was just touched, and a brief flash highlights the change.
 
 ---
 
-## Getting Started
+## Getting started
 
-Pick the path that matches how you want to run graphtask.
+Pick the path that matches how you want to run graphtask. To drive it
+from a Claude Code agent regardless of which path you pick, see
+[Using it with an agent](#using-it-with-an-agent).
 
 ### 1. Use the hosted version
 
@@ -34,44 +36,6 @@ just don't get owned-graph features (My graphs / Shared with me
 bucketing, member invitations, per-graph access tier). The "Auth
 modes" subsection under "Run locally without Docker" below covers
 what changes when you sign in.
-
-**Use it with a Claude Code agent**
-
-```sh
-# 1. One-shot install: copies the skill into ~/.claude/skills/graphtask/
-#    AND merges the presence-cleanup hooks into ~/.claude/settings.json.
-#    Idempotent; settings.json is backed up before any change.
-bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
-
-# 2. Install jq (the skill's recipes and the hooks parse JSON with it)
-brew install jq        # macOS — or: apt install jq / apk add jq
-
-# 3. Point the agent at the hosted instance
-export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"
-
-# 4. Mint and export your agent token — required on the hosted instance
-#    (see "Set up your agent token" below for the modal flow + persistence
-#    options). Without this, the skill's preflight refuses to run.
-export GRAPHTASK_AGENT_TOKEN=gt_...
-
-# 5. Restart Claude Code so the new hooks load, then in any project:
-cd ~/projects/your-project
-claude
-# Prompt: "Turn this plan into a graph" or "Track this in graphtask"
-```
-
-What `install.sh` does — also visible in the script itself:
-- copies `SKILL.md` to `~/.claude/skills/graphtask/`
-- merges two hooks into `~/.claude/settings.json` (with a `.bak.<timestamp>` backup):
-  - **SessionStart**: clears any stale agent-session files from a prior crash
-  - **Stop**: departs the agent's presence at the end of every response so the 🤖 avatar blinks out cleanly when the agent stops working
-
-Override `CLAUDE_HOME` if your Claude config lives somewhere other than `~/.claude`.
-
-The agent creates a graph on first use and writes its id to
-`.graphtask/graph-id` in the project. Open
-`https://graphtask.dev.wafer.works/g/<id>` in your browser to watch the
-canvas update live as the agent works.
 
 ### 2. Run locally with Docker
 
@@ -113,39 +77,6 @@ docker compose down         # stop, keep data
 docker compose down -v      # stop, wipe data
 HOST_PORT=3001 docker compose up   # serve on a different host port
 ```
-
-**Use it with a Claude Code agent**
-
-```sh
-# 1. Install the skill (one-time; available in every project on your machine)
-mkdir -p ~/.claude/skills/graphtask
-curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
-  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
-
-# 2. Install jq
-brew install jq        # macOS — or: apt install jq / apk add jq
-
-# 3. Point the agent at your local Docker container
-export GRAPHTASK_BASE_URL="http://localhost:3000"
-# (use the same HOST_PORT you set above if not the default)
-
-# 3b. If you opted into AUTH_PROVIDER=clerk on the container, also mint
-#     and export an agent token — see "Set up your agent token" below.
-#     The default Docker setup runs no-auth mode; skip this step in that case.
-
-# 4. Run Claude Code in any project you want to track
-cd ~/projects/your-project
-claude
-# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
-```
-
-The agent creates a graph on first use and writes its id to
-`.graphtask/graph-id` in the project. Open
-`http://localhost:3000/g/<id>` to watch live updates.
-
-If you're hacking on graphtask itself, you can skip the personal install
-— `claude` run from inside the cloned repo auto-discovers the skill at
-`.claude/skills/graphtask/SKILL.md`.
 
 ### 3. Run locally without Docker
 
@@ -197,6 +128,676 @@ lock them down. Agents authenticate with a `gt_*` bearer token minted
 from the in-app key-icon panel; the server discriminates them from
 Clerk session JWTs (which start with `eyJ`) by prefix-checking the
 `Authorization` header.
+
+Deeper details (sharing flows, client-side storage, live access-change
+propagation, what's out of scope) live under
+[Sharing & access model — deep dive](#sharing--access-model--deep-dive).
+
+**Setting up Clerk**
+
+1. Create a Clerk app at <https://dashboard.clerk.com> (use a separate
+   app for dev vs. prod).
+2. Enable **Email address** as the sole sign-in identifier and **Email
+   verification code** (OTP) as the verification strategy. graphtask
+   doesn't wire up any other Clerk sign-in method — leaving them
+   enabled won't break anything, but they won't appear in the modal
+   either.
+3. Copy your **Publishable key** and **Secret key** from the Clerk
+   dashboard into your `.env`:
+   ```sh
+   CLERK_PUBLISHABLE_KEY=pk_test_...   # or pk_live_... in prod
+   CLERK_SECRET_KEY=sk_test_...        # or sk_live_... in prod
+   AUTH_PROVIDER=clerk
+   ```
+4. Restart the server. The boot log should mention the Clerk adapter
+   loading; the browser's `/api/config` will report `auth_enabled: true`.
+
+**Setup**
+
+```sh
+git clone https://github.com/lucasness/graphtask.git
+cd graphtask
+npm install
+createdb graphtask
+psql graphtask -f db/schema.sql
+
+# npm start runs `node --env-file=.env`, which errors if .env is missing.
+# Create one (empty is fine) and/or set vars inline:
+touch .env
+DATABASE_URL=postgresql://localhost/graphtask npm start
+```
+
+Open <http://localhost:3000>.
+
+**Tests**
+
+`npm test` spins up and tears down a `graphtask_test` database on your local
+Postgres. No extensions required.
+
+Production tuning notes (open-file limits, single-process presence) live
+under [Production notes](#production-notes).
+
+---
+
+## Using it with an agent
+
+graphtask ships a Claude Code skill (`SKILL.md`) so an LLM agent can drive
+your graphs end-to-end while you watch the canvas update live. Works on
+any deploy path — hosted, Docker, or local.
+
+### Set up
+
+```sh
+# 1. Install the skill (one-time; available in every project on your machine).
+#    Also merges presence-cleanup hooks into ~/.claude/settings.json
+#    (with a timestamped backup) so the agent's 🤖 avatar blinks out
+#    cleanly when it stops working.
+bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
+
+# 2. Install jq (the skill's recipes and the hooks parse JSON with it)
+brew install jq        # macOS — or: apt install jq / apk add jq
+
+# 3. Point the agent at your graphtask instance
+export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"   # hosted
+# export GRAPHTASK_BASE_URL="https://graphtask.example.com"     # self-hosted
+# export GRAPHTASK_BASE_URL="http://localhost:3000"             # local Docker / npm start
+
+# 4. Mint and export an agent token — REQUIRED on auth-enabled instances.
+#    (The hosted instance always is; Docker/local only if you opted in.)
+#    See "Mint an agent token" below for the mint flow.
+export GRAPHTASK_AGENT_TOKEN=gt_...
+
+# 5. Restart Claude Code so the new hooks load, then in any project:
+cd ~/projects/your-project
+claude
+# Prompt: "Turn this plan into a graph" or "Track this in graphtask"
+```
+
+What `install.sh` does — also visible in the script itself:
+- copies `SKILL.md` to `~/.claude/skills/graphtask/`
+- merges two hooks into `~/.claude/settings.json` (with a `.bak.<timestamp>` backup):
+  - **SessionStart**: clears any stale agent-session files from a prior crash
+  - **Stop**: departs the agent's presence at the end of every response so the 🤖 avatar blinks out cleanly when the agent stops working
+
+Override `CLAUDE_HOME` if your Claude config lives somewhere other than `~/.claude`.
+
+If you're hacking on graphtask itself, you can skip the personal install
+— `claude` run from inside the cloned repo auto-discovers the skill at
+`.claude/skills/graphtask/SKILL.md`.
+
+The agent creates a graph on first use and writes its id to
+`.graphtask/graph-id` in the project. It prints the URL after creating —
+open it in a browser to watch updates live.
+
+### Mint an agent token
+
+If your graphtask instance has `AUTH_PROVIDER=clerk` (the hosted version
+always does; local / Docker setups only if you opted in), the agent
+needs a `gt_*` token to attribute writes to your account. Without one,
+the skill's preflight refuses to run on auth-enabled instances —
+the alternative is silently producing orphan graphs (owner-less,
+invisible in your "My graphs" sidebar).
+
+1. **Mint.** Sign in to the app, click the key icon in the sidebar,
+   click Generate. The modal shows the `gt_…` string **exactly once** —
+   copy it immediately. After that, only the hash is stored server-side;
+   if you lose the plaintext, delete the token and mint a new one.
+2. **Export it somewhere Claude Code will see it.** Pick whichever fits:
+   - **Shell rc** (`~/.zshrc`, `~/.bashrc`): `export GRAPHTASK_AGENT_TOKEN=gt_...`
+     — every future shell, every future Claude Code session.
+   - **`~/.claude/settings.json` `env` block**: scoped to Claude Code
+     specifically, works regardless of which shell you launched it from.
+   - **Current terminal only**: `export GRAPHTASK_AGENT_TOKEN=gt_...`
+     then run `claude` — works until you close the terminal.
+   - **Note:** project-level `.env` files are NOT auto-loaded by Claude
+     Code; don't expect that to work without extra plumbing.
+3. **Verify.** Open a Claude Code session, ask the agent to create a
+   test graph. It should print the URL after creating, and the graph
+   should appear in your "My graphs" sidebar (not "Shared with me" or
+   nowhere).
+
+To rotate a leaked or stale token, delete it from the Agent tokens
+panel and mint a new one. Tokens you've never used can be deleted
+freely — the modal lists creation date and last-used time so you can
+audit.
+
+### What the agent can do
+
+**Give the agent a concrete multi-step plan.** Vague prompts like
+*"help me with auth"* don't produce useful graphs. Multi-step prompts
+work much better:
+
+> *"I need to refactor the auth middleware: audit current session-token
+> usage, swap to httpOnly cookies, update the auth tests, then deploy
+> behind a feature flag."*
+
+The agent should materialize this as 4–5 tasks with dependency edges
+**before** writing any code, so you see the structure first, then watch
+each task light up as it works through them.
+
+**The "review" handshake.** The agent never sets `done` itself. When it
+thinks a task is finished, it moves to `review` (yellow). You confirm
+in one of two ways:
+
+1. **Approve** — click the task in the UI, change status to `done`. The
+   agent's downstream tasks become eligible (use `/tasks/ready` to see
+   what's now ready).
+2. **Push back** — reply with feedback ("the cookie wrapper needs to
+   handle SameSite=None"). The agent should re-read the task body and
+   update it with the new requirement, then re-do the work.
+
+Don't set `done` without skimming the body — that's the whole point of
+the gate.
+
+**Recovering when the agent gets stuck or wanders.** Useful prompts:
+
+- *"What's blocking task X?"* — agent calls `/blockers`, summarizes.
+- *"What can you work on next?"* — agent calls `/ready`.
+- *"Which review tasks would unblock something if I confirmed them?"* —
+  agent loops over review tasks calling `/unblocks` (documented pattern
+  in the skill body).
+- *"Update the graph to reflect what you just learned about X"* —
+  agent reads relevant task bodies and patches them with new findings.
+
+**If the agent isn't using the skill automatically.** The skill is
+designed to fire after Plan mode and on multi-step prompts, but
+description-matching is heuristic. Force it explicitly with phrases
+like *"track this in graphtask"*, *"turn this into a graphtask graph"*,
+or *"use the graphtask skill"*.
+
+**One graph per project (usually).** The agent persists the active graph
+id in `.graphtask/graph-id` in the project root. That file is
+bearer-token equivalent and goes in `.gitignore` (the skill's setup
+step adds it for you). To work on a different project's graph, run the
+agent from a different directory.
+
+**Sharing and revoking access.** Each graph's URL is its only access
+control. To collaborate, share `https://graphtask.dev.wafer.works/g/<id>`
+(or your hosted URL). To revoke a leaked link, open the graph's `⋮`
+settings → Sharing → Rotate. The old URL 404s; tasks/edges follow to
+the new id automatically.
+
+**Tidy a sprawling graph.** If the canvas is getting unwieldy after
+lots of edits, press `T` (or click the Tidy toolbar button) to re-run
+the layout compactly and refit. Overrides any custom node placements,
+so use it when you'd rather start with a clean arrangement than
+preserve manual positions.
+
+**Don't micromanage the structure.** Let the agent create tasks and
+edges. If you don't like the structure, edit it in the UI — the agent
+is told to re-read task content before patching, so it'll notice. Don't
+dictate every task title; trust the breakdown.
+
+**When NOT to use the skill.** Single-step changes (a typo fix, a
+quick question, a one-line tweak) don't benefit from graph overhead.
+The skill itself tells the agent to skip graph creation for these. If
+the agent creates a one-task graph for something trivial, push back:
+*"skip the graph for this."*
+
+### Watching the agent work
+
+Open the graph URL in a tab while you work. The agent's edits land
+on the canvas within ~150 ms via SSE. The camera pans to whatever the
+agent just touched, the side panel opens to show the new content, and
+the node briefly flashes in a color matching the action:
+
+- **blue dashed border** — new task created
+- **orange / yellow / green underlay** — task moved to `in_progress` /
+  `review` / `done` respectively
+- **purple underlay** — body edited without changing status
+
+Watching the agent work this way is most of the value — the graph IS
+the visible artifact of the agent's progress.
+
+### Turning off tracking
+
+Two independent controls in the top-right corner:
+
+- **LIVE / QUIET push-button** (below your avatar) — toggles per-graph
+  auto-follow. When QUIET, the camera doesn't pan and the panel doesn't
+  auto-open on agent edits; color flashes still play so you can see
+  where work is happening. Toggling sets the default for new graphs
+  without changing graphs you've already toggled.
+- **Eye icon** — hides the entire presence chrome (avatar bar + LIVE
+  button) for this browser. Per-user, global. Click again to restore.
+
+---
+
+## Using it with hotkeys
+
+The "View" column indicates which views the key is active in. Graph =
+the canonical cytoscape view; Kanban = the column-grouped lens.
+Cmd/Ctrl-modified shortcuts and overlay-internal keys (Enter/Esc inside
+an edit overlay) always apply.
+
+| Key | View | Behavior |
+|---|---|---|
+| `F` | Graph | Fit graph to viewport (preserves layout) |
+| `T` | Graph | Tidy: re-run layout with tight spacing, persist new positions, then fit. Overrides any custom node placements |
+| `G` | Both | Graph: create a node at the visible-area center. Kanban: create a new task in the selected card's column (or Todo if no selection) |
+| `S` | Both | Graph: cycle selected node status; Enter saves, Esc cancels. Kanban: directly cycle selected card's status (drag is the primary UX; S is "next status, no confirm") |
+| `B` | Graph | Open color palette for selected nodes/edges |
+| `E` | Graph | Start edge creation, cycle in-progress edge direction, or cycle selected edge direction |
+| `Enter` | Graph | Commit pending explicit edit session |
+| `Cmd/Ctrl+Enter` | Both | Commit new-node creation from anywhere (graph view); save panel edits (both views) |
+| `Esc` | Both | Cancel current edit, close panel, or clear selection |
+| `Backspace/Delete` | Graph | Open delete confirmation |
+| Arrow keys | Graph | Move selection to nearest node/edge in that direction; inside color palette, navigate swatches |
+| Cmd/Ctrl drag | Graph | Rubber-band select nodes and edge midpoints |
+| `Cmd/Ctrl+K` | Both | Open settings |
+
+### Editing flows
+
+**Nodes**
+
+- Clicking empty canvas creates a pending Cytoscape node with id `__pending__`.
+- Pending nodes are visible immediately but are not persisted until the title
+  is committed (Enter or Cmd/Ctrl+Enter).
+- Existing task fields autosave with a short debounce.
+- Status cycling is optimistic: `S` changes the visible status; Enter saves
+  and Esc restores.
+- Inline title editing uses an HTML contenteditable overlay positioned over
+  the Cytoscape node. It scales with zoom and resizes the Cytoscape node.
+
+**Edges**
+
+- Pressing `E` with node(s) selected starts edge creation. A hidden phantom
+  node follows the cursor and preview edges connect from the selected sources.
+- During edge creation, `E` cycles `forward → related → backward → forward`.
+- Clicking a target node commits created edges. Clicking empty canvas starts
+  a pending target node and keeps preview edges until that node is saved.
+- Pressing `E` with one edge selected starts an optimistic direction/type
+  edit. The edge turns dashed while the edit is pending; Enter saves, Esc
+  restores.
+- Backward dependency edits are represented visually with `dir-backward`
+  until save, then the server PATCH swaps source/target.
+- Hover an edge to reveal the curve handle. The handle sits *on* the rendered
+  curve at `B(t = weight)` — the bezier sample at the weight parameter. Drag
+  it freely in 2D: parallel position along the edge maps to `curve.weight`
+  via inverse-smoothstep, perpendicular distance back-solves into
+  `curve.distance` (bulge height). Weight is clamped per-edge to a dynamic
+  range derived from each node's size + a small margin, so the dot can
+  never land inside either endpoint node — the bounds intersect the static
+  `[0.10, 0.90]` range. Note: changing weight slides the bulge along the
+  edge but doesn't change *how sharply* the curve bends; that's controlled
+  by `distance` (a quadratic bezier's perpendicular peak is always at
+  parameter 0.5 with magnitude `0.5·distance`).
+- Dependency cycle detection wraps the cycle-check + INSERT/UPDATE in a
+  single Postgres transaction with a SHARE ROW EXCLUSIVE lock on `edges`,
+  so concurrent edge writers can't slip a cycle past the check.
+
+**Color palette**
+
+- `B` opens the palette for selected nodes, edges, or mixed selections.
+- Palette values come from the Flexoki dark theme used by the app.
+- Swatches show the actual color that will be applied to node fill or edge
+  line/arrow color.
+- Arrow keys navigate as a 2D 5-column grid. Enter or click applies and saves.
+- Color changes affect background/edge color, not the selection highlight.
+
+**Graph metadata**
+
+- `⋮` on a sidebar card opens `#graph-modal` with name + description fields
+  and Save / Delete buttons. Esc or backdrop click cancels. Delete reuses the
+  shared `confirmDelete` modal.
+
+---
+
+## Details
+
+Reference material for agent implementers and contributors hacking on
+graphtask itself. If you're just using the app or the agent skill, you
+can stop here.
+
+### Stack
+
+- Backend: Express 5 on Node 22, PostgreSQL (any modern version), `pg`, and `yaml`.
+- Frontend: Vanilla JS, Cytoscape.js, TOAST UI Editor, and CSS using a Flexoki
+  dark palette. No build step.
+- Tests: Vitest and supertest.
+- Package manager: npm.
+
+### Layout
+
+```text
+src/
+  server.js          starts Express on PORT, binds to 127.0.0.1
+  app.js             builds the Express app and mounts routers
+  db.js              shared pg pool + withTx helper; resolves DATABASE_URL
+                     from env, falling back to PG_BOOTSTRAP_URL+DATABASE_NAME
+  markdown.js        frontmatter parse/serialize, validation, defaults
+  sse.js             shared LISTEN client + per-graph subscriber map for
+                     /events broadcasts
+  routes/
+    _validate.js     requireIntegerParam middleware
+    graphs.js        CRUD on /api/graphs + rotate-id
+    tasks.js         task CRUD + leaves/ready/subtasks/ancestors/blockers/
+                     unblocks, all graph-scoped
+    edges.js         edge CRUD + bulk insert with transactional cycle
+                     detection
+    graphView.js     /api/graphs/:gid/graph and shortest-path payloads
+db/
+  schema.sql         graphs, tasks, edges, edge_type enum, updated_at +
+                     pg_notify trigger, short-id generator function
+public/
+  index.html         static markup: sidebar, canvas, inspector, toolbar, modals
+  app.js             frontend graph behavior + multi-graph sidebar + SSE
+                     client + agent-follow mode
+  style.css          app shell, sidebar, toolbar, palette, modal styles
+tests/               Vitest specs: graphs, tasks, edges, graph queries, db, api
+.claude/skills/graphtask/SKILL.md  agent playbook (Agent Skills standard)
+Dockerfile           Postgres 17 + Node 22 image
+docker-entrypoint.sh initdb, loopback-only pg_hba, schema load, node start
+```
+
+### Data Model
+
+```sql
+graphs(
+  id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
+  name TEXT NOT NULL,                        -- 1..80 chars
+  description TEXT,                          -- nullable, ≤ 500 chars
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+
+tasks(
+  id SERIAL PRIMARY KEY,
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  content TEXT NOT NULL,                     -- canonical markdown
+  meta JSONB NOT NULL,                       -- structured copy of frontmatter
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ
+)
+
+edges(
+  id SERIAL PRIMARY KEY,
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  source_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  target_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  type edge_type,                            -- dependency | related
+  meta JSONB NOT NULL,
+  UNIQUE(source_id, target_id),
+  CHECK(source_id <> target_id)
+)
+```
+
+- `graphs.id` is an opaque 16-char string (`a-z` + `2-9`, omitting `0/1/i/l/o`)
+  generated by `generate_short_graph_id()` in plpgsql. Roughly 80 bits of
+  entropy — the URL itself is the access control. The route retries on the
+  negligible chance of a unique-violation collision.
+- `ON UPDATE CASCADE` on `tasks.graph_id` and `edges.graph_id` lets
+  `POST /api/graphs/:id/rotate-id` issue a fresh graph id and have all child
+  rows follow without a separate update.
+- `graphs.updated_at` is bumped by an AFTER trigger on tasks/edges
+  INSERT/UPDATE/DELETE. The same trigger calls
+  `pg_notify('graph_change', { graph_id, kind, op, id })` so SSE subscribers
+  can push live updates to viewers.
+- Task `content` is canonical: the server parses frontmatter, validates it,
+  and stores a synchronized structured copy in `tasks.meta`.
+- Task metadata: `title`, `status`, optional `description`, optional `color`,
+  optional saved graph coordinates `x`/`y`.
+- Status enum: `todo` (no highlight), `in_progress` (orange), `review`
+  (yellow — agent-finished, awaiting human confirmation), `done` (green).
+  Convention: when an LLM agent updates the graph it stops at `review`;
+  `done` is the human's final confirmation. Treat `review` as not-yet-done
+  for dependency-readiness purposes.
+- Edge metadata: optional `curve` shaped as `{distance, weight}` driving the
+  Cytoscape unbundled-Bezier control point — `distance` is the signed
+  perpendicular offset (legacy API still accepts a bare number with implicit
+  `weight: 0.5`), `weight` is the parallel position along the source→target
+  axis (`0.10..0.90`, `0.5` = midpoint). Optional `color` (validated 6-digit
+  hex).
+- `dependency` edges are directed and acyclic; `related` edges can form loops.
+- Cycle detection (POST + PATCH + bulk) runs inside a single transaction
+  with `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers
+  can't both pass the check.
+- Graph names are not globally unique — duplicate-name `POST` and `PATCH`
+  both succeed. The old `graphs_name_norm_uniq` index was dropped in
+  Phase B; rely on `id`, not `name`, for any lookup.
+
+### API
+
+All task/edge/graph-view routes are scoped to a graph via `:gid`.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/graphs` | List graphs, ordered by `updated_at DESC` |
+| POST | `/api/graphs` | Body: `{name, description?}` |
+| GET | `/api/graphs/:id` | Fetch one graph |
+| PATCH | `/api/graphs/:id` | Body: any of `{name, description}`; bumps `updated_at` |
+| DELETE | `/api/graphs/:id` | Cascades to tasks and edges |
+| GET | `/api/graphs/:gid/tasks` | List tasks in graph |
+| POST | `/api/graphs/:gid/tasks` | Body: `{content}` markdown blob |
+| GET | `/api/graphs/:gid/tasks/:id` | Fetch one task |
+| PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
+| DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
+| GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
+| GET | `/api/graphs/:gid/tasks/ready` | Status=todo tasks where every recursive prereq is done (treats `review` as not-yet-done) |
+| GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
+| GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
+| GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
+| GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
+| GET | `/api/graphs/:gid/edges` | List edges in graph |
+| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, type, meta?}` |
+| POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
+| PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, type, meta |
+| DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
+| POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
+| GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
+| GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
+| GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
+| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
+| GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
+| GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |
+
+`requireIntegerParam('id')` middleware on numeric `:id` segments returns 400
+on non-integer values (otherwise Postgres would raise a 500). `:gid` is an
+opaque short string; a bad one falls through to a 404.
+
+`markdown.applyDefaults` coerces YAML-parsed title and description to strings
+before validation, so scalar YAML values do not break task saves.
+
+### Agent design notes
+
+The HTTP API above is stable enough for an LLM agent (Claude Code, Codex,
+or anything that can run `curl`) to drive end to end. The skill install
+steps live inside [Using it with an agent](#using-it-with-an-agent) above;
+this section covers the conventions and constraints any agent integration
+should follow.
+
+**Conventions agents follow**
+
+- Persist the active graph id in `.graphtask/graph-id` (per-project, kept
+  out of git — it's bearer-token equivalent).
+- Move tasks `todo → in_progress → review`. **Never set `done`.**
+  `done` is the human's confirmation; `review` is the agent's
+  "I think this is finished, please confirm." Treat `review` as
+  not-yet-done for dependency-readiness purposes (the
+  `/tasks/ready`, `/tasks/:id/blockers`, and `/tasks/:id/unblocks`
+  endpoints already encode this).
+- Use `POST /edges/bulk` for any multi-edge import — it's transactional
+  and fails atomically with a `failedAt` index, so you never end up with
+  a half-built dependency graph.
+- If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
+
+**Live updates**
+
+The browser canvas re-renders within ~150 ms of any task/edge mutation
+via the `/events` SSE endpoint, so a user watching a graph sees the
+agent's edits in real time. The agent doesn't need to consume the SSE
+stream itself.
+
+**Other agents (Codex, Cursor, etc.)**
+
+The shipped skill at `.claude/skills/graphtask/SKILL.md` follows the
+open [Agent Skills](https://agentskills.io) standard. The `SKILL.md`
+file is portable; refer to your tool's docs for the install path. Any
+agent that can `curl` is a viable client — the skill is just the
+playbook.
+
+### Views — per-graph view preference
+
+The canvas region renders one of two views: **Graph** (cytoscape DAG —
+the canonical edit surface) or **Kanban** (four-column board grouped by
+status). Tasks + edges are unchanged; the view is a render lens.
+
+**Where it lives.** Graph settings modal → Appearance section → View
+dropdown (above Font). Two options: `Graph` (default), `Kanban`.
+
+**Per-user, per-graph, never synced.** The choice writes to
+`localStorage['graphtask:view:<gid>']` — client-only, no server PATCH,
+no SSE broadcast. Two collaborators on the same graph can sit in
+different views; flipping yours doesn't change theirs. Each graph
+remembers its own setting per browser.
+
+**Kanban specifics:**
+- Columns are status (todo / in_progress / review / done). Column title
+  text is colored per status (grey / orange / yellow / green).
+- Cards: title + 2-line body excerpt + optional left color bar from
+  `meta.color`. Sorted within column by `updated_at DESC`.
+- Click a card → opens the existing right-side inspector. The kanban
+  board shifts left if the panel would cover the selected card's
+  column, so the column stays visible.
+- Drag a card to a different column → optimistic move + PATCH `status`
+  with OCC fields; flash on the destination card. SSE re-buckets for
+  other tabs/agents with the same flash.
+- Hotkeys: `G` creates a new task in the selected column (or Todo); `S`
+  cycles status of the selected card (one-press, no confirm — drag is
+  the primary UX). F/T/E/B are graph-only and no-op in kanban.
+- Empty columns show a "Drop tasks here" placeholder.
+- Mobile (<768px): horizontal scroll, one column at a time via
+  `scroll-snap`.
+
+**Cross-view presence.** Peer selection underlays + cursor pills work
+across both views off the same `peerSelectionState`. A peer selecting
+a task in graph view shows up as a colored outline + name pill on the
+corresponding card in kanban, and vice versa.
+
+**Eye toggle.** Top-right corner has a tiny eye icon (visible on hover
+over the avatar bar / LIVE button) that hides both the avatar bar and
+the LIVE push-button. State is `localStorage['graphtask:presence-hidden']`
+— per-user, global, applies to both views.
+
+### Frontend Model
+
+The frontend has four main regions:
+
+- **Sidebar**: `#sidebar` lists graphs with name + relative updated time.
+  `+` creates a new graph; `⋮` opens the edit modal (rename, description,
+  delete). The active graph card is highlighted.
+- **Canvas**: `#cy` fills the area to the right of the sidebar. Cytoscape
+  paints nodes and edges. Styling is driven by element data (`status`,
+  `color`, `edgeType`, `curve`) and transient classes (`selected`, `editing`,
+  `leaf`, `dir-backward`, `edge-type-editing`, `edge-hover-target`,
+  `preview`, `phantom`, `agent-flash-*`). In kanban view, `#cy` is
+  hidden and `#kanban` (a separate fixed container in the same region)
+  renders the column board.
+- **Side panel**: `#panel` is a resizable right-side inspector for node
+  title, status, and markdown body. Opening it recenters the selected node
+  in the visible canvas area (sidebar-aware via `cy.width()`).
+- **Bottom toolbar**: `#bottom-bar` is contextual and changes by selection
+  mode. Centered within the canvas area.
+
+#### Active-graph routing
+
+- URL: `/g/:gid` reflects the active graph; bookmarkable.
+- Boot resolution order: URL → `localStorage` last-active → first available
+  graph → none.
+- `popstate` keeps the canvas in sync with browser back/forward.
+- All API calls go through an `apiBase()` helper that prefixes
+  `/api/graphs/:activeGraphId`, so a route's URL never accidentally targets
+  the wrong graph.
+
+#### Lazy graph creation
+
+When no graph is active, the canvas placeholder reads "Click here for a new
+task". Clicking the canvas (or pressing `G`, or the `+` toolbar button)
+lazily creates an `Untitled` graph and immediately starts the new-task flow
+at the click position. If the user backs out without committing the first
+task, a deferred check (`maybeCleanupLazyGraph`) deletes the empty graph and
+resets the URL to `/`.
+
+#### Selection Modes
+
+`getSelectionMode()` returns:
+
+- `neutral`: nothing selected. Toolbar shows New (`G`), Fit (`F`), Settings.
+- `node`: one or more nodes selected. Toolbar shows Status (`S`), Color (`B`),
+  Connect (`E`), and Delete.
+- `edge`: one or more edges selected. Toolbar shows Color (`B`), Direction
+  (`E`), and Delete. For a single edge, Direction shows a right arrow, left
+  arrow, or horizontal bidirectional arrow for the current state.
+- `mixed`: nodes and edges selected together. Toolbar shows Color (`B`) and
+  Delete.
+- `edge-creating`: edge creation in progress. Toolbar shows a preview summary
+  and Direction (`E`) for the in-progress edge type.
+
+`updateToolbar()` runs after selection/mode changes and after `fetchGraph()`
+because refetching rebuilds Cytoscape elements and clears transient classes.
+
+#### Agent-follow
+
+When an SSE event arrives indicating an external (non-local) edit on a task,
+the client (a) refetches the graph with selection preservation, (b) animates
+the camera to the affected node, and (c) for UPDATE events, opens the side
+panel showing the new content. The "who is editing this" visual cue comes
+from the peer-selection classes (writer's color outline + dashed border)
+when the agent broadcasts its current task — see Multi-peer presence below.
+Agent-follow is suppressed if the user `pointerdown`/`keydown`/`wheel`d in
+the last 2 seconds, so manual work isn't yanked around. `loadIntoEditor`
+sets a 200ms suppression window on the autosave scheduler so the synthetic
+`change` event from `setMarkdown` doesn't cause a round-trip-PATCH echo loop.
+
+Multi-agent follow rules: 0 active agents → no auto-pan; 1 active agent →
+follow it regardless of owner; 2+ agents → follow only the one whose
+`owner_user_id` matches the local user. An anon viewer with 2+ agents gets
+no auto-pan (rely on highlights). A round push-button below the local
+user's avatar — labeled `LIVE` when tracking, `QUIET` when paused, with
+a soft orange pulse halo while live — toggles agent-follow per-graph;
+toggling on one graph propagates the new state as the default for future
+graphs but doesn't change other graphs you've explicitly toggled.
+
+#### Multi-peer presence
+
+Every active writer (human or agent) appears in the avatar bar (top-right,
+capped at 7 individuals + a "+N others" chip). Avatar colors are
+deterministic per writer_id from a 64-color palette (16 base hues × 4
+lightness/saturation variants) so collaborators see the same color across
+reloads and devices.
+
+When a peer selects or opens a node/edge they POST to
+`/api/graphs/:gid/selection`, which fans out via SSE. Other viewers render
+(a) a colored underlay on the node (or dashed border if the peer has the
+side panel open) in the peer's color, and (b) a "peer cursor" — a small
+glowing dot + name pill positioned at a free corner of the node. Multiple
+peers on the same node stack into one marker (2-4 peers: vertical rows
+with initials; 5+: a single overflow chip showing "AB & N others"). Peer
+markers are placed by a deterministic 8-direction probe that avoids
+overlapping other nodes; the marker repositions on cy pan/zoom/drag.
+
+The local user's own selection isn't rendered as a peer marker — instead
+the standard `.selected` underlay renders in their own avatar color.
+Agents (`type: 'agent'`) skip the 60s idle filter so a long-thinking agent
+keeps its marker visible until its Stop hook DELETEs presence at end of
+turn.
+
+OCC: agents must PATCH with `base_version` + `base_content` so the
+server's three-way merge protects UI-managed frontmatter keys (`x`/`y`
+positions, `color`, `curve`) the agent didn't include. Without OCC fields
+the PATCH falls back to blind replace and silently wipes those keys. See
+the [skill](.claude/skills/graphtask/SKILL.md) for the canonical
+`work_on_task` / `announce_focus_edge` helpers.
+
+Agent-vs-agent same-field conflicts use **owner-agent precedence**: the
+agent whose `owner_user_id` matches `graphs.owner_user_id` wins. If both
+or neither agents are the graph owner's, falls through to last-write-wins.
+Human-vs-agent rule unchanged: human always wins.
+
+### Sharing & access model — deep dive
+
+Extends the "Auth modes" + access-model paragraph under
+[Run locally without Docker](#3-run-locally-without-docker).
 
 **Sharing flows**
 
@@ -316,25 +917,6 @@ tab, the worst case is a manual reload — never a stale-write-against-
 revoked-access leak, because every API write is gated server-side by
 `requireGraph` regardless of what the browser thinks.
 
-**Setting up Clerk**
-
-1. Create a Clerk app at <https://dashboard.clerk.com> (use a separate
-   app for dev vs. prod).
-2. Enable **Email address** as the sole sign-in identifier and **Email
-   verification code** (OTP) as the verification strategy. graphtask
-   doesn't wire up any other Clerk sign-in method — leaving them
-   enabled won't break anything, but they won't appear in the modal
-   either.
-3. Copy your **Publishable key** and **Secret key** from the Clerk
-   dashboard into your `.env`:
-   ```sh
-   CLERK_PUBLISHABLE_KEY=pk_test_...   # or pk_live_... in prod
-   CLERK_SECRET_KEY=sk_test_...        # or sk_live_... in prod
-   AUTH_PROVIDER=clerk
-   ```
-4. Restart the server. The boot log should mention the Clerk adapter
-   loading; the browser's `/api/config` will report `auth_enabled: true`.
-
 **Out of scope for Phase B**
 
 These were intentionally left off the auth scope to keep the surface
@@ -350,27 +932,7 @@ small. Don't expect them to work:
   only graphs created locally-then-claimed by the same browser get
   auto-promoted on sign-in.
 
-**Setup**
-
-```sh
-git clone https://github.com/lucasness/graphtask.git
-cd graphtask
-npm install
-createdb graphtask
-psql graphtask -f db/schema.sql
-
-# npm start runs `node --env-file=.env`, which errors if .env is missing.
-# Create one (empty is fine) and/or set vars inline:
-touch .env
-DATABASE_URL=postgresql://localhost/graphtask npm start
-```
-
-Open <http://localhost:3000>.
-
-**Tests**
-
-`npm test` spins up and tears down a `graphtask_test` database on your local
-Postgres. No extensions required.
+### Production notes
 
 **Open-file limit (for live updates at scale)**
 
@@ -404,614 +966,7 @@ id) or fan presence events across processes via Postgres `LISTEN/NOTIFY`
 or Redis pub/sub. The single-server `docker compose` setup and the
 default `npm start` are not affected.
 
-**Use it with a Claude Code agent**
-
-```sh
-# 1. Install the skill (one-time; available in every project on your machine)
-mkdir -p ~/.claude/skills/graphtask
-curl -fsSL -o ~/.claude/skills/graphtask/SKILL.md \
-  https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md
-
-# 2. Install jq
-brew install jq        # macOS — or: apt install jq / apk add jq
-
-# 3. Point the agent at your local server
-export GRAPHTASK_BASE_URL="http://localhost:3000"
-# (use the same PORT you set above if not the default)
-
-# 3b. If you set AUTH_PROVIDER=clerk in your .env, also mint and export an
-#     agent token — see "Set up your agent token" below. The default
-#     (AUTH_PROVIDER=none) needs no token; the skill works without one.
-
-# 4. Run Claude Code in any project you want to track
-cd ~/projects/your-project
-claude
-# Then prompt: "Turn this plan into a graph" or "Track this in graphtask"
-```
-
-The agent creates a graph on first use and writes its id to
-`.graphtask/graph-id` in the project. Open
-`http://localhost:3000/g/<id>` to watch live updates.
-
-If you're hacking on graphtask itself, you can skip the personal install
-— `claude` run from inside the cloned repo auto-discovers the skill at
-`.claude/skills/graphtask/SKILL.md`.
-
----
-
-## Set up your agent token (auth-enabled instances)
-
-If your graphtask instance has `AUTH_PROVIDER=clerk` (the hosted version
-always does; local / Docker setups only if you opted in), the agent
-needs a `gt_*` token to attribute writes to your account. Without one,
-the skill's preflight refuses to run on auth-enabled instances —
-the alternative is silently producing orphan graphs (owner-less,
-invisible in your "My graphs" sidebar).
-
-1. **Mint.** Sign in to the app, click the key icon in the sidebar,
-   click Generate. The modal shows the `gt_…` string **exactly once** —
-   copy it immediately. After that, only the hash is stored server-side;
-   if you lose the plaintext, delete the token and mint a new one.
-2. **Export it somewhere Claude Code will see it.** Pick whichever fits:
-   - **Shell rc** (`~/.zshrc`, `~/.bashrc`): `export GRAPHTASK_AGENT_TOKEN=gt_...`
-     — every future shell, every future Claude Code session.
-   - **`~/.claude/settings.json` `env` block**: scoped to Claude Code
-     specifically, works regardless of which shell you launched it from.
-   - **Current terminal only**: `export GRAPHTASK_AGENT_TOKEN=gt_...`
-     then run `claude` — works until you close the terminal.
-   - **Note:** project-level `.env` files are NOT auto-loaded by Claude
-     Code; don't expect that to work without extra plumbing.
-3. **Verify.** Open a Claude Code session, ask the agent to create a
-   test graph. It should print the URL after creating, and the graph
-   should appear in your "My graphs" sidebar (not "Shared with me" or
-   nowhere).
-
-To rotate a leaked or stale token, delete it from the Agent tokens
-panel and mint a new one. Tokens you've never used can be deleted
-freely — the modal lists creation date and last-used time so you can
-audit.
-
----
-
-## Working with the agent skill — tips and patterns
-
-Once the skill is installed (see Getting Started for the install
-one-liner), here's how to actually get value out of it.
-
-**Open the graph URL in a tab while you work.** The agent's edits land
-on the canvas within ~150 ms via SSE. The camera pans to whatever the
-agent just touched, the side panel opens to show the new content, and
-the node briefly flashes in a color matching the action:
-
-- **blue dashed border** — new task created
-- **orange / yellow / green underlay** — task moved to `in_progress` /
-  `review` / `done` respectively
-- **purple underlay** — body edited without changing status
-
-Watching the agent work this way is most of the value — the graph IS
-the visible artifact of the agent's progress.
-
-**Give the agent a concrete multi-step plan.** Vague prompts like
-*"help me with auth"* don't produce useful graphs. Multi-step prompts
-work much better:
-
-> *"I need to refactor the auth middleware: audit current session-token
-> usage, swap to httpOnly cookies, update the auth tests, then deploy
-> behind a feature flag."*
-
-The agent should materialize this as 4–5 tasks with dependency edges
-**before** writing any code, so you see the structure first, then watch
-each task light up as it works through them.
-
-**The "review" handshake.** The agent never sets `done` itself. When it
-thinks a task is finished, it moves to `review` (yellow). You confirm
-in one of two ways:
-
-1. **Approve** — click the task in the UI, change status to `done`. The
-   agent's downstream tasks become eligible (use `/tasks/ready` to see
-   what's now ready).
-2. **Push back** — reply with feedback ("the cookie wrapper needs to
-   handle SameSite=None"). The agent should re-read the task body and
-   update it with the new requirement, then re-do the work.
-
-Don't set `done` without skimming the body — that's the whole point of
-the gate.
-
-**Recovering when the agent gets stuck or wanders.** Useful prompts:
-
-- *"What's blocking task X?"* — agent calls `/blockers`, summarizes.
-- *"What can you work on next?"* — agent calls `/ready`.
-- *"Which review tasks would unblock something if I confirmed them?"* —
-  agent loops over review tasks calling `/unblocks` (documented pattern
-  in the skill body).
-- *"Update the graph to reflect what you just learned about X"* —
-  agent reads relevant task bodies and patches them with new findings.
-
-**If the agent isn't using the skill automatically.** The skill is
-designed to fire after Plan mode and on multi-step prompts, but
-description-matching is heuristic. Force it explicitly with phrases
-like *"track this in graphtask"*, *"turn this into a graphtask graph"*,
-or *"use the graphtask skill"*.
-
-**One graph per project (usually).** The agent persists the active graph
-id in `.graphtask/graph-id` in the project root. That file is
-bearer-token equivalent and goes in `.gitignore` (the skill's setup
-step adds it for you). To work on a different project's graph, run the
-agent from a different directory.
-
-**Sharing and revoking access.** Each graph's URL is its only access
-control. To collaborate, share `https://graphtask.dev.wafer.works/g/<id>`
-(or your hosted URL). To revoke a leaked link, open the graph's `⋮`
-settings → Sharing → Rotate. The old URL 404s; tasks/edges follow to
-the new id automatically.
-
-**Tidy a sprawling graph.** If the canvas is getting unwieldy after
-lots of edits, press `T` (or click the Tidy toolbar button) to re-run
-the layout compactly and refit. Overrides any custom node placements,
-so use it when you'd rather start with a clean arrangement than
-preserve manual positions.
-
-**Don't micromanage the structure.** Let the agent create tasks and
-edges. If you don't like the structure, edit it in the UI — the agent
-is told to re-read task content before patching, so it'll notice. Don't
-dictate every task title; trust the breakdown.
-
-**When NOT to use the skill.** Single-step changes (a typo fix, a
-quick question, a one-line tweak) don't benefit from graph overhead.
-The skill itself tells the agent to skip graph creation for these. If
-the agent creates a one-task graph for something trivial, push back:
-*"skip the graph for this."*
-
----
-
-## Hot Keys
-
-The "View" column indicates which views the key is active in. Graph =
-the canonical cytoscape view; Kanban = the column-grouped lens.
-Cmd/Ctrl-modified shortcuts and overlay-internal keys (Enter/Esc inside
-an edit overlay) always apply.
-
-| Key | View | Behavior |
-|---|---|---|
-| `F` | Graph | Fit graph to viewport (preserves layout) |
-| `T` | Graph | Tidy: re-run layout with tight spacing, persist new positions, then fit. Overrides any custom node placements |
-| `G` | Both | Graph: create a node at the visible-area center. Kanban: create a new task in the selected card's column (or Todo if no selection) |
-| `S` | Both | Graph: cycle selected node status; Enter saves, Esc cancels. Kanban: directly cycle selected card's status (drag is the primary UX; S is "next status, no confirm") |
-| `B` | Graph | Open color palette for selected nodes/edges |
-| `E` | Graph | Start edge creation, cycle in-progress edge direction, or cycle selected edge direction |
-| `Enter` | Graph | Commit pending explicit edit session |
-| `Cmd/Ctrl+Enter` | Both | Commit new-node creation from anywhere (graph view); save panel edits (both views) |
-| `Esc` | Both | Cancel current edit, close panel, or clear selection |
-| `Backspace/Delete` | Graph | Open delete confirmation |
-| Arrow keys | Graph | Move selection to nearest node/edge in that direction; inside color palette, navigate swatches |
-| Cmd/Ctrl drag | Graph | Rubber-band select nodes and edge midpoints |
-| `Cmd/Ctrl+K` | Both | Open settings |
-
----
-
-## Editing Flows
-
-### Nodes
-
-- Clicking empty canvas creates a pending Cytoscape node with id `__pending__`.
-- Pending nodes are visible immediately but are not persisted until the title
-  is committed (Enter or Cmd/Ctrl+Enter).
-- Existing task fields autosave with a short debounce.
-- Status cycling is optimistic: `S` changes the visible status; Enter saves
-  and Esc restores.
-- Inline title editing uses an HTML contenteditable overlay positioned over
-  the Cytoscape node. It scales with zoom and resizes the Cytoscape node.
-
-### Edges
-
-- Pressing `E` with node(s) selected starts edge creation. A hidden phantom
-  node follows the cursor and preview edges connect from the selected sources.
-- During edge creation, `E` cycles `forward → related → backward → forward`.
-- Clicking a target node commits created edges. Clicking empty canvas starts
-  a pending target node and keeps preview edges until that node is saved.
-- Pressing `E` with one edge selected starts an optimistic direction/type
-  edit. The edge turns dashed while the edit is pending; Enter saves, Esc
-  restores.
-- Backward dependency edits are represented visually with `dir-backward`
-  until save, then the server PATCH swaps source/target.
-- Hover an edge to reveal the curve handle. The handle sits *on* the rendered
-  curve at `B(t = weight)` — the bezier sample at the weight parameter. Drag
-  it freely in 2D: parallel position along the edge maps to `curve.weight`
-  via inverse-smoothstep, perpendicular distance back-solves into
-  `curve.distance` (bulge height). Weight is clamped per-edge to a dynamic
-  range derived from each node's size + a small margin, so the dot can
-  never land inside either endpoint node — the bounds intersect the static
-  `[0.10, 0.90]` range. Note: changing weight slides the bulge along the
-  edge but doesn't change *how sharply* the curve bends; that's controlled
-  by `distance` (a quadratic bezier's perpendicular peak is always at
-  parameter 0.5 with magnitude `0.5·distance`).
-- Dependency cycle detection wraps the cycle-check + INSERT/UPDATE in a
-  single Postgres transaction with a SHARE ROW EXCLUSIVE lock on `edges`,
-  so concurrent edge writers can't slip a cycle past the check.
-
-### Color Palette
-
-- `B` opens the palette for selected nodes, edges, or mixed selections.
-- Palette values come from the Flexoki dark theme used by the app.
-- Swatches show the actual color that will be applied to node fill or edge
-  line/arrow color.
-- Arrow keys navigate as a 2D 5-column grid. Enter or click applies and saves.
-- Color changes affect background/edge color, not the selection highlight.
-
-### Graph metadata
-
-- `⋮` on a sidebar card opens `#graph-modal` with name + description fields
-  and Save / Delete buttons. Esc or backdrop click cancels. Delete reuses the
-  shared `confirmDelete` modal.
-
----
-
-> The remaining sections cover the HTTP API, data model, internal
-> architecture, and conventions. They're primarily reference material for
-> agent implementers and contributors hacking on graphtask itself — if
-> you're just using the app or the agent skill, you can stop here.
-
----
-
-## Stack
-
-- Backend: Express 5 on Node 22, PostgreSQL (any modern version), `pg`, and `yaml`.
-- Frontend: Vanilla JS, Cytoscape.js, TOAST UI Editor, and CSS using a Flexoki
-  dark palette. No build step.
-- Tests: Vitest and supertest.
-- Package manager: npm.
-
----
-
-## Layout
-
-```text
-src/
-  server.js          starts Express on PORT, binds to 127.0.0.1
-  app.js             builds the Express app and mounts routers
-  db.js              shared pg pool + withTx helper; resolves DATABASE_URL
-                     from env, falling back to PG_BOOTSTRAP_URL+DATABASE_NAME
-  markdown.js        frontmatter parse/serialize, validation, defaults
-  sse.js             shared LISTEN client + per-graph subscriber map for
-                     /events broadcasts
-  routes/
-    _validate.js     requireIntegerParam middleware
-    graphs.js        CRUD on /api/graphs + rotate-id
-    tasks.js         task CRUD + leaves/ready/subtasks/ancestors/blockers/
-                     unblocks, all graph-scoped
-    edges.js         edge CRUD + bulk insert with transactional cycle
-                     detection
-    graphView.js     /api/graphs/:gid/graph and shortest-path payloads
-db/
-  schema.sql         graphs, tasks, edges, edge_type enum, updated_at +
-                     pg_notify trigger, short-id generator function
-public/
-  index.html         static markup: sidebar, canvas, inspector, toolbar, modals
-  app.js             frontend graph behavior + multi-graph sidebar + SSE
-                     client + agent-follow mode
-  style.css          app shell, sidebar, toolbar, palette, modal styles
-tests/               Vitest specs: graphs, tasks, edges, graph queries, db, api
-.claude/skills/graphtask/SKILL.md  agent playbook (Agent Skills standard)
-Dockerfile           Postgres 17 + Node 22 image
-docker-entrypoint.sh initdb, loopback-only pg_hba, schema load, node start
-```
-
----
-
-## Data Model
-
-```sql
-graphs(
-  id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
-  name TEXT NOT NULL,                        -- 1..80 chars
-  description TEXT,                          -- nullable, ≤ 500 chars
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)
-
-tasks(
-  id SERIAL PRIMARY KEY,
-  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  content TEXT NOT NULL,                     -- canonical markdown
-  meta JSONB NOT NULL,                       -- structured copy of frontmatter
-  created_at TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ
-)
-
-edges(
-  id SERIAL PRIMARY KEY,
-  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
-  source_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  target_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  type edge_type,                            -- dependency | related
-  meta JSONB NOT NULL,
-  UNIQUE(source_id, target_id),
-  CHECK(source_id <> target_id)
-)
-```
-
-- `graphs.id` is an opaque 16-char string (`a-z` + `2-9`, omitting `0/1/i/l/o`)
-  generated by `generate_short_graph_id()` in plpgsql. Roughly 80 bits of
-  entropy — the URL itself is the access control. The route retries on the
-  negligible chance of a unique-violation collision.
-- `ON UPDATE CASCADE` on `tasks.graph_id` and `edges.graph_id` lets
-  `POST /api/graphs/:id/rotate-id` issue a fresh graph id and have all child
-  rows follow without a separate update.
-- `graphs.updated_at` is bumped by an AFTER trigger on tasks/edges
-  INSERT/UPDATE/DELETE. The same trigger calls
-  `pg_notify('graph_change', { graph_id, kind, op, id })` so SSE subscribers
-  can push live updates to viewers.
-- Task `content` is canonical: the server parses frontmatter, validates it,
-  and stores a synchronized structured copy in `tasks.meta`.
-- Task metadata: `title`, `status`, optional `description`, optional `color`,
-  optional saved graph coordinates `x`/`y`.
-- Status enum: `todo` (no highlight), `in_progress` (orange), `review`
-  (yellow — agent-finished, awaiting human confirmation), `done` (green).
-  Convention: when an LLM agent updates the graph it stops at `review`;
-  `done` is the human's final confirmation. Treat `review` as not-yet-done
-  for dependency-readiness purposes.
-- Edge metadata: optional `curve` shaped as `{distance, weight}` driving the
-  Cytoscape unbundled-Bezier control point — `distance` is the signed
-  perpendicular offset (legacy API still accepts a bare number with implicit
-  `weight: 0.5`), `weight` is the parallel position along the source→target
-  axis (`0.10..0.90`, `0.5` = midpoint). Optional `color` (validated 6-digit
-  hex).
-- `dependency` edges are directed and acyclic; `related` edges can form loops.
-- Cycle detection (POST + PATCH + bulk) runs inside a single transaction
-  with `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers
-  can't both pass the check.
-- Graph names are not globally unique — duplicate-name `POST` and `PATCH`
-  both succeed. The old `graphs_name_norm_uniq` index was dropped in
-  Phase B; rely on `id`, not `name`, for any lookup.
-
----
-
-## API
-
-All task/edge/graph-view routes are scoped to a graph via `:gid`.
-
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/api/graphs` | List graphs, ordered by `updated_at DESC` |
-| POST | `/api/graphs` | Body: `{name, description?}` |
-| GET | `/api/graphs/:id` | Fetch one graph |
-| PATCH | `/api/graphs/:id` | Body: any of `{name, description}`; bumps `updated_at` |
-| DELETE | `/api/graphs/:id` | Cascades to tasks and edges |
-| GET | `/api/graphs/:gid/tasks` | List tasks in graph |
-| POST | `/api/graphs/:gid/tasks` | Body: `{content}` markdown blob |
-| GET | `/api/graphs/:gid/tasks/:id` | Fetch one task |
-| PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
-| DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
-| GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
-| GET | `/api/graphs/:gid/tasks/ready` | Status=todo tasks where every recursive prereq is done (treats `review` as not-yet-done) |
-| GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
-| GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
-| GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
-| GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
-| GET | `/api/graphs/:gid/edges` | List edges in graph |
-| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, type, meta?}` |
-| POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
-| PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, type, meta |
-| DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
-| POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
-| GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
-| GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
-| GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
-| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
-| GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
-| GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |
-
-`requireIntegerParam('id')` middleware on numeric `:id` segments returns 400
-on non-integer values (otherwise Postgres would raise a 500). `:gid` is an
-opaque short string; a bad one falls through to a 404.
-
-`markdown.applyDefaults` coerces YAML-parsed title and description to strings
-before validation, so scalar YAML values do not break task saves.
-
----
-
-## Agent design notes
-
-The HTTP API above is stable enough for an LLM agent (Claude Code, Codex,
-or anything that can run `curl`) to drive end to end. The skill install
-steps live inside each Getting Started path above; this section covers
-the conventions and constraints any agent integration should follow.
-
-**Conventions agents follow**
-
-- Persist the active graph id in `.graphtask/graph-id` (per-project, kept
-  out of git — it's bearer-token equivalent).
-- Move tasks `todo → in_progress → review`. **Never set `done`.**
-  `done` is the human's confirmation; `review` is the agent's
-  "I think this is finished, please confirm." Treat `review` as
-  not-yet-done for dependency-readiness purposes (the
-  `/tasks/ready`, `/tasks/:id/blockers`, and `/tasks/:id/unblocks`
-  endpoints already encode this).
-- Use `POST /edges/bulk` for any multi-edge import — it's transactional
-  and fails atomically with a `failedAt` index, so you never end up with
-  a half-built dependency graph.
-- If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
-
-**Live updates**
-
-The browser canvas re-renders within ~150 ms of any task/edge mutation
-via the `/events` SSE endpoint, so a user watching a graph sees the
-agent's edits in real time. The agent doesn't need to consume the SSE
-stream itself.
-
-**Other agents (Codex, Cursor, etc.)**
-
-The shipped skill at `.claude/skills/graphtask/SKILL.md` follows the
-open [Agent Skills](https://agentskills.io) standard. The `SKILL.md`
-file is portable; refer to your tool's docs for the install path. Any
-agent that can `curl` is a viable client — the skill is just the
-playbook.
-
----
-
-## Views — per-graph view preference
-
-The canvas region renders one of two views: **Graph** (cytoscape DAG —
-the canonical edit surface) or **Kanban** (four-column board grouped by
-status). Tasks + edges are unchanged; the view is a render lens.
-
-**Where it lives.** Graph settings modal → Appearance section → View
-dropdown (above Font). Two options: `Graph` (default), `Kanban`.
-
-**Per-user, per-graph, never synced.** The choice writes to
-`localStorage['graphtask:view:<gid>']` — client-only, no server PATCH,
-no SSE broadcast. Two collaborators on the same graph can sit in
-different views; flipping yours doesn't change theirs. Each graph
-remembers its own setting per browser.
-
-**Kanban specifics:**
-- Columns are status (todo / in_progress / review / done). Column title
-  text is colored per status (grey / orange / yellow / green).
-- Cards: title + 2-line body excerpt + optional left color bar from
-  `meta.color`. Sorted within column by `updated_at DESC`.
-- Click a card → opens the existing right-side inspector. The kanban
-  board shifts left if the panel would cover the selected card's
-  column, so the column stays visible.
-- Drag a card to a different column → optimistic move + PATCH `status`
-  with OCC fields; flash on the destination card. SSE re-buckets for
-  other tabs/agents with the same flash.
-- Hotkeys: `G` creates a new task in the selected column (or Todo); `S`
-  cycles status of the selected card (one-press, no confirm — drag is
-  the primary UX). F/T/E/B are graph-only and no-op in kanban.
-- Empty columns show a "Drop tasks here" placeholder.
-- Mobile (<768px): horizontal scroll, one column at a time via
-  `scroll-snap`.
-
-**Cross-view presence.** Peer selection underlays + cursor pills work
-across both views off the same `peerSelectionState`. A peer selecting
-a task in graph view shows up as a colored outline + name pill on the
-corresponding card in kanban, and vice versa.
-
-**Eye toggle.** Top-right corner has a tiny eye icon (visible on hover
-over the avatar bar / LIVE button) that hides both the avatar bar and
-the LIVE push-button. State is `localStorage['graphtask:presence-hidden']`
-— per-user, global, applies to both views.
-
----
-
-## Frontend Model
-
-The frontend has four main regions:
-
-- **Sidebar**: `#sidebar` lists graphs with name + relative updated time.
-  `+` creates a new graph; `⋮` opens the edit modal (rename, description,
-  delete). The active graph card is highlighted.
-- **Canvas**: `#cy` fills the area to the right of the sidebar. Cytoscape
-  paints nodes and edges. Styling is driven by element data (`status`,
-  `color`, `edgeType`, `curve`) and transient classes (`selected`, `editing`,
-  `leaf`, `dir-backward`, `edge-type-editing`, `edge-hover-target`,
-  `preview`, `phantom`, `agent-flash-*`). In kanban view, `#cy` is
-  hidden and `#kanban` (a separate fixed container in the same region)
-  renders the column board.
-- **Side panel**: `#panel` is a resizable right-side inspector for node
-  title, status, and markdown body. Opening it recenters the selected node
-  in the visible canvas area (sidebar-aware via `cy.width()`).
-- **Bottom toolbar**: `#bottom-bar` is contextual and changes by selection
-  mode. Centered within the canvas area.
-
-### Active-graph routing
-
-- URL: `/g/:gid` reflects the active graph; bookmarkable.
-- Boot resolution order: URL → `localStorage` last-active → first available
-  graph → none.
-- `popstate` keeps the canvas in sync with browser back/forward.
-- All API calls go through an `apiBase()` helper that prefixes
-  `/api/graphs/:activeGraphId`, so a route's URL never accidentally targets
-  the wrong graph.
-
-### Lazy graph creation
-
-When no graph is active, the canvas placeholder reads "Click here for a new
-task". Clicking the canvas (or pressing `G`, or the `+` toolbar button)
-lazily creates an `Untitled` graph and immediately starts the new-task flow
-at the click position. If the user backs out without committing the first
-task, a deferred check (`maybeCleanupLazyGraph`) deletes the empty graph and
-resets the URL to `/`.
-
-### Selection Modes
-
-`getSelectionMode()` returns:
-
-- `neutral`: nothing selected. Toolbar shows New (`G`), Fit (`F`), Settings.
-- `node`: one or more nodes selected. Toolbar shows Status (`S`), Color (`B`),
-  Connect (`E`), and Delete.
-- `edge`: one or more edges selected. Toolbar shows Color (`B`), Direction
-  (`E`), and Delete. For a single edge, Direction shows a right arrow, left
-  arrow, or horizontal bidirectional arrow for the current state.
-- `mixed`: nodes and edges selected together. Toolbar shows Color (`B`) and
-  Delete.
-- `edge-creating`: edge creation in progress. Toolbar shows a preview summary
-  and Direction (`E`) for the in-progress edge type.
-
-`updateToolbar()` runs after selection/mode changes and after `fetchGraph()`
-because refetching rebuilds Cytoscape elements and clears transient classes.
-
-### Agent-follow
-
-When an SSE event arrives indicating an external (non-local) edit on a task,
-the client (a) refetches the graph with selection preservation, (b) animates
-the camera to the affected node, and (c) for UPDATE events, opens the side
-panel showing the new content. The "who is editing this" visual cue comes
-from the peer-selection classes (writer's color outline + dashed border)
-when the agent broadcasts its current task — see Multi-peer presence below.
-Agent-follow is suppressed if the user `pointerdown`/`keydown`/`wheel`d in
-the last 2 seconds, so manual work isn't yanked around. `loadIntoEditor`
-sets a 200ms suppression window on the autosave scheduler so the synthetic
-`change` event from `setMarkdown` doesn't cause a round-trip-PATCH echo loop.
-
-Multi-agent follow rules: 0 active agents → no auto-pan; 1 active agent →
-follow it regardless of owner; 2+ agents → follow only the one whose
-`owner_user_id` matches the local user. An anon viewer with 2+ agents gets
-no auto-pan (rely on highlights). A round push-button below the local
-user's avatar — labeled `LIVE` when tracking, `QUIET` when paused, with
-a soft orange pulse halo while live — toggles agent-follow per-graph;
-toggling on one graph propagates the new state as the default for future
-graphs but doesn't change other graphs you've explicitly toggled.
-
-### Multi-peer presence
-
-Every active writer (human or agent) appears in the avatar bar (top-right,
-capped at 7 individuals + a "+N others" chip). Avatar colors are
-deterministic per writer_id from a 64-color palette (16 base hues × 4
-lightness/saturation variants) so collaborators see the same color across
-reloads and devices.
-
-When a peer selects or opens a node/edge they POST to
-`/api/graphs/:gid/selection`, which fans out via SSE. Other viewers render
-(a) a colored underlay on the node (or dashed border if the peer has the
-side panel open) in the peer's color, and (b) a "peer cursor" — a small
-glowing dot + name pill positioned at a free corner of the node. Multiple
-peers on the same node stack into one marker (2-4 peers: vertical rows
-with initials; 5+: a single overflow chip showing "AB & N others"). Peer
-markers are placed by a deterministic 8-direction probe that avoids
-overlapping other nodes; the marker repositions on cy pan/zoom/drag.
-
-The local user's own selection isn't rendered as a peer marker — instead
-the standard `.selected` underlay renders in their own avatar color.
-Agents (`type: 'agent'`) skip the 60s idle filter so a long-thinking agent
-keeps its marker visible until its Stop hook DELETEs presence at end of
-turn.
-
-OCC: agents must PATCH with `base_version` + `base_content` so the
-server's three-way merge protects UI-managed frontmatter keys (`x`/`y`
-positions, `color`, `curve`) the agent didn't include. Without OCC fields
-the PATCH falls back to blind replace and silently wipes those keys. See
-the [skill](.claude/skills/graphtask/SKILL.md) for the canonical
-`work_on_task` / `announce_focus_edge` helpers.
-
-Agent-vs-agent same-field conflicts use **owner-agent precedence**: the
-agent whose `owner_user_id` matches `graphs.owner_user_id` wins. If both
-or neither agents are the graph owner's, falls through to last-write-wins.
-Human-vs-agent rule unchanged: human always wins.
-
----
-
-## Notable Decisions
+### Notable Decisions
 
 - **Multi-graph as nested resources.** Routes are `/api/graphs/:gid/...`
   rather than carrying a graph_id query param everywhere. All cross-graph
@@ -1092,9 +1047,7 @@ Human-vs-agent rule unchanged: human always wins.
   explicit `null` escape hatch for the rare "I really do want to clear
   this" case.
 
----
-
-## Where To Look First
+### Where To Look First
 
 | Want to... | Look at |
 |---|---|
@@ -1110,9 +1063,7 @@ Human-vs-agent rule unchanged: human always wins.
 | Change agent skill content | `.claude/skills/graphtask/SKILL.md` |
 | Debug transient frontend state | Module-scope state in `public/app.js`: `activeGraphId`, `pendingNode`, `edgeCreation`, `edgeTypeEditing`, `statusEditing`, `colorPaletteState`, `_lazyCreatedGraphId` |
 
----
-
-## Current Caveats
+### Current Caveats
 
 - Multi-node edge creation is fan-out. If the target is also selected, the
   self-edge is skipped.
@@ -1123,13 +1074,13 @@ Human-vs-agent rule unchanged: human always wins.
   on existing databases; `IF NOT EXISTS` won't pick up type diffs.
 - The frontend is intentionally not modularized yet.
 
-## Roadmap
+### Roadmap
 
 The canonical "what's next" list — everything planned, deferred, or
 explicitly rejected lives here so contributors don't re-litigate the
 same choices.
 
-### Planned
+#### Planned
 
 - **Multi-view: same data, different lenses.** Same `tasks` + `edges`
   rows, multiple rendering modes. The graph-DAG view (current) stays
@@ -1259,7 +1210,7 @@ same choices.
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
 
-### Reach
+#### Reach
 
 Aspirational — interesting if we get to them, but we may never. Not
 actively planned; pull into Planned only if user feedback or a
@@ -1310,7 +1261,7 @@ concrete need surfaces.
   follow toggle covers most of the perceived need — true pause is a
   nice-to-have, not a daily pain.
 
-### Deferred
+#### Deferred
 
 - **Prod-Clerk cutover.** Phase B B7 mode 4 (Hosted, Clerk prod) is the
   only deployment-matrix row not verified end-to-end. Marked done on
