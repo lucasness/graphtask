@@ -615,11 +615,12 @@ body {
 /* Graph-only toolbar contents hide in kanban view. New stays visible —
    its click handler branches on currentView and calls createKanbanTask in
    kanban (matching the G hotkey). Fit and Tidy don't apply (no layout
-   to fit, no tidy pass). The first divider (between New and Fit) is
-   hidden too so the remaining [New | Settings] reads with one separator. */
+   to fit, no tidy pass). With Fit/Tidy hidden, every divider except the
+   last collapses so the remaining [New | Settings] reads with one
+   separator. */
 body.view-kanban #btn-zoom-fit,
 body.view-kanban #btn-tidy,
-body.view-kanban #tb-neutral .tb-divider:first-of-type {
+body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   display: none;
 }
 
