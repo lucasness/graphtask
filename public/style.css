@@ -1410,6 +1410,7 @@ body.forbidden #cy {
   border-radius: 6px;
   color: var(--tx-2);
   font-size: var(--text-body-sm);
+  text-decoration: none;
   /* Optical balance: icon side gets ~2px less padding than text side so
      the gear sits on the same visual axis as the centered label. */
   padding: 6px 10px 6px 8px;
