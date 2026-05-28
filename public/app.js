@@ -1761,7 +1761,7 @@ function selectionSummaryHtml(showSave = false) {
   return `
     <span class="tb-selection-summary">
       <span>${total}</span>
-      ${showSave ? '<span class="tb-save-hint"><kbd>Enter</kbd> Save</span>' : ''}
+      ${showSave ? '<span class="tb-save-hint">Save <kbd>Enter</kbd></span>' : ''}
     </span>
   `;
 }
