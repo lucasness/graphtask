@@ -23,7 +23,7 @@ from a Claude Code agent regardless of which path you pick, see
 
 ### 1. Use the hosted version
 
-**<https://graphtask.dev.wafer.works>** — no setup, no install.
+**<https://graphtask.wafers.live>** — no setup, no install.
 
 Open the link, click `+` to create a graph, start sketching tasks. Each
 graph gets a 16-char random id (`/g/<id>`) that acts as the access
@@ -212,7 +212,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/ins
 brew install jq        # macOS — or: apt install jq / apk add jq
 
 # 3. Point the agent at your graphtask instance
-export GRAPHTASK_BASE_URL="https://graphtask.dev.wafer.works"   # hosted
+export GRAPHTASK_BASE_URL="https://graphtask.wafers.live"   # hosted
 # export GRAPHTASK_BASE_URL="https://graphtask.example.com"     # self-hosted
 # export GRAPHTASK_BASE_URL="http://localhost:3000"             # local Docker / npm start
 
@@ -326,7 +326,7 @@ step adds it for you). To work on a different project's graph, run the
 agent from a different directory.
 
 **Sharing and revoking access.** Each graph's URL is its only access
-control. To collaborate, share `https://graphtask.dev.wafer.works/g/<id>`
+control. To collaborate, share `https://graphtask.wafers.live/g/<id>`
 (or your hosted URL). To revoke a leaked link, open the graph's `⋮`
 settings → Sharing → Rotate. The old URL 404s; tasks/edges follow to
 the new id automatically.
@@ -1284,7 +1284,7 @@ concrete need surfaces.
 
   Why deferred: Clerk's production environment requires a verified
   stable domain in the dashboard's "Domains" section before it'll issue
-  `pk_live_…` / `sk_live_…` keys. `graphtask.dev.wafer.works` is a
+  `pk_live_…` / `sk_live_…` keys. `graphtask.wafers.live` is a
   dev/preview hostname, not the production target. Until a real prod
   domain exists there's nothing to verify.
 
