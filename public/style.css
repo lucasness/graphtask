@@ -719,7 +719,7 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
 }
 
@@ -736,11 +736,6 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   display: none;
 }
 
-.sb-signin-btn {
-  width: 100%;
-  justify-content: center;
-}
-
 /* Combined account-and-settings row (signed-in). Gear icon + account
    text; clicking opens the app-level settings modal. Hover surfaces a
    "Sign out" popover above so the user can sign out without opening
@@ -748,7 +743,7 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
 .sb-account-row {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
   width: 100%;
   padding: 6px 8px;
@@ -760,9 +755,10 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   border: none;
   cursor: pointer;
   font-family: inherit;
+  text-align: left;
 }
 .sb-account-row:hover { background: var(--ui); color: var(--tx); }
-.sb-account-row .ph { font-size: 16px; line-height: 1; flex: 0 0 auto; }
+.sb-account-row .ph { font-size: 16px; line-height: 1; flex: 0 0 16px; text-align: center; }
 .sb-account-row .sb-user-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1394,16 +1390,21 @@ body.forbidden #cy {
 #sidebar.collapsed .sb-bottom-label {
   display: none;
 }
+#sidebar.collapsed .sb-bottom-btn,
 #sidebar.collapsed .sb-account-row {
-  padding: 6px 4px;
+  justify-content: center;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 #app-settings-btn.hidden { display: none; }
 
 /* Bottom-row button — gear + "Settings" label centered when expanded;
    collapses to just the gear icon (still centered) when the sidebar is. */
 .sb-bottom-btn {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   background: transparent;
   border: none;
@@ -1411,13 +1412,14 @@ body.forbidden #cy {
   color: var(--tx-2);
   font-size: var(--text-body-sm);
   text-decoration: none;
-  /* Optical balance: icon side gets ~2px less padding than text side so
-     the gear sits on the same visual axis as the centered label. */
+  text-align: left;
+  /* Left padding matches .sb-account-row so every bottom-row icon shares
+     one vertical column and the labels share one left edge. */
   padding: 6px 10px 6px 8px;
   cursor: pointer;
 }
 .sb-bottom-btn:hover { background: var(--ui); color: var(--tx); }
-.sb-bottom-btn .ph { font-size: 16px; line-height: 1; }
+.sb-bottom-btn .ph { font-size: 16px; line-height: 1; flex: 0 0 16px; text-align: center; }
 #sidebar.collapsed .sb-bottom-label { display: none; }
 
 /* Collapsed sidebar: skinny strip showing only the expand and gear icons. */
