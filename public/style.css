@@ -2364,10 +2364,11 @@ button {
 .tb-hint,
 .tb-direction,
 .tb-direction-controls {
-  font-family: var(--font-body);
-  font-size: var(--text-meta);
-  color: var(--color-steel);
-  padding: 0 6px;
+  font-family: var(--font-ui);
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  color: var(--color-storm);
+  padding: 6px 12px;
   white-space: nowrap;
 }
 /* Selection count — ember-orange to match the brand-mark eyebrow color

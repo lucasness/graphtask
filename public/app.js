@@ -1874,9 +1874,12 @@ function updateToolbar() {
   } else if (mode === 'edge-creating') {
     const { direction } = edgeCreation;
     const sources = edgeCreation.sources || [edgeCreation.source].filter(Boolean);
-    const srcTitle = sources.length === 1
+    const rawTitle = sources.length === 1
       ? (sources[0].data('title') || '?')
       : `${sources.length} nodes`;
+    const srcTitle = rawTitle.length > 12
+      ? `${rawTitle.slice(0, 12).trimEnd()}..`
+      : rawTitle;
     const arrow = direction === 'related' ? '↔'
       : direction === 'backward' ? '←' : '→';
     const previewText = direction === 'backward'
