@@ -101,6 +101,17 @@ from `.env` by `npm start`)
   `127.0.0.1`.
 - `AUTH_PROVIDER` _(optional, default `none`)_ — see "Auth modes" below.
 
+**The database must already exist; the schema does not.** graphtask applies
+`db/schema.sql` automatically on every boot — it's idempotent (`CREATE TABLE IF
+NOT EXISTS`, guarded `ALTER`s), so there is no manual migration step and no
+`psql -f` to run. What the app does *not* do is create the database itself: that
+has to exist before it connects, or boot fails at the first query. Create it
+with `createdb <name>`, or use the database your Postgres host already gave you
+(a managed provider like RDS / Supabase / Neon hands you one — point
+`DATABASE_URL` at it and the first boot populates the tables). That single
+prerequisite — an existing, reachable database — is the same in every
+environment; only *how* you obtain the database differs.
+
 See `.env.example` for a fully-commented template.
 
 **Auth modes**
@@ -158,8 +169,11 @@ propagation, what's out of scope) live under
 git clone https://github.com/lucasness/graphtask.git
 cd graphtask
 npm install
+
+# Create the database (the app needs it to exist; it won't create it for you).
+# You do NOT need to load the schema by hand — db/schema.sql is applied
+# automatically, and idempotently, on every server boot.
 createdb graphtask
-psql graphtask -f db/schema.sql
 
 # npm start runs `node --env-file=.env`, which errors if .env is missing.
 # Create one (empty is fine) and/or set vars inline:
