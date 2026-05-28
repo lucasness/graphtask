@@ -2364,6 +2364,9 @@ button {
 .tb-hint,
 .tb-direction,
 .tb-direction-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-ui);
   font-size: var(--text-body-sm);
   font-weight: 500;
@@ -2383,11 +2386,6 @@ button {
   font-variant-numeric: tabular-nums;
 }
 .tb-direction { color: var(--color-storm); font-variant-numeric: tabular-nums; }
-.tb-direction-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 .tb-direction-icon {
   display: inline-flex;
   width: 16px;
@@ -2577,19 +2575,22 @@ button {
   display: inline-block;
 }
 
+/* Chip outer box stretches to match its sibling text label's line-box, so
+   text-bottom and chip-bottom line up across every toolbar slot. The inner
+   monospace glyph is then vertically centered by the inline-flex centering. */
 kbd {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
+  justify-content: center;
+  align-self: stretch;
+  box-sizing: border-box;
+  padding: 0 6px;
   font: 11px/1 ui-monospace, 'SF Mono', monospace;
   color: var(--color-steel);
   background: var(--color-blush-tint);
   border: 1px solid var(--color-mist);
   border-radius: 4px;
-  min-height: 16px;
 }
-.tool-btn kbd { margin-left: 2px; }
-.tb-direction-controls kbd { margin-left: 2px; }
 
 /* Inline node title input overlay — sits inside the cytoscape node */
 #node-title-overlay {
