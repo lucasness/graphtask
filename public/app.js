@@ -1572,17 +1572,13 @@ const BG_TEXT_BOTTOM_PADDING = 16; // matches base node padding (top)
 // dwarf the rest of the graph. ~280 fits a typical portrait-ish photo cleanly.
 const BG_MAX_IMAGE_H = 280;
 
-// Push the per-node values cytoscape can't get from a data() mapping
-// (padding-bottom, background-height, text-margin-y) directly onto the
-// element. The stylesheet's [backgroundImage] selector handles the rest.
+// Write the measured image height to node data; the stylesheet's three
+// per-element functions read it back and feed padding-bottom / text-margin-y
+// / background-height. Cytoscape re-evaluates those functions on every
+// data change, so no explicit restyle call is needed.
 function applyBgDimensions(node, imageH) {
   const h = Math.max(1, Math.min(BG_MAX_IMAGE_H, Math.round(imageH)));
   node.data('bgImageH', h);
-  node.style({
-    'padding-bottom': `${h + BG_TEXT_BOTTOM_PADDING}px`,
-    'background-height': `${h}px`,
-    'text-margin-y': -h / 2,
-  });
 }
 
 function setBgImageData(node, url) {
@@ -1593,13 +1589,6 @@ function setBgImageData(node, url) {
 function clearBgImageData(node) {
   node.removeData('backgroundImage');
   node.removeData('bgImageH');
-  // Clear the per-node style overrides so the node returns to its base
-  // (non-image) geometry. Passing '' tells cytoscape to drop the override.
-  node.style({
-    'padding-bottom': '',
-    'background-height': '',
-    'text-margin-y': '',
-  });
 }
 
 // Measure the image's natural dimensions, scale to the node's render width
@@ -7074,38 +7063,40 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "review"]', style: { 'border-color': '#ff4700', 'border-width': 2, 'border-style': 'dashed', 'border-dash-pattern': [6, 4] } },
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: the node behaves exactly like a normal label-sized
-    // node for its text portion, with an image area glued to the bottom.
+    // Image-bearing nodes: TWO REGIONS. The top region is a normal label-
+    // sized text area with 16px padding on all four sides. The bottom region
+    // is the image, anchored to the node's bottom edge, sized to the image's
+    // actual aspect ratio at width 220. They do not overlap.
+    //
     // Layout from top to bottom of the node:
     //
     //   16px        — top padding
     //   label       — title text (auto-grows with line count)
     //   16px        — bottom-of-text padding (matches top)
-    //   bgImageH    — image area, sized to the image's actual aspect ratio
-    //                  at width 220 (so `cover` fills it perfectly, no
-    //                  whitespace and no cropping)
+    //   bgImageH    — image area (the image's natural height at width 220)
     //
-    // The dynamic values (padding-bottom, background-height, text-margin-y)
-    // are written per-node via `node.style()` from applyBgDimensions —
-    // `data()` mappings turned out to silently no-op for `padding-bottom`,
-    // which made the node collapse to label-height + base 16px padding.
-    // The static defaults below cover the brief window between adding the
-    // node and the image's onload firing; they assume a 16:9 aspect, which
-    // is the most common screenshot/diagram shape.
+    // bgImageH lives on node.data, written by loadBgImageDimensions() once
+    // the image's natural dimensions are known. The three style functions
+    // below read it back and feed the layout — cytoscape re-evaluates these
+    // automatically when ele.data() changes.
+    //
+    // background-fit MUST be 'contain' (not 'cover') so background-height
+    // is honored as the image-area size; 'cover' stretches the image across
+    // the whole node and the title ends up rendered on top of it.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        'text-margin-y': -62,
+        'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': '140px',
+        'padding-bottom': (ele) => (ele.data('bgImageH') || 124) + 16,
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
-        'background-fit': 'cover',
+        'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': '124px',
+        'background-height': (ele) => ele.data('bgImageH') || 124,
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
@@ -7202,38 +7193,40 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "review"]',      style: { 'background-color': _statusPalette.review.fill,      'border-color': _statusPalette.review.stroke,      'color': _statusPalette.review.stroke } },
     { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: the node behaves exactly like a normal label-sized
-    // node for its text portion, with an image area glued to the bottom.
+    // Image-bearing nodes: TWO REGIONS. The top region is a normal label-
+    // sized text area with 16px padding on all four sides. The bottom region
+    // is the image, anchored to the node's bottom edge, sized to the image's
+    // actual aspect ratio at width 220. They do not overlap.
+    //
     // Layout from top to bottom of the node:
     //
     //   16px        — top padding
     //   label       — title text (auto-grows with line count)
     //   16px        — bottom-of-text padding (matches top)
-    //   bgImageH    — image area, sized to the image's actual aspect ratio
-    //                  at width 220 (so `cover` fills it perfectly, no
-    //                  whitespace and no cropping)
+    //   bgImageH    — image area (the image's natural height at width 220)
     //
-    // The dynamic values (padding-bottom, background-height, text-margin-y)
-    // are written per-node via `node.style()` from applyBgDimensions —
-    // `data()` mappings turned out to silently no-op for `padding-bottom`,
-    // which made the node collapse to label-height + base 16px padding.
-    // The static defaults below cover the brief window between adding the
-    // node and the image's onload firing; they assume a 16:9 aspect, which
-    // is the most common screenshot/diagram shape.
+    // bgImageH lives on node.data, written by loadBgImageDimensions() once
+    // the image's natural dimensions are known. The three style functions
+    // below read it back and feed the layout — cytoscape re-evaluates these
+    // automatically when ele.data() changes.
+    //
+    // background-fit MUST be 'contain' (not 'cover') so background-height
+    // is honored as the image-area size; 'cover' stretches the image across
+    // the whole node and the title ends up rendered on top of it.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        'text-margin-y': -62,
+        'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': '140px',
+        'padding-bottom': (ele) => (ele.data('bgImageH') || 124) + 16,
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
-        'background-fit': 'cover',
+        'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': '124px',
+        'background-height': (ele) => ele.data('bgImageH') || 124,
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
