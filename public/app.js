@@ -1552,9 +1552,9 @@ function updateGraphNode(task) {
   // image-less nodes on their default label-sized geometry. Explicitly
   // remove on absence so a PATCH that clears the image clears the data too.
   if (meta['background-image']) {
-    node.data('backgroundImage', meta['background-image']);
+    setBgImageData(node, meta['background-image']);
   } else {
-    node.removeData('backgroundImage');
+    clearBgImageData(node);
   }
   node.data('meta', meta);
   if (typeof task.version === 'number') node.data('version', task.version);
@@ -1563,27 +1563,94 @@ function updateGraphNode(task) {
   node.data('lastModifiedByUser', task.last_modified_by_user ?? null);
 }
 
+// Default-render dimensions used while the image's actual size is loading.
+// 124 ≈ 220 × 9/16 (a 16:9 image at width 220), so the initial paint matches
+// the most common screenshot shape and the post-load swap is usually invisible.
+const BG_DEFAULT_IMAGE_H = 124;
+const BG_TEXT_BOTTOM_PADDING = 16; // matches base node padding (top)
+// Cap the rendered image height so a phone screenshot doesn't make one node
+// dwarf the rest of the graph. ~280 fits a typical portrait-ish photo cleanly.
+const BG_MAX_IMAGE_H = 280;
+
+// Compute and stash the per-node values the cytoscape style reads via
+// data() mappings: bgImageH (image area height), bgPaddingBottom (drives
+// node total height via height: 'label'), bgTextMarginY (re-centers the
+// label in the top portion).
+function applyBgDimensions(node, imageH) {
+  const h = Math.max(1, Math.min(BG_MAX_IMAGE_H, Math.round(imageH)));
+  node.data('bgImageH', h);
+  node.data('bgPaddingBottom', h + BG_TEXT_BOTTOM_PADDING);
+  node.data('bgTextMarginY', -h / 2);
+}
+
+function setBgImageData(node, url) {
+  node.data('backgroundImage', url);
+  // Seed defaults so the first paint is reasonable; the async load below
+  // refines once the real dimensions are known.
+  if (node.data('bgImageH') == null) {
+    applyBgDimensions(node, BG_DEFAULT_IMAGE_H);
+  }
+  loadBgImageDimensions(node, url);
+}
+
+function clearBgImageData(node) {
+  node.removeData('backgroundImage');
+  node.removeData('bgImageH');
+  node.removeData('bgPaddingBottom');
+  node.removeData('bgTextMarginY');
+}
+
+// Measure the image's natural dimensions, scale to the node's render width
+// (220), cap, and write back to node data. Cytoscape re-renders on data
+// changes so the node resizes itself.
+function loadBgImageDimensions(node, url) {
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => {
+    if (!node || node.empty()) return;
+    // Re-check the URL in case it changed (replace flow) before this onload.
+    if (node.data('backgroundImage') !== url) return;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    if (!nw || !nh) return;
+    const NODE_W = 220;
+    applyBgDimensions(node, NODE_W * (nh / nw));
+  };
+  img.onerror = () => {
+    // Leave the defaults in place; the broken-image canvas will show at
+    // default-sized dimensions, which is the same UX as before.
+  };
+  img.src = url;
+}
+
 function addGraphNode(task) {
   if (!cy) return;
   const meta = task.meta || {};
-  cy.add({
-    group: 'nodes',
-    data: {
-      id: String(task.id),
-      taskId: task.id,
-      title: meta.title || 'Untitled',
-      description: meta.description || '',
-      status: meta.status || 'todo',
-      color: meta.color || DEFAULT_NODE_COLOR,
-      meta,
-      version: typeof task.version === 'number' ? task.version : 0,
-      lastModifiedByUser: task.last_modified_by_user ?? null,
-      // Set background-image data only when present so the
-      // `[backgroundImage]` cy selector misses image-less nodes (keeping
-      // them on the default label-sized geometry).
-      ...(meta['background-image'] ? { backgroundImage: meta['background-image'] } : {}),
-    },
-  });
+  const bgUrl = meta['background-image'];
+  const data = {
+    id: String(task.id),
+    taskId: task.id,
+    title: meta.title || 'Untitled',
+    description: meta.description || '',
+    status: meta.status || 'todo',
+    color: meta.color || DEFAULT_NODE_COLOR,
+    meta,
+    version: typeof task.version === 'number' ? task.version : 0,
+    lastModifiedByUser: task.last_modified_by_user ?? null,
+  };
+  if (bgUrl) {
+    // Seed defaults so the first paint has a real layout; the actual
+    // dimensions land via loadBgImageDimensions below.
+    data.backgroundImage = bgUrl;
+    data.bgImageH = BG_DEFAULT_IMAGE_H;
+    data.bgPaddingBottom = BG_DEFAULT_IMAGE_H + BG_TEXT_BOTTOM_PADDING;
+    data.bgTextMarginY = -BG_DEFAULT_IMAGE_H / 2;
+  }
+  cy.add({ group: 'nodes', data });
+  if (bgUrl) {
+    const node = cy.getElementById(String(task.id));
+    if (node && !node.empty()) loadBgImageDimensions(node, bgUrl);
+  }
 }
 
 function addGraphEdge(edge) {
@@ -1641,24 +1708,25 @@ async function fetchGraph() {
   const elements = [];
 
   for (const node of data.nodes) {
-    elements.push({
-      group: 'nodes',
-      data: {
-        id: String(node.id),
-        taskId: node.id,
-        title: node.title || 'Untitled',
-        description: node.description || '',
-        status: node.status || 'todo',
-        color: (node.meta && node.meta.color) || DEFAULT_NODE_COLOR,
-        meta: node.meta || {},
-        version: typeof node.version === 'number' ? node.version : 0,
-        // Same rule as addGraphNode: set the data key only when an image is
-        // present so the `[backgroundImage]` selector doesn't match empty.
-        ...(node.meta && node.meta['background-image']
-          ? { backgroundImage: node.meta['background-image'] }
-          : {}),
-      },
-    });
+    const bgUrl = node.meta && node.meta['background-image'];
+    const nodeData = {
+      id: String(node.id),
+      taskId: node.id,
+      title: node.title || 'Untitled',
+      description: node.description || '',
+      status: node.status || 'todo',
+      color: (node.meta && node.meta.color) || DEFAULT_NODE_COLOR,
+      meta: node.meta || {},
+      version: typeof node.version === 'number' ? node.version : 0,
+    };
+    if (bgUrl) {
+      // Seed defaults; loadBgImageDimensions refines once each image loads.
+      nodeData.backgroundImage = bgUrl;
+      nodeData.bgImageH = BG_DEFAULT_IMAGE_H;
+      nodeData.bgPaddingBottom = BG_DEFAULT_IMAGE_H + BG_TEXT_BOTTOM_PADDING;
+      nodeData.bgTextMarginY = -BG_DEFAULT_IMAGE_H / 2;
+    }
+    elements.push({ group: 'nodes', data: nodeData });
   }
 
   for (const link of data.links) {
@@ -1685,6 +1753,13 @@ async function fetchGraph() {
   hideCurveHandle();
   cy.elements().remove();
   cy.add(elements);
+  // After the rebuild, kick off image-dimension loads for every node that
+  // has a background image. Each onload writes back to node data and
+  // cytoscape re-renders that single node — no re-fetch needed.
+  cy.nodes().forEach((n) => {
+    const url = n.data('backgroundImage');
+    if (url) loadBgImageDimensions(n, url);
+  });
 
   let hasPositions = false;
   cy.nodes().forEach((n) => {
@@ -7010,37 +7085,40 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "review"]', style: { 'border-color': '#ff4700', 'border-width': 2, 'border-style': 'dashed', 'border-dash-pattern': [6, 4] } },
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: title at the top INSIDE the node frame, image
-    // directly below it, equal padding above the title and between the
-    // title's bottom and the image's top. The numbers work like this:
+    // Image-bearing nodes: the node behaves exactly like a normal label-sized
+    // node for its text portion, with an image area glued to the bottom.
+    // Layout from top to bottom of the node:
     //
-    //   text-margin-y: 18           → label center at y=18, so a 16px-tall
-    //                                  line spans y=10..y=26; top padding = 10.
-    //   background-position-y: 36px → image top at y=36 (= y=26 + 10), so
-    //                                  the gap below the title equals the
-    //                                  10px gap above it.
-    //   background-height: 78%      → image scales to fit within 220x156
-    //                                  before being placed by position-y;
-    //                                  prevents a portrait image from
-    //                                  growing taller than the area below
-    //                                  the title.
+    //   16px        — top padding
+    //   label       — title text (auto-grows with line count)
+    //   16px        — bottom-of-text padding (matches top)
+    //   bgImageH    — image area, sized to the image's actual aspect ratio
+    //                  at width 220 (so `cover` fills it perfectly, no
+    //                  whitespace and no cropping)
     //
-    // Whitespace from `contain` aspect-fitting (e.g. a landscape image
-    // shorter than 156) lands at the bottom of the node against the
-    // rounded border, where it reads as breathing room rather than a gap
-    // between title and image.
+    // bgImageH / bgPaddingBottom / bgTextMarginY are written to node data by
+    // loadBgImageDimensions() once the image's natural dimensions are known.
+    // padding-bottom drives node height via `height: 'label'`; text-margin-y
+    // re-centers the label in the top portion (negative shift = up). When
+    // the data fields aren't set yet (brief moment between adding the node
+    // and the image's onload firing), the defaults below assume a 16:9
+    // aspect — close enough that the flash is rarely noticeable.
     { selector: 'node[backgroundImage]', style: {
-        'text-valign': 'top',
-        'text-margin-y': 18,
+        'text-valign': 'center',
+        'text-margin-y': 'data(bgTextMarginY)',
         'text-max-width': '188px',
         'width': '220px',
-        'height': '200px',
+        'height': 'label',
+        'padding-top': '16px',
+        'padding-bottom': 'data(bgPaddingBottom)',
+        'padding-left': '16px',
+        'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
-        'background-fit': 'contain',
+        'background-fit': 'cover',
         'background-width': '100%',
-        'background-height': '78%',
+        'background-height': 'data(bgImageH)',
         'background-position-x': '50%',
-        'background-position-y': '36px',
+        'background-position-y': '100%',
         'background-image-containment': 'inside',
         'background-clip': 'node',
     } },
@@ -7135,37 +7213,40 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "review"]',      style: { 'background-color': _statusPalette.review.fill,      'border-color': _statusPalette.review.stroke,      'color': _statusPalette.review.stroke } },
     { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: title at the top INSIDE the node frame, image
-    // directly below it, equal padding above the title and between the
-    // title's bottom and the image's top. The numbers work like this:
+    // Image-bearing nodes: the node behaves exactly like a normal label-sized
+    // node for its text portion, with an image area glued to the bottom.
+    // Layout from top to bottom of the node:
     //
-    //   text-margin-y: 18           → label center at y=18, so a 16px-tall
-    //                                  line spans y=10..y=26; top padding = 10.
-    //   background-position-y: 36px → image top at y=36 (= y=26 + 10), so
-    //                                  the gap below the title equals the
-    //                                  10px gap above it.
-    //   background-height: 78%      → image scales to fit within 220x156
-    //                                  before being placed by position-y;
-    //                                  prevents a portrait image from
-    //                                  growing taller than the area below
-    //                                  the title.
+    //   16px        — top padding
+    //   label       — title text (auto-grows with line count)
+    //   16px        — bottom-of-text padding (matches top)
+    //   bgImageH    — image area, sized to the image's actual aspect ratio
+    //                  at width 220 (so `cover` fills it perfectly, no
+    //                  whitespace and no cropping)
     //
-    // Whitespace from `contain` aspect-fitting (e.g. a landscape image
-    // shorter than 156) lands at the bottom of the node against the
-    // rounded border, where it reads as breathing room rather than a gap
-    // between title and image.
+    // bgImageH / bgPaddingBottom / bgTextMarginY are written to node data by
+    // loadBgImageDimensions() once the image's natural dimensions are known.
+    // padding-bottom drives node height via `height: 'label'`; text-margin-y
+    // re-centers the label in the top portion (negative shift = up). When
+    // the data fields aren't set yet (brief moment between adding the node
+    // and the image's onload firing), the defaults below assume a 16:9
+    // aspect — close enough that the flash is rarely noticeable.
     { selector: 'node[backgroundImage]', style: {
-        'text-valign': 'top',
-        'text-margin-y': 18,
+        'text-valign': 'center',
+        'text-margin-y': 'data(bgTextMarginY)',
         'text-max-width': '188px',
         'width': '220px',
-        'height': '200px',
+        'height': 'label',
+        'padding-top': '16px',
+        'padding-bottom': 'data(bgPaddingBottom)',
+        'padding-left': '16px',
+        'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
-        'background-fit': 'contain',
+        'background-fit': 'cover',
         'background-width': '100%',
-        'background-height': '78%',
+        'background-height': 'data(bgImageH)',
         'background-position-x': '50%',
-        'background-position-y': '36px',
+        'background-position-y': '100%',
         'background-image-containment': 'inside',
         'background-clip': 'node',
     } },
