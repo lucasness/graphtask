@@ -6999,18 +6999,23 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "review"]', style: { 'border-color': '#ff4700', 'border-width': 2, 'border-style': 'dashed', 'border-dash-pattern': [6, 4] } },
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: title at the top, image filling the bottom 80%
-    // of a fixed 220x200 frame. background-height caps the image region so a
-    // portrait-orientation image can't grow up over the title; background-
-    // position-y: 100% anchors it to the bottom edge.
+    // Image-bearing nodes: title at the top INSIDE the node frame, image
+    // filling the bottom 70% of a fixed 220x200 box. Cytoscape's text-valign:
+    // 'top' anchors the label *above* the frame (just outside), so
+    // text-margin-y pushes it down into the node body. background-height
+    // caps the image region to the bottom 140px so a portrait-orientation
+    // image can't grow up over the title, and background-position-y: 100%
+    // anchors it to the bottom edge.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'top',
+        'text-margin-y': 30,
+        'text-max-width': '188px',
         'width': '220px',
         'height': '200px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': '80%',
+        'background-height': '70%',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
@@ -7107,18 +7112,23 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "review"]',      style: { 'background-color': _statusPalette.review.fill,      'border-color': _statusPalette.review.stroke,      'color': _statusPalette.review.stroke } },
     { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
-    // Image-bearing nodes: title at the top, image filling the bottom 80%
-    // of a fixed 220x200 frame. background-height caps the image region so a
-    // portrait-orientation image can't grow up over the title; background-
-    // position-y: 100% anchors it to the bottom edge.
+    // Image-bearing nodes: title at the top INSIDE the node frame, image
+    // filling the bottom 70% of a fixed 220x200 box. Cytoscape's text-valign:
+    // 'top' anchors the label *above* the frame (just outside), so
+    // text-margin-y pushes it down into the node body. background-height
+    // caps the image region to the bottom 140px so a portrait-orientation
+    // image can't grow up over the title, and background-position-y: 100%
+    // anchors it to the bottom edge.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'top',
+        'text-margin-y': 30,
+        'text-max-width': '188px',
         'width': '220px',
         'height': '200px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': '80%',
+        'background-height': '70%',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
