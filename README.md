@@ -68,6 +68,11 @@ Your graphs are stored in a Docker named volume (`pgdata`), so they survive
 `docker compose down` / `up` cycles. Wipe everything with
 `docker compose down -v`.
 
+Pasted-into-editor and dropped-onto-canvas images live in the same database
+(`uploads` table, BYTEA bytes), so they also sit on the `pgdata` volume and
+count against its disk usage. The default per-image cap is 5 MB; raise or
+lower it via `GRAPHTASK_UPLOAD_MAX_BYTES` if needed.
+
 **Common commands**
 
 ```sh
@@ -100,6 +105,10 @@ from `.env` by `npm start`)
 - `PORT` _(optional, default `3000`)_ — port the Express server binds to on
   `127.0.0.1`.
 - `AUTH_PROVIDER` _(optional, default `none`)_ — see "Auth modes" below.
+- `GRAPHTASK_UPLOAD_MAX_BYTES` _(optional, default `5242880` = 5 MB)_ — per-image
+  upload cap in raw bytes. Images are stored as BYTEA inside the same Postgres
+  database (no extra object store), so this also bounds how big a single row in
+  the `uploads` table can get.
 
 **The database must already exist; the schema does not.** graphtask applies
 `db/schema.sql` automatically on every boot — it's idempotent (`CREATE TABLE IF
@@ -992,6 +1001,31 @@ graph to one process (e.g. consistent-hash sticky routing on the graph
 id) or fan presence events across processes via Postgres `LISTEN/NOTIFY`
 or Redis pub/sub. The single-server `docker compose` setup and the
 default `npm start` are not affected.
+
+**Image uploads live in Postgres**
+
+Node background images and editor paste/drop images go through
+`POST /api/graphs/:gid/uploads` and land in the `uploads` table as `BYTEA`.
+That means image storage *is* database storage — there's no separate object
+store to configure, and a `pg_dump` captures everything. The trade-off is
+that DB size grows with image use. Three knobs:
+
+- **Per-image cap** — `GRAPHTASK_UPLOAD_MAX_BYTES` (default 5 MB) bounds how
+  big a single upload can be. Lower it for environments where users tend to
+  paste high-resolution screenshots and you'd rather force them to compress
+  first.
+- **Allowed types** — fixed at `image/png|jpeg|gif|webp|svg+xml`. SVGs are
+  served with `X-Content-Type-Options: nosniff` so a hostile SVG can't run
+  script in the app's origin.
+- **Cleanup** — today only the graph-delete cascade reaps uploads. Replacing
+  or removing a node's image leaves the prior `uploads` row in place. For
+  single-user / small-team self-hosting that's usually fine; the orphan
+  reaper on the roadmap is the long-term answer.
+
+There is no schema migration step for self-hosters — `src/db.js` applies
+`db/schema.sql` on every boot and the `uploads` table is a `CREATE TABLE IF
+NOT EXISTS`, so pulling the new code and restarting is enough. Existing
+graphs / tasks / edges are untouched.
 
 ### Notable Decisions
 

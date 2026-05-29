@@ -4,11 +4,20 @@ import pool from '../db.js';
 
 const router = Router({ mergeParams: true });
 
-// 5 MB per upload. Generous for typical UI screenshots and diagrams, small
-// enough that someone dragging a 4K phone wallpaper hits a clear 413.
-// Enforced by the body parser so oversize requests fail before allocating
-// the buffer in our handler.
-const MAX_BYTES = 5 * 1024 * 1024;
+// Per-upload byte cap. Default 5 MB — generous for typical UI screenshots and
+// diagrams, small enough that someone dragging a 4K phone wallpaper hits a
+// clear 413. Self-hosters can override via GRAPHTASK_UPLOAD_MAX_BYTES (raw
+// bytes); set higher if your users routinely paste large diagrams, or lower
+// if you want to keep the `uploads` table small. Enforced by the body parser
+// so oversize requests fail before allocating the buffer in our handler.
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+const MAX_BYTES = (() => {
+  const raw = process.env.GRAPHTASK_UPLOAD_MAX_BYTES;
+  if (!raw) return DEFAULT_MAX_BYTES;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_BYTES;
+  return parsed;
+})();
 
 const ALLOWED_TYPES = new Set([
   'image/png',
@@ -76,7 +85,8 @@ router.get('/:id', async (req, res) => {
 // JSON message instead of Express's default HTML body.
 router.use((err, req, res, next) => {
   if (err && err.type === 'entity.too.large') {
-    return res.status(413).json({ error: `image must be ${MAX_BYTES / 1024 / 1024} MB or smaller` });
+    const mb = Math.round((MAX_BYTES / 1024 / 1024) * 10) / 10;
+    return res.status(413).json({ error: `image must be ${mb} MB or smaller` });
   }
   return next(err);
 });
