@@ -1224,6 +1224,38 @@ same choices.
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
 
+- **Knowledge-base search across graphs.** Each node body is a piece
+  of markdown that evolves with the work, so a long-lived graph
+  already functions as a notebook — but today the only way to find
+  "the node about X" is to know the gid and `GET` it. Add a search
+  layer so graphs become a queryable knowledge base, both for humans
+  ("where did I write about cookie storage?") and agents ("read what
+  this user already knows about auth before planning").
+
+  Open questions to decide before building:
+  - **Backend.** Likely candidates: pgvector inside the existing
+    Postgres (no new infra; embed task bodies on PATCH; semantic +
+    keyword in one place), Typesense / Meilisearch (faster text
+    relevance, separate process), or a hybrid (pg full-text for
+    lexical, pgvector for semantic). Start from scratch rather than
+    pulling in a heavyweight RAG framework — the corpus is just
+    `tasks.content` rows, indexing on the existing `updated_at`
+    trigger is straightforward.
+  - **Scope.** Per-graph search first (lives next to the existing
+    `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs"
+    as a follow-up gated by the access model — never leak nodes
+    across owners.
+  - **Reference to study.** Karpathy's
+    [`graphify`](https://github.com/karpathy/graphify) is a useful
+    prior-art read on turning a body of notes into a navigable
+    concept graph; the ingestion-and-embed pipeline overlaps with
+    what we'd build here.
+
+  Pull this into active work once one of: (a) graphs we use daily
+  cross the size where manual recall stops working, (b) an agent
+  workflow asks the question "what does this graph already say
+  about X" often enough that a search endpoint pays for itself.
+
 #### Reach
 
 Aspirational — interesting if we get to them, but we may never. Not
