@@ -1572,32 +1572,34 @@ const BG_TEXT_BOTTOM_PADDING = 16; // matches base node padding (top)
 // dwarf the rest of the graph. ~280 fits a typical portrait-ish photo cleanly.
 const BG_MAX_IMAGE_H = 280;
 
-// Compute and stash the per-node values the cytoscape style reads via
-// data() mappings: bgImageH (image area height), bgPaddingBottom (drives
-// node total height via height: 'label'), bgTextMarginY (re-centers the
-// label in the top portion).
+// Push the per-node values cytoscape can't get from a data() mapping
+// (padding-bottom, background-height, text-margin-y) directly onto the
+// element. The stylesheet's [backgroundImage] selector handles the rest.
 function applyBgDimensions(node, imageH) {
   const h = Math.max(1, Math.min(BG_MAX_IMAGE_H, Math.round(imageH)));
   node.data('bgImageH', h);
-  node.data('bgPaddingBottom', h + BG_TEXT_BOTTOM_PADDING);
-  node.data('bgTextMarginY', -h / 2);
+  node.style({
+    'padding-bottom': `${h + BG_TEXT_BOTTOM_PADDING}px`,
+    'background-height': `${h}px`,
+    'text-margin-y': -h / 2,
+  });
 }
 
 function setBgImageData(node, url) {
   node.data('backgroundImage', url);
-  // Seed defaults so the first paint is reasonable; the async load below
-  // refines once the real dimensions are known.
-  if (node.data('bgImageH') == null) {
-    applyBgDimensions(node, BG_DEFAULT_IMAGE_H);
-  }
   loadBgImageDimensions(node, url);
 }
 
 function clearBgImageData(node) {
   node.removeData('backgroundImage');
   node.removeData('bgImageH');
-  node.removeData('bgPaddingBottom');
-  node.removeData('bgTextMarginY');
+  // Clear the per-node style overrides so the node returns to its base
+  // (non-image) geometry. Passing '' tells cytoscape to drop the override.
+  node.style({
+    'padding-bottom': '',
+    'background-height': '',
+    'text-margin-y': '',
+  });
 }
 
 // Measure the image's natural dimensions, scale to the node's render width
@@ -1638,14 +1640,7 @@ function addGraphNode(task) {
     version: typeof task.version === 'number' ? task.version : 0,
     lastModifiedByUser: task.last_modified_by_user ?? null,
   };
-  if (bgUrl) {
-    // Seed defaults so the first paint has a real layout; the actual
-    // dimensions land via loadBgImageDimensions below.
-    data.backgroundImage = bgUrl;
-    data.bgImageH = BG_DEFAULT_IMAGE_H;
-    data.bgPaddingBottom = BG_DEFAULT_IMAGE_H + BG_TEXT_BOTTOM_PADDING;
-    data.bgTextMarginY = -BG_DEFAULT_IMAGE_H / 2;
-  }
+  if (bgUrl) data.backgroundImage = bgUrl;
   cy.add({ group: 'nodes', data });
   if (bgUrl) {
     const node = cy.getElementById(String(task.id));
@@ -1719,13 +1714,7 @@ async function fetchGraph() {
       meta: node.meta || {},
       version: typeof node.version === 'number' ? node.version : 0,
     };
-    if (bgUrl) {
-      // Seed defaults; loadBgImageDimensions refines once each image loads.
-      nodeData.backgroundImage = bgUrl;
-      nodeData.bgImageH = BG_DEFAULT_IMAGE_H;
-      nodeData.bgPaddingBottom = BG_DEFAULT_IMAGE_H + BG_TEXT_BOTTOM_PADDING;
-      nodeData.bgTextMarginY = -BG_DEFAULT_IMAGE_H / 2;
-    }
+    if (bgUrl) nodeData.backgroundImage = bgUrl;
     elements.push({ group: 'nodes', data: nodeData });
   }
 
@@ -7096,27 +7085,27 @@ function cytoscapeStyleDark() {
     //                  at width 220 (so `cover` fills it perfectly, no
     //                  whitespace and no cropping)
     //
-    // bgImageH / bgPaddingBottom / bgTextMarginY are written to node data by
-    // loadBgImageDimensions() once the image's natural dimensions are known.
-    // padding-bottom drives node height via `height: 'label'`; text-margin-y
-    // re-centers the label in the top portion (negative shift = up). When
-    // the data fields aren't set yet (brief moment between adding the node
-    // and the image's onload firing), the defaults below assume a 16:9
-    // aspect — close enough that the flash is rarely noticeable.
+    // The dynamic values (padding-bottom, background-height, text-margin-y)
+    // are written per-node via `node.style()` from applyBgDimensions —
+    // `data()` mappings turned out to silently no-op for `padding-bottom`,
+    // which made the node collapse to label-height + base 16px padding.
+    // The static defaults below cover the brief window between adding the
+    // node and the image's onload firing; they assume a 16:9 aspect, which
+    // is the most common screenshot/diagram shape.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        'text-margin-y': 'data(bgTextMarginY)',
+        'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': 'data(bgPaddingBottom)',
+        'padding-bottom': '140px',
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'cover',
         'background-width': '100%',
-        'background-height': 'data(bgImageH)',
+        'background-height': '124px',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
@@ -7224,27 +7213,27 @@ function cytoscapeStyleLight() {
     //                  at width 220 (so `cover` fills it perfectly, no
     //                  whitespace and no cropping)
     //
-    // bgImageH / bgPaddingBottom / bgTextMarginY are written to node data by
-    // loadBgImageDimensions() once the image's natural dimensions are known.
-    // padding-bottom drives node height via `height: 'label'`; text-margin-y
-    // re-centers the label in the top portion (negative shift = up). When
-    // the data fields aren't set yet (brief moment between adding the node
-    // and the image's onload firing), the defaults below assume a 16:9
-    // aspect — close enough that the flash is rarely noticeable.
+    // The dynamic values (padding-bottom, background-height, text-margin-y)
+    // are written per-node via `node.style()` from applyBgDimensions —
+    // `data()` mappings turned out to silently no-op for `padding-bottom`,
+    // which made the node collapse to label-height + base 16px padding.
+    // The static defaults below cover the brief window between adding the
+    // node and the image's onload firing; they assume a 16:9 aspect, which
+    // is the most common screenshot/diagram shape.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        'text-margin-y': 'data(bgTextMarginY)',
+        'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': 'data(bgPaddingBottom)',
+        'padding-bottom': '140px',
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'cover',
         'background-width': '100%',
-        'background-height': 'data(bgImageH)',
+        'background-height': '124px',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
