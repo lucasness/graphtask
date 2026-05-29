@@ -2823,6 +2823,9 @@ function showPanel(task, opts = {}) {
   // card's column. No-op for graph view, no-op if no overlap.
   if (typeof adjustKanbanForPanel === 'function') adjustKanbanForPanel();
   if (typeof postLocalSelection === 'function') postLocalSelection();
+  // postLocalSelection is debounced 120ms; refresh the local "(You)" pill
+  // immediately so opening the panel doesn't lag the editing-target swap.
+  if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
   // Do NOT auto-focus a panel field — selection alone shouldn't redirect keystrokes.
   // The user enters edit mode by clicking into a field, or by double-clicking the node.
 }
@@ -2847,6 +2850,7 @@ function hidePanel() {
   editingTaskId = null;
   _panelOpenedProgrammatically = false;
   if (typeof postLocalSelection === 'function') postLocalSelection();
+  if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
   hideTitleOverlay();
   // If a ghost was never saved (no title), drop it now
   const hadGhost = !!(pendingNode && pendingNode.id() === '__pending__' && !pendingNode.removed());
@@ -4056,6 +4060,9 @@ function clearSelection() {
   cy.edges().removeClass('highlighted');
   hideCurveHandle();
   updateToolbar();
+  // Esc / programmatic clears need to take the local "(You)" pill with them;
+  // the cy 'tap' handler doesn't fire for these paths.
+  if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
 }
 
 function elementFocusPoint(ele) {
@@ -6197,6 +6204,35 @@ function peerCursorPickSlot(anchorBb, markerW, markerH, otherBboxes) {
   ) || slots[4 /* S */] || slots[0];
 }
 
+// Read the local cytoscape selection in the same shape peerSelectionState
+// holds for peers, so peerCursorRefresh can render a "<name> (You)" pill on
+// the local user's own focused node. Mirrors postLocalSelection's anchor
+// logic — editing target wins, otherwise _localAnchor (with fallback to the
+// first remaining selected element). Returns null when the user has nothing
+// selected (no pill to draw).
+function computeLocalCursorSel() {
+  if (!cy) return null;
+  const nodeIds = cy.nodes('.selected').map((n) => Number(n.id())).filter(Number.isFinite);
+  const edgeIds = cy.edges('.selected').map((e) => Number(e.id())).filter(Number.isFinite);
+  const panel = document.getElementById('panel');
+  const panelOpen = panel && !panel.classList.contains('hidden');
+  const editing = (panelOpen && editingTaskId != null && !_panelOpenedProgrammatically)
+    ? { kind: 'node', id: Number(editingTaskId) }
+    : null;
+  if (editing) {
+    return { node_ids: nodeIds, edge_ids: edgeIds, editing, cursor_anchor: editing };
+  }
+  if (nodeIds.length === 0 && edgeIds.length === 0) return null;
+  const candidates = nodeIds.length > 0
+    ? nodeIds.map((id) => ({ kind: 'node', id }))
+    : edgeIds.map((id) => ({ kind: 'edge', id }));
+  const stillIn = _localAnchor && candidates.some(
+    (c) => c.kind === _localAnchor.kind && c.id === _localAnchor.id,
+  );
+  const cursor_anchor = stillIn ? _localAnchor : candidates[0];
+  return { node_ids: nodeIds, edge_ids: edgeIds, editing: null, cursor_anchor };
+}
+
 function peerCursorRefresh() {
   if (!cy) return;
   // 1. Group peers by anchor key. One DOM marker per group. Idle HUMAN
@@ -6217,6 +6253,29 @@ function peerCursorRefresh() {
     let arr = groups.get(key);
     if (!arr) { arr = []; groups.set(key, arr); }
     arr.push(peer);
+  }
+  // Local user's own focused node — labeled "<name> (You)" so you can find
+  // yourself on a large graph. Reuses the peer pill pipeline so stacking
+  // with co-located peers Just Works; the .selected underlay still owns
+  // the highlight color (applyPeerSelectionToCy isn't touched).
+  const ownId = presenceCurrentOwnId();
+  if (ownId) {
+    const localSel = computeLocalCursorSel();
+    if (localSel) {
+      const key = peerCursorAnchorKey(localSel);
+      if (key) {
+        const baseName = effectiveIdentity(activeGraphId)?.name || 'You';
+        const peer = {
+          writerId: ownId,
+          sel: localSel,
+          name: `${baseName} (You)`,
+          color: colorForId(ownId),
+        };
+        let arr = groups.get(key);
+        if (!arr) { arr = []; groups.set(key, arr); }
+        arr.push(peer);
+      }
+    }
   }
   // Kanban view uses card DOM rects instead of cy renderedBoundingBox.
   // Skip edge groups (no edges visible in kanban) and let cy-coord groups
@@ -7408,6 +7467,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Panel closed and selection still multi (or zero): the cy mirror
         // changed but no panel transition runs postLocalSelection for us.
         postLocalSelection();
+        if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
       }
     } else {
       // Single click: replace selection.
@@ -7809,8 +7869,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // data-refresh at line ~5454; we hook tap with a 0ms defer so our read
   // sees the post-handler class state. postLocalSelection is debounced +
   // dedup'd so shift-selecting a range doesn't spam POSTs.
-  cy.on('tap', () => setTimeout(postLocalSelection, 0));
-  cy.on('cxttap', () => setTimeout(postLocalSelection, 0));
+  cy.on('tap', () => setTimeout(() => {
+    postLocalSelection();
+    peerCursorRefresh();
+  }, 0));
+  cy.on('cxttap', () => setTimeout(() => {
+    postLocalSelection();
+    peerCursorRefresh();
+  }, 0));
 
   // Reposition the inline overlay when the canvas moves or the active node moves
   cy.on('pan zoom resize', () => {
