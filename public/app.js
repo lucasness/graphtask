@@ -2465,10 +2465,18 @@ async function uploadImageFile(file) {
 // Mirror of persistNodeColor for the background-image frontmatter key.
 // Reads the panel's loaded base when the node is open (cheap, no extra GET)
 // or fetches the task fresh otherwise. OCC fields are sent so a concurrent
-// drag-position or color edit by anyone else still merges.
+// drag-position or color edit by anyone else still merges. Pass url=null
+// to clear the image — the key is omitted from the new frontmatter so the
+// human-write path (no agent protection) reads it as a removal.
 async function persistNodeBackgroundImage(node, url) {
   const taskId = node.data('taskId');
   if (!taskId) return;
+  const applyKey = (meta) => {
+    const next = { ...meta };
+    if (url === null) delete next['background-image'];
+    else next['background-image'] = url;
+    return next;
+  };
   let content;
   let base = null;
   if (String(editingTaskId) === String(taskId)) {
@@ -2476,7 +2484,7 @@ async function persistNodeBackgroundImage(node, url) {
     if (!titleVal) throw new Error('Title required');
     const statusVal = document.getElementById('field-status').value;
     content = buildContent(
-      { ...panelLoadedMeta, title: titleVal, status: statusVal, 'background-image': url },
+      applyKey({ ...panelLoadedMeta, title: titleVal, status: statusVal }),
       readEditorBody(),
     );
     if (panelLoadedVersion !== null && panelLoadedContent !== null) {
@@ -2487,7 +2495,7 @@ async function persistNodeBackgroundImage(node, url) {
     if (!taskRes.ok) throw new Error('load failed');
     const task = await taskRes.json();
     const parsed = parseFrontmatter(task.content);
-    content = buildContent({ ...(parsed.meta || {}), 'background-image': url }, parsed.body);
+    content = buildContent(applyKey(parsed.meta || {}), parsed.body);
     base = task;
   }
   const res = await updateTask(taskId, content, base);
@@ -2502,10 +2510,11 @@ async function persistNodeBackgroundImage(node, url) {
   const saved = await res.json();
   updateGraphNode(saved);
   if (String(editingTaskId) === String(taskId)) {
-    panelLoadedMeta = { ...panelLoadedMeta, 'background-image': url };
+    panelLoadedMeta = applyKey(panelLoadedMeta);
     panelLoadedVersion = saved.version ?? panelLoadedVersion;
     panelLoadedContent = saved.content ?? panelLoadedContent;
     lastSavedContent = content;
+    syncBackgroundImageRow();
   }
 }
 
@@ -2808,6 +2817,36 @@ function loadIntoEditor(content, task = null) {
   document.getElementById('raw-editor').value = body;
   if (richEditor) richEditor.setMarkdown(body, false);
   lastSavedContent = content;
+  syncBackgroundImageRow();
+}
+
+// Reflect the current panelLoadedMeta['background-image'] in the panel's
+// Background image row. Hides the row entirely until the task has a stable
+// id (i.e. you've at least committed the new node) so we don't dangle an
+// upload that the never-saved node won't reference.
+function syncBackgroundImageRow() {
+  const row = document.getElementById('bg-image-row');
+  if (!row) return;
+  if (editingTaskId == null) {
+    row.classList.add('hidden');
+    return;
+  }
+  row.classList.remove('hidden');
+  const thumb = document.getElementById('bg-image-thumb');
+  const pickBtn = document.getElementById('bg-image-pick');
+  const removeBtn = document.getElementById('bg-image-remove');
+  const url = panelLoadedMeta && panelLoadedMeta['background-image'];
+  if (url) {
+    thumb.src = url;
+    thumb.classList.remove('hidden');
+    pickBtn.textContent = 'Replace';
+    removeBtn.classList.remove('hidden');
+  } else {
+    thumb.removeAttribute('src');
+    thumb.classList.add('hidden');
+    pickBtn.textContent = 'Choose image…';
+    removeBtn.classList.add('hidden');
+  }
 }
 
 function readEditorBody() {
@@ -7849,6 +7888,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Lazy graph just got real content — don't auto-clean it.
         if (_lazyCreatedGraphId === activeGraphId) _lazyCreatedGraphId = null;
         editingTaskId = saved.id;
+        // Now that the node has a stable id, surface the background-image
+        // row. (loadIntoEditor isn't called on the new-node commit path —
+        // the panel was populated from the user's keystrokes, not from a
+        // round-trip — so we sync here explicitly.)
+        if (typeof syncBackgroundImageRow === 'function') syncBackgroundImageRow();
         const edgeIntent = pendingEdgesForNewNode;
         removePendingEdgePreviews(edgeIntent);
         pendingEdgesForNewNode = null;
@@ -7996,6 +8040,49 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('field-status').addEventListener('change', scheduleSave);
   document.getElementById('raw-editor').addEventListener('input', scheduleSave);
   richEditor.on('change', scheduleSave);
+
+  // Background image row: file picker on Choose / Replace, confirm-then-clear
+  // on Remove. Re-uses the same uploadImageFile + persistNodeBackgroundImage
+  // pipeline as drag-drop on the canvas, so the persistence story is identical.
+  const bgFileInput = document.getElementById('bg-image-input');
+  const bgPickBtn = document.getElementById('bg-image-pick');
+  const bgRemoveBtn = document.getElementById('bg-image-remove');
+  bgPickBtn.addEventListener('click', () => bgFileInput.click());
+  bgFileInput.addEventListener('change', async () => {
+    const file = bgFileInput.files && bgFileInput.files[0];
+    // Reset so picking the same file twice in a row still triggers change.
+    bgFileInput.value = '';
+    if (!file || editingTaskId == null) return;
+    const node = cy.getElementById(String(editingTaskId));
+    if (!node || node.empty()) return;
+    let upload;
+    try {
+      upload = await uploadImageFile(file);
+    } catch (err) {
+      showHint(err.message || 'Image upload failed');
+      return;
+    }
+    try {
+      await persistNodeBackgroundImage(node, upload.url);
+    } catch (err) {
+      showHint(err.message || 'Could not save image');
+    }
+  });
+  bgRemoveBtn.addEventListener('click', async () => {
+    if (editingTaskId == null) return;
+    const ok = await confirmDelete('This will clear the image from the node.', {
+      title: 'Remove image?',
+      confirmText: 'Remove',
+    });
+    if (!ok) return;
+    const node = cy.getElementById(String(editingTaskId));
+    if (!node || node.empty()) return;
+    try {
+      await persistNodeBackgroundImage(node, null);
+    } catch (err) {
+      showHint(err.message || 'Could not remove image');
+    }
+  });
 
   // Keep the empty-state placeholder in sync with whether anything (pending
   // node included) is on the canvas, and trigger lazy-graph cleanup when the
