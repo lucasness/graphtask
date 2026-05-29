@@ -1617,32 +1617,50 @@ body.forbidden #cy {
   font-size: var(--text-body-sm);
   color: var(--tx-2);
 }
-.bg-image-control {
+.bg-image-field {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px;
   margin-top: 4px;
-}
-.bg-image-thumb {
-  width: 56px;
-  height: 40px;
-  object-fit: contain;
+  background: var(--ui);
   border: 1px solid var(--ui-3);
   border-radius: 4px;
-  background: var(--ui);
+  color: var(--app-font-color);
+  font-size: var(--text-body);
+  font-family: var(--app-font);
+  cursor: pointer;
+  min-height: 22px;
 }
-.bg-image-thumb.hidden { display: none; }
-.bg-image-btn {
-  padding: 6px 12px;
-  background: var(--ui);
-  color: var(--tx);
-  border: 1px solid var(--ui-3);
-  border-radius: 4px;
-  font-size: var(--text-body-sm);
+.bg-image-field:hover { border-color: var(--blue); }
+.bg-image-field:focus { outline: none; border-color: var(--blue); }
+.bg-image-field.dragover {
+  border-color: var(--blue);
+  background: var(--ui-2);
+}
+.bg-image-field-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bg-image-field-text.placeholder { color: var(--tx-3); }
+.bg-image-clear {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--tx-2);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
   cursor: pointer;
 }
-.bg-image-btn:hover { background: var(--ui-2); }
-.bg-image-btn.hidden { display: none; }
+.bg-image-clear:hover { color: var(--tx); }
+.bg-image-clear.hidden { display: none; }
+/* The native file picker is hidden — clicks come from .bg-image-field.
+   `!important` overrides `form input { display: block; }` from the panel
+   form rule (just `hidden` attribute or `[hidden]` would be stomped). */
+.bg-image-file-input { display: none !important; }
 
 .body-section {
   display: flex;

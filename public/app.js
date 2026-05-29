@@ -2832,21 +2832,32 @@ function syncBackgroundImageRow() {
     return;
   }
   row.classList.remove('hidden');
-  const thumb = document.getElementById('bg-image-thumb');
-  const pickBtn = document.getElementById('bg-image-pick');
-  const removeBtn = document.getElementById('bg-image-remove');
+  const fieldText = document.getElementById('bg-image-field-text');
+  const clearBtn = document.getElementById('bg-image-clear');
   const url = panelLoadedMeta && panelLoadedMeta['background-image'];
   if (url) {
-    thumb.src = url;
-    thumb.classList.remove('hidden');
-    pickBtn.textContent = 'Replace';
-    removeBtn.classList.remove('hidden');
+    fieldText.textContent = displayNameFromBgUrl(url);
+    fieldText.classList.remove('placeholder');
+    clearBtn.classList.remove('hidden');
   } else {
-    thumb.removeAttribute('src');
-    thumb.classList.add('hidden');
-    pickBtn.textContent = 'Choose image…';
-    removeBtn.classList.add('hidden');
+    fieldText.textContent = 'Click or drag to set image';
+    fieldText.classList.add('placeholder');
+    clearBtn.classList.add('hidden');
   }
+}
+
+// Pull the filename we stashed on the upload URL when it was set. The server
+// ignores the `?name=` query string but it gives the panel something to show
+// without persisting the filename in a separate frontmatter key. Falls back
+// to a generic label for legacy or query-less URLs.
+function displayNameFromBgUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  try {
+    const u = new URL(url, window.location.origin);
+    const name = u.searchParams.get('name');
+    if (name) return name;
+  } catch {}
+  return 'Image';
 }
 
 function readEditorBody() {
@@ -8051,34 +8062,46 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('raw-editor').addEventListener('input', scheduleSave);
   richEditor.on('change', scheduleSave);
 
-  // Background image row: file picker on Choose / Replace, confirm-then-clear
-  // on Remove. Re-uses the same uploadImageFile + persistNodeBackgroundImage
-  // pipeline as drag-drop on the canvas, so the persistence story is identical.
+  // Background image row: one field that handles click → file picker, drag &
+  // drop, and Enter/Space for keyboard. The × button clears with a confirm.
+  // Global paste (further down) also routes here when an image is on the
+  // clipboard and a node is selected.
   const bgFileInput = document.getElementById('bg-image-input');
-  const bgPickBtn = document.getElementById('bg-image-pick');
-  const bgRemoveBtn = document.getElementById('bg-image-remove');
-  bgPickBtn.addEventListener('click', () => bgFileInput.click());
+  const bgField = document.getElementById('bg-image-field');
+  const bgClearBtn = document.getElementById('bg-image-clear');
+  bgField.addEventListener('click', (e) => {
+    if (e.target === bgClearBtn || bgClearBtn.contains(e.target)) return;
+    bgFileInput.click();
+  });
+  bgField.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      bgFileInput.click();
+    }
+  });
+  bgField.addEventListener('dragover', (e) => {
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    bgField.classList.add('dragover');
+  });
+  bgField.addEventListener('dragleave', () => bgField.classList.remove('dragover'));
+  bgField.addEventListener('drop', async (e) => {
+    bgField.classList.remove('dragover');
+    const file = Array.from(e.dataTransfer?.files || []).find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+    e.preventDefault();
+    await setBackgroundFromFile(file);
+  });
   bgFileInput.addEventListener('change', async () => {
     const file = bgFileInput.files && bgFileInput.files[0];
     // Reset so picking the same file twice in a row still triggers change.
     bgFileInput.value = '';
-    if (!file || editingTaskId == null) return;
-    const node = cy.getElementById(String(editingTaskId));
-    if (!node || node.empty()) return;
-    let upload;
-    try {
-      upload = await uploadImageFile(file);
-    } catch (err) {
-      showHint(err.message || 'Image upload failed');
-      return;
-    }
-    try {
-      await persistNodeBackgroundImage(node, upload.url);
-    } catch (err) {
-      showHint(err.message || 'Could not save image');
-    }
+    if (!file) return;
+    await setBackgroundFromFile(file);
   });
-  bgRemoveBtn.addEventListener('click', async () => {
+  bgClearBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     if (editingTaskId == null) return;
     const ok = await confirmDelete('This will clear the image from the node.', {
       title: 'Remove image?',
@@ -8093,6 +8116,68 @@ document.addEventListener('DOMContentLoaded', () => {
       showHint(err.message || 'Could not remove image');
     }
   });
+
+  // Document-level paste: if the user has copied an image and has a single
+  // task selected (panel-open or canvas-only), set it as that node's
+  // background. Skips when a real text input has focus so normal text paste
+  // keeps working in fields, the markdown editor, and contenteditables.
+  document.addEventListener('paste', async (e) => {
+    const ae = document.activeElement;
+    const inTextInput = ae && (
+      (ae.tagName === 'INPUT' && ae.type !== 'file') ||
+      ae.tagName === 'TEXTAREA' ||
+      ae.isContentEditable
+    );
+    // The bg-image-field is focusable but it IS the paste target, so don't
+    // treat it as "in a text input."
+    const inBgField = ae && ae.id === 'bg-image-field';
+    if (inTextInput && !inBgField) return;
+    const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+    const imageItem = items.find((it) => it.type && it.type.startsWith('image/'));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    if (!file) return;
+    const taskId = pickedTaskIdForBgPaste();
+    if (taskId == null) {
+      showHint('Select a node first to set its background image');
+      return;
+    }
+    e.preventDefault();
+    // Pasted images rarely carry a filename. Derive one from the MIME so the
+    // panel has something better than "Image" to show.
+    const ext = (file.type.split('/')[1] || 'png').toLowerCase();
+    const fallbackName = file.name || `Pasted image.${ext}`;
+    await setBackgroundFromFile(file, taskId, fallbackName);
+  });
+
+  async function setBackgroundFromFile(file, explicitTaskId = null, nameOverride = null) {
+    const taskId = explicitTaskId != null ? explicitTaskId : editingTaskId;
+    if (taskId == null) return;
+    const node = cy.getElementById(String(taskId));
+    if (!node || node.empty()) return;
+    let upload;
+    try {
+      upload = await uploadImageFile(file);
+    } catch (err) {
+      showHint(err.message || 'Image upload failed');
+      return;
+    }
+    const filename = nameOverride || file.name || '';
+    const url = filename ? `${upload.url}?name=${encodeURIComponent(filename)}` : upload.url;
+    try {
+      await persistNodeBackgroundImage(node, url);
+    } catch (err) {
+      showHint(err.message || 'Could not save image');
+    }
+  }
+
+  function pickedTaskIdForBgPaste() {
+    if (editingTaskId != null) return editingTaskId;
+    if (!cy) return null;
+    const sel = cy.nodes('.selected').filter((n) => Number.isFinite(n.data('taskId')));
+    if (sel.length !== 1) return null;
+    return sel[0].data('taskId');
+  }
 
   // Keep the empty-state placeholder in sync with whether anything (pending
   // node included) is on the canvas, and trigger lazy-graph cleanup when the
@@ -8164,9 +8249,12 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    const filenameForUrl = imageFile.name
+      ? `${upload.url}?name=${encodeURIComponent(imageFile.name)}`
+      : upload.url;
     if (dropTarget) {
       try {
-        await persistNodeBackgroundImage(dropTarget, upload.url);
+        await persistNodeBackgroundImage(dropTarget, filenameForUrl);
       } catch (err) {
         showHint(err.message || 'Could not save image');
       }
@@ -8180,7 +8268,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const zoom = cy.zoom();
     const wx = Math.round((rendered.x - pan.x) / zoom);
     const wy = Math.round((rendered.y - pan.y) / zoom);
-    const content = `---\ntitle: Untitled\nstatus: todo\nx: ${wx}\ny: ${wy}\nbackground-image: ${upload.url}\n---\n`;
+    const content = `---\ntitle: Untitled\nstatus: todo\nx: ${wx}\ny: ${wy}\nbackground-image: ${filenameForUrl}\n---\n`;
     const res = await createTask(content);
     if (!res.ok) {
       if (!maybeForbid(res)) showHint('Create failed');

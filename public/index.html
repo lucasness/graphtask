@@ -181,12 +181,11 @@
       </label>
       <div class="bg-image-row hidden" id="bg-image-row">
         <span class="bg-image-label">Background image</span>
-        <div class="bg-image-control">
-          <img id="bg-image-thumb" class="bg-image-thumb hidden" alt="">
-          <button type="button" id="bg-image-pick" class="bg-image-btn">Choose image…</button>
-          <button type="button" id="bg-image-remove" class="bg-image-btn hidden">Remove</button>
-          <input type="file" id="bg-image-input" accept="image/*" hidden>
+        <div class="bg-image-field" id="bg-image-field" tabindex="0" role="button" aria-label="Set background image">
+          <span class="bg-image-field-text placeholder" id="bg-image-field-text">Click or drag to set image</span>
+          <button type="button" class="bg-image-clear hidden" id="bg-image-clear" aria-label="Remove image">×</button>
         </div>
+        <input type="file" id="bg-image-input" accept="image/*" class="bg-image-file-input">
       </div>
       <div class="body-section">
         <div class="body-section-header">
