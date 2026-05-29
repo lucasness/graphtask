@@ -394,7 +394,7 @@ EOF
 )"
 ```
 
-Notice the PATCH body has no `x`/`y` or `color` keys, but the user's drag positions and color tweaks will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`. Edge protections: `meta.color`, `meta.curve`.
+Notice the PATCH body has no `x`/`y`, `color`, or `background-image` keys, but the user's drag positions, color tweaks, and chosen node image will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`, `background-image`. Edge protections: `meta.color`, `meta.curve`.
 
 This protection only covers that fixed list. Custom frontmatter keys you drop from a rewritten content blob are still treated as removals — if you want them to survive across PATCHes, include them yourself (read existing frontmatter from `base_content`, splice in your changes, send the merged blob).
 
@@ -486,6 +486,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 
 - `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
+- `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See "Images and agent discretion" above for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
 
@@ -585,7 +586,53 @@ merge. Agents that rewrite content shouldn't include it; the server preserves
 the existing value when an agent's PATCH omits it. To intentionally clear it,
 send an explicit `null`. To upload bytes from a script: `POST
 /api/graphs/:gid/uploads` with `Content-Type: image/*` and the raw bytes as
-the body (5 MB cap); response is `{id, url, content_type, byte_size}`.
+the body (5 MB cap by default; the self-hoster's `GRAPHTASK_UPLOAD_MAX_BYTES`
+can change it); response is `{id, url, content_type, byte_size}`.
+
+### Images and agent discretion — HARD RULES
+
+Images cost the user real disk space (bytes live in their Postgres `uploads`
+table), so be deliberate about when you add one. Two distinct cases:
+
+**Setting a node's `background-image`** — the picture rendered on the canvas
+itself. **Don't set this on your own initiative.** Only set it when the
+user explicitly asks for that node to have a background image ("find a
+chart for the revenue node and put it as the background", "use this
+screenshot as the image for task T3"). A graph full of agent-chosen
+background images is noise the user has to clear out; a graph where the
+user picked each one is signal.
+
+**Including images in a node's markdown body** — `![alt](url)` inside the
+body, surfaced in the side panel when the user opens the node. This is
+fair game when the image *materially adds* to the node's content. Use your
+judgement:
+
+- *Stock research* — a chart of revenue trends, an earnings-call slide
+  with the relevant number circled, an org-chart of subsidiaries → useful,
+  include. The company's logo or a generic stock-ticker icon → decorative,
+  skip.
+- *Concept / research map* — a diagram of the architecture being studied,
+  a figure from a referenced paper → useful, include. A photo of the
+  author or a generic "code on a screen" stock photo → decorative, skip.
+- *Execution plan* — a screenshot of the failing test output you're about
+  to fix, a Figma frame of the design being built → useful, include. A
+  decorative emoji or a clip-art icon for the task type → decorative,
+  skip.
+
+The rule: would a human reviewing this graph next month thank you for the
+image, or wish you hadn't bloated their database with it? If you can't
+articulate why this specific image helps understanding, leave it out.
+
+**If the user says "no images" / "don't add images" / "skip images"** —
+honor that absolutely, for both `background-image` AND body images. Don't
+search for them, don't upload them, don't include them via `![]()`. This
+is usually a signal that the user is self-hosting or running locally and
+doesn't want their Postgres footprint to grow. Even useful images stay out
+when the user has said no.
+
+When in doubt, ask: *"This node would be clearer with [the X chart from the
+Q3 earnings slide] — should I include it, or are you keeping images out of
+the graph?"* One line of confirmation is cheaper than an unwanted upload.
 
 ### Edge shape
 
