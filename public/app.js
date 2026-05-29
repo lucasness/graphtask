@@ -7011,16 +7011,27 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     // Image-bearing nodes: title at the top INSIDE the node frame, image
-    // directly below it. text-valign: 'top' anchors the label *above* the
-    // frame, so text-margin-y pushes it down to sit just inside the top
-    // edge. background-position-y: 0% sticks the image to the top of its
-    // area (right under the title) instead of the bottom — so any leftover
-    // whitespace from `contain` aspect-fitting falls at the bottom of the
-    // node, where it reads as breathing room against the rounded border
-    // rather than a gap between title and image.
+    // directly below it, equal padding above the title and between the
+    // title's bottom and the image's top. The numbers work like this:
+    //
+    //   text-margin-y: 18           → label center at y=18, so a 16px-tall
+    //                                  line spans y=10..y=26; top padding = 10.
+    //   background-position-y: 36px → image top at y=36 (= y=26 + 10), so
+    //                                  the gap below the title equals the
+    //                                  10px gap above it.
+    //   background-height: 78%      → image scales to fit within 220x156
+    //                                  before being placed by position-y;
+    //                                  prevents a portrait image from
+    //                                  growing taller than the area below
+    //                                  the title.
+    //
+    // Whitespace from `contain` aspect-fitting (e.g. a landscape image
+    // shorter than 156) lands at the bottom of the node against the
+    // rounded border, where it reads as breathing room rather than a gap
+    // between title and image.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'top',
-        'text-margin-y': 20,
+        'text-margin-y': 18,
         'text-max-width': '188px',
         'width': '220px',
         'height': '200px',
@@ -7029,7 +7040,7 @@ function cytoscapeStyleDark() {
         'background-width': '100%',
         'background-height': '78%',
         'background-position-x': '50%',
-        'background-position-y': '0%',
+        'background-position-y': '36px',
         'background-image-containment': 'inside',
         'background-clip': 'node',
     } },
@@ -7125,16 +7136,27 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
     // Image-bearing nodes: title at the top INSIDE the node frame, image
-    // directly below it. text-valign: 'top' anchors the label *above* the
-    // frame, so text-margin-y pushes it down to sit just inside the top
-    // edge. background-position-y: 0% sticks the image to the top of its
-    // area (right under the title) instead of the bottom — so any leftover
-    // whitespace from `contain` aspect-fitting falls at the bottom of the
-    // node, where it reads as breathing room against the rounded border
-    // rather than a gap between title and image.
+    // directly below it, equal padding above the title and between the
+    // title's bottom and the image's top. The numbers work like this:
+    //
+    //   text-margin-y: 18           → label center at y=18, so a 16px-tall
+    //                                  line spans y=10..y=26; top padding = 10.
+    //   background-position-y: 36px → image top at y=36 (= y=26 + 10), so
+    //                                  the gap below the title equals the
+    //                                  10px gap above it.
+    //   background-height: 78%      → image scales to fit within 220x156
+    //                                  before being placed by position-y;
+    //                                  prevents a portrait image from
+    //                                  growing taller than the area below
+    //                                  the title.
+    //
+    // Whitespace from `contain` aspect-fitting (e.g. a landscape image
+    // shorter than 156) lands at the bottom of the node against the
+    // rounded border, where it reads as breathing room rather than a gap
+    // between title and image.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'top',
-        'text-margin-y': 20,
+        'text-margin-y': 18,
         'text-max-width': '188px',
         'width': '220px',
         'height': '200px',
@@ -7143,7 +7165,7 @@ function cytoscapeStyleLight() {
         'background-width': '100%',
         'background-height': '78%',
         'background-position-x': '50%',
-        'background-position-y': '0%',
+        'background-position-y': '36px',
         'background-image-containment': 'inside',
         'background-clip': 'node',
     } },
