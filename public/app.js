@@ -7085,18 +7085,23 @@ function cytoscapeStyleDark() {
     // the whole node and the title ends up rendered on top of it.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
+        // text-margin-y is unitless (the base stylesheet uses bare numbers
+        // elsewhere too) but padding-bottom and background-height need
+        // their values explicitly suffixed with 'px' — returning a bare
+        // number gets silently rejected and the node collapses to base
+        // padding.
         'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': (ele) => (ele.data('bgImageH') || 124) + 16,
+        'padding-bottom': (ele) => `${(ele.data('bgImageH') || 124) + 16}px`,
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': (ele) => ele.data('bgImageH') || 124,
+        'background-height': (ele) => `${ele.data('bgImageH') || 124}px`,
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
@@ -7215,18 +7220,23 @@ function cytoscapeStyleLight() {
     // the whole node and the title ends up rendered on top of it.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
+        // text-margin-y is unitless (the base stylesheet uses bare numbers
+        // elsewhere too) but padding-bottom and background-height need
+        // their values explicitly suffixed with 'px' — returning a bare
+        // number gets silently rejected and the node collapses to base
+        // padding.
         'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
         'text-max-width': '188px',
         'width': '220px',
         'height': 'label',
         'padding-top': '16px',
-        'padding-bottom': (ele) => (ele.data('bgImageH') || 124) + 16,
+        'padding-bottom': (ele) => `${(ele.data('bgImageH') || 124) + 16}px`,
         'padding-left': '16px',
         'padding-right': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': (ele) => ele.data('bgImageH') || 124,
+        'background-height': (ele) => `${ele.data('bgImageH') || 124}px`,
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
