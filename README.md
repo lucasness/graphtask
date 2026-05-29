@@ -1245,11 +1245,14 @@ same choices.
     `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs"
     as a follow-up gated by the access model — never leak nodes
     across owners.
-  - **Reference to study.** Karpathy's
-    [`graphify`](https://github.com/karpathy/graphify) is a useful
-    prior-art read on turning a body of notes into a navigable
-    concept graph; the ingestion-and-embed pipeline overlaps with
-    what we'd build here.
+  - **References to study.** Karpathy's
+    [`graphify`](https://github.com/karpathy/graphify) on turning a
+    body of notes into a navigable concept graph — the ingestion-
+    and-embed pipeline overlaps with what we'd build here. Microsoft's
+    [`graphrag`](https://github.com/microsoft/graphrag) on doing
+    retrieval over a graph-structured corpus rather than a flat
+    embedding pile — closer to our actual shape, since our data
+    already lives as nodes + edges.
 
   Pull this into active work once one of: (a) graphs we use daily
   cross the size where manual recall stops working, (b) an agent
