@@ -407,3 +407,24 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
   REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
   REFERENCES users(id) ON DELETE SET NULL;
+
+-- Graph-scoped uploaded image bytes. Referenced by `background-image` in a
+-- task's frontmatter as `/api/graphs/<gid>/uploads/<id>`. The bytes live in
+-- Postgres so a self-hosted instance needs nothing beyond the existing DB.
+-- Cascade on graph delete; node-level cleanup (an upload whose only
+-- referencing node was deleted) is a reap-later concern tracked in the
+-- roadmap rather than something we trigger inline.
+CREATE TABLE IF NOT EXISTS uploads (
+  id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  bytes BYTEA NOT NULL,
+  content_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by_user UUID REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT uploads_content_type_valid
+    CHECK (content_type IN ('image/png','image/jpeg','image/gif','image/webp','image/svg+xml')),
+  CONSTRAINT uploads_byte_size_positive
+    CHECK (byte_size > 0)
+);
+CREATE INDEX IF NOT EXISTS uploads_graph_id_idx ON uploads(graph_id);

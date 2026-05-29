@@ -10,6 +10,7 @@ import membersRouter from './routes/members.js';
 import meRouter from './routes/me.js';
 import graphPrefsRouter from './routes/graphPrefs.js';
 import selectionRouter from './routes/selection.js';
+import uploadsRouter from './routes/uploads.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
@@ -92,6 +93,7 @@ app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
 app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);
+app.use('/api/graphs/:gid/uploads', requireGraphForMethod, uploadsRouter);
 app.use('/api/graphs/:gid/members', membersRouter);
 app.use('/api/me', meRouter);
 

@@ -1547,6 +1547,15 @@ function updateGraphNode(task) {
   node.data('description', meta.description || '');
   node.data('status', meta.status || 'todo');
   node.data('color', meta.color || DEFAULT_NODE_COLOR);
+  // background-image is optional. Set only when present so the cy
+  // `[backgroundImage]` selector matches image-bearing nodes and leaves
+  // image-less nodes on their default label-sized geometry. Explicitly
+  // remove on absence so a PATCH that clears the image clears the data too.
+  if (meta['background-image']) {
+    node.data('backgroundImage', meta['background-image']);
+  } else {
+    node.removeData('backgroundImage');
+  }
   node.data('meta', meta);
   if (typeof task.version === 'number') node.data('version', task.version);
   // Last writer's user id, used by the multi-agent follow filter to decide
@@ -1569,6 +1578,10 @@ function addGraphNode(task) {
       meta,
       version: typeof task.version === 'number' ? task.version : 0,
       lastModifiedByUser: task.last_modified_by_user ?? null,
+      // Set background-image data only when present so the
+      // `[backgroundImage]` cy selector misses image-less nodes (keeping
+      // them on the default label-sized geometry).
+      ...(meta['background-image'] ? { backgroundImage: meta['background-image'] } : {}),
     },
   });
 }
@@ -1639,6 +1652,11 @@ async function fetchGraph() {
         color: (node.meta && node.meta.color) || DEFAULT_NODE_COLOR,
         meta: node.meta || {},
         version: typeof node.version === 'number' ? node.version : 0,
+        // Same rule as addGraphNode: set the data key only when an image is
+        // present so the `[backgroundImage]` selector doesn't match empty.
+        ...(node.meta && node.meta['background-image']
+          ? { backgroundImage: node.meta['background-image'] }
+          : {}),
       },
     });
   }
@@ -2020,6 +2038,22 @@ function setSettingTheme(theme) {
   recreateRichEditorForTheme();
 }
 
+// Toast UI's addImageBlobHook callback. Receives a Blob (the pasted /
+// dropped image) and a callback(url, alt) that inserts a `![alt](url)`
+// markdown reference at the cursor. We round-trip through our uploads
+// endpoint so bytes land in Postgres and the editor's save stays small —
+// otherwise Toast UI would embed a base64 data URI and the next save would
+// 413 against express.json's 100KB default body limit.
+async function uploadEditorImage(blob, callback) {
+  try {
+    const { url } = await uploadImageFile(blob);
+    callback(url, '');
+  } catch (e) {
+    console.error('image upload failed', e);
+    showHint(e.message || 'Image upload failed');
+  }
+}
+
 // Toast UI Editor instance — built once at startup, recreated on theme switch.
 function createRichEditor() {
   const editor = new toastui.Editor({
@@ -2035,6 +2069,14 @@ function createRichEditor() {
       ['bold', 'italic'],
       ['ul', 'ol'],
     ],
+    // Intercept pasted / dropped images. Without this, Toast UI embeds them
+    // as `![](data:image/png;base64,...)` which trips Express's 100KB JSON
+    // body limit on the next save. We upload through /api/graphs/:gid/uploads
+    // and let Toast UI insert the returned URL instead — same UX, persisted
+    // bytes, save fits comfortably under the JSON limit.
+    hooks: {
+      addImageBlobHook: uploadEditorImage,
+    },
   });
   // Toast UI only adds `.active` to toolbar buttons when the cursor sits
   // inside text that already carries the mark. It doesn't reflect
@@ -2397,6 +2439,70 @@ async function persistNodeColor(node, color) {
   updateGraphNode(saved);
   if (String(editingTaskId) === String(taskId)) {
     panelLoadedMeta = { ...panelLoadedMeta, color };
+    panelLoadedVersion = saved.version ?? panelLoadedVersion;
+    panelLoadedContent = saved.content ?? panelLoadedContent;
+    lastSavedContent = content;
+  }
+}
+
+// Upload a Blob/File via the graph-scoped uploads endpoint. Returns the
+// parsed JSON ({id, url, content_type, byte_size}) on success, throws
+// otherwise. Used by drag-drop on the canvas and by the Toast UI paste hook.
+async function uploadImageFile(file) {
+  if (!activeGraphId) throw new Error('no active graph');
+  const r = await fetch(`/api/graphs/${encodeURIComponent(activeGraphId)}/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    throw new Error(detail.error || `upload failed (${r.status})`);
+  }
+  return r.json();
+}
+
+// Mirror of persistNodeColor for the background-image frontmatter key.
+// Reads the panel's loaded base when the node is open (cheap, no extra GET)
+// or fetches the task fresh otherwise. OCC fields are sent so a concurrent
+// drag-position or color edit by anyone else still merges.
+async function persistNodeBackgroundImage(node, url) {
+  const taskId = node.data('taskId');
+  if (!taskId) return;
+  let content;
+  let base = null;
+  if (String(editingTaskId) === String(taskId)) {
+    const titleVal = document.getElementById('field-title').value.trim();
+    if (!titleVal) throw new Error('Title required');
+    const statusVal = document.getElementById('field-status').value;
+    content = buildContent(
+      { ...panelLoadedMeta, title: titleVal, status: statusVal, 'background-image': url },
+      readEditorBody(),
+    );
+    if (panelLoadedVersion !== null && panelLoadedContent !== null) {
+      base = { version: panelLoadedVersion, content: panelLoadedContent };
+    }
+  } else {
+    const taskRes = await fetch(`${apiBase()}/tasks/${taskId}`);
+    if (!taskRes.ok) throw new Error('load failed');
+    const task = await taskRes.json();
+    const parsed = parseFrontmatter(task.content);
+    content = buildContent({ ...(parsed.meta || {}), 'background-image': url }, parsed.body);
+    base = task;
+  }
+  const res = await updateTask(taskId, content, base);
+  if (!res.ok) {
+    if (handleConflictStatus(res, 'task')) {
+      await fetchGraph();
+      return;
+    }
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Could not save image');
+  }
+  const saved = await res.json();
+  updateGraphNode(saved);
+  if (String(editingTaskId) === String(taskId)) {
+    panelLoadedMeta = { ...panelLoadedMeta, 'background-image': url };
     panelLoadedVersion = saved.version ?? panelLoadedVersion;
     panelLoadedContent = saved.content ?? panelLoadedContent;
     lastSavedContent = content;
@@ -6854,6 +6960,23 @@ function cytoscapeStyleDark() {
     { selector: 'node[status = "review"]', style: { 'border-color': '#ff4700', 'border-width': 2, 'border-style': 'dashed', 'border-dash-pattern': [6, 4] } },
     { selector: 'node[status = "done"]', style: { 'border-color': '#cccccc', 'border-opacity': 0.35, 'opacity': 0.55 } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
+    // Image-bearing nodes: title at the top, image filling the bottom 80%
+    // of a fixed 220x200 frame. background-height caps the image region so a
+    // portrait-orientation image can't grow up over the title; background-
+    // position-y: 100% anchors it to the bottom edge.
+    { selector: 'node[backgroundImage]', style: {
+        'text-valign': 'top',
+        'width': '220px',
+        'height': '200px',
+        'background-image': 'data(backgroundImage)',
+        'background-fit': 'contain',
+        'background-width': '100%',
+        'background-height': '80%',
+        'background-position-x': '50%',
+        'background-position-y': '100%',
+        'background-image-containment': 'inside',
+        'background-clip': 'node',
+    } },
     { selector: 'node.selected', style: { 'underlay-color': '#ff4700', 'underlay-opacity': 0.22, 'underlay-padding': 6 } },
     // Peer-selection visuals: a soft colored halo + dashed border when a
     // peer has the side panel open. Color comes from data(peerColor) which
@@ -6945,6 +7068,23 @@ function cytoscapeStyleLight() {
     { selector: 'node[status = "review"]',      style: { 'background-color': _statusPalette.review.fill,      'border-color': _statusPalette.review.stroke,      'color': _statusPalette.review.stroke } },
     { selector: 'node[status = "done"]',        style: { 'background-color': _statusPalette.done.fill,        'border-color': _statusPalette.done.stroke,        'color': _statusPalette.done.stroke } },
     { selector: 'node[color]', style: { 'background-color': 'data(color)' } },
+    // Image-bearing nodes: title at the top, image filling the bottom 80%
+    // of a fixed 220x200 frame. background-height caps the image region so a
+    // portrait-orientation image can't grow up over the title; background-
+    // position-y: 100% anchors it to the bottom edge.
+    { selector: 'node[backgroundImage]', style: {
+        'text-valign': 'top',
+        'width': '220px',
+        'height': '200px',
+        'background-image': 'data(backgroundImage)',
+        'background-fit': 'contain',
+        'background-width': '100%',
+        'background-height': '80%',
+        'background-position-x': '50%',
+        'background-position-y': '100%',
+        'background-image-containment': 'inside',
+        'background-clip': 'node',
+    } },
     { selector: 'node.selected', style: { 'underlay-color': '#fb5305', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
     // Peer-selection visuals: a soft colored halo + dashed border when a
     // peer has the side panel open. Color comes from data(peerColor) which
@@ -7877,6 +8017,80 @@ document.addEventListener('DOMContentLoaded', () => {
     postLocalSelection();
     peerCursorRefresh();
   }, 0));
+
+  // Drag-drop an image onto the canvas. Drop on a node sets/replaces its
+  // background-image; drop on empty canvas creates a fresh node with the
+  // image. Bytes go through /api/graphs/:gid/uploads so the resulting task
+  // PATCH stays small and the editor and canvas share one storage model.
+  const cyContainer = document.getElementById('cy');
+  cyContainer.addEventListener('dragover', (e) => {
+    // Only intercept file drags. dataTransfer.types is a DOMStringList in
+    // some browsers; coerce to an array for the .includes() check.
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  cyContainer.addEventListener('drop', async (e) => {
+    const files = Array.from(e.dataTransfer?.files || []);
+    const imageFile = files.find((f) => f.type.startsWith('image/'));
+    if (!imageFile) return;
+    e.preventDefault();
+    if (!cy || !activeGraphId) return;
+
+    const rect = cyContainer.getBoundingClientRect();
+    const rendered = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    let dropTarget = null;
+    try {
+      const hit = cy.elementsAt(rendered);
+      dropTarget = hit
+        .filter((el) => el.isNode() && Number.isFinite(el.data('taskId')))
+        .first();
+      if (dropTarget && dropTarget.empty()) dropTarget = null;
+    } catch {}
+
+    // Hitting an existing node with an image already set — confirm before
+    // wasting an upload on bytes the user might cancel out of.
+    if (dropTarget && dropTarget.data('backgroundImage')) {
+      const ok = await confirmDelete('This will delete your current image.', {
+        title: 'Replace image?',
+        confirmText: 'Replace',
+      });
+      if (!ok) return;
+    }
+
+    let upload;
+    try {
+      upload = await uploadImageFile(imageFile);
+    } catch (err) {
+      showHint(err.message || 'Image upload failed');
+      return;
+    }
+
+    if (dropTarget) {
+      try {
+        await persistNodeBackgroundImage(dropTarget, upload.url);
+      } catch (err) {
+        showHint(err.message || 'Could not save image');
+      }
+      return;
+    }
+
+    // Empty canvas: create a new node at the drop position, image pre-set.
+    // World coords go into meta.x/y so the fetchGraph reload places the new
+    // node exactly where it was dropped (same convention as click-create).
+    const pan = cy.pan();
+    const zoom = cy.zoom();
+    const wx = Math.round((rendered.x - pan.x) / zoom);
+    const wy = Math.round((rendered.y - pan.y) / zoom);
+    const content = `---\ntitle: Untitled\nstatus: todo\nx: ${wx}\ny: ${wy}\nbackground-image: ${upload.url}\n---\n`;
+    const res = await createTask(content);
+    if (!res.ok) {
+      if (!maybeForbid(res)) showHint('Create failed');
+      return;
+    }
+    await fetchGraph();
+  });
 
   // Reposition the inline overlay when the canvas moves or the active node moves
   cy.on('pan zoom resize', () => {

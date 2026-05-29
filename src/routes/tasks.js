@@ -172,7 +172,7 @@ router.patch('/:id', validateId, async (req, res) => {
         // user drags or recolors a node. Agents that rebuild content from
         // scratch typically don't include them, so without this list they'd
         // silently wipe user state on every PATCH.
-        protectedFromAgentRemoval: ['x', 'y', 'color'],
+        protectedFromAgentRemoval: ['x', 'y', 'color', 'background-image'],
       },
     );
     const out = unflattenTask(merged);

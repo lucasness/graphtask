@@ -51,6 +51,18 @@ export function validateMeta(meta) {
   if (meta.status && !VALID_STATUSES.includes(meta.status)) {
     return 'status must be todo, in_progress, review, or done';
   }
+  // background-image is an optional URL string. Capped at 500 chars so the
+  // frontmatter stays scannable — the bytes themselves live in the uploads
+  // table, not in this string.
+  const bg = meta['background-image'];
+  if (bg !== undefined && bg !== null && bg !== '') {
+    if (typeof bg !== 'string') {
+      return 'background-image must be a string';
+    }
+    if (bg.length > 500) {
+      return 'background-image must be 500 characters or less';
+    }
+  }
   return null;
 }
 
@@ -63,6 +75,9 @@ export function applyDefaults(meta) {
   }
   if (result.description !== undefined && result.description !== null) {
     result.description = String(result.description);
+  }
+  if (result['background-image'] !== undefined && result['background-image'] !== null) {
+    result['background-image'] = String(result['background-image']);
   }
   result.status = result.status || 'todo';
   return result;

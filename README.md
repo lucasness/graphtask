@@ -534,6 +534,16 @@ edges(
   UNIQUE(source_id, target_id),
   CHECK(source_id <> target_id)
 )
+
+uploads(
+  id TEXT PRIMARY KEY DEFAULT generate_short_graph_id(),
+  graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  bytes BYTEA NOT NULL,
+  content_type TEXT NOT NULL,                -- image/png | jpeg | gif | webp | svg+xml
+  byte_size INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by_user UUID REFERENCES users(id) ON DELETE SET NULL
+)
 ```
 
 - `graphs.id` is an opaque 16-char string (`a-z` + `2-9`, omitting `0/1/i/l/o`)
@@ -550,7 +560,8 @@ edges(
 - Task `content` is canonical: the server parses frontmatter, validates it,
   and stores a synchronized structured copy in `tasks.meta`.
 - Task metadata: `title`, `status`, optional `description`, optional `color`,
-  optional saved graph coordinates `x`/`y`.
+  optional saved graph coordinates `x`/`y`, optional `background-image` URL
+  (referenced from the `uploads` table; renders inside the node frame).
 - Status enum: `todo` (no highlight), `in_progress` (orange), `review`
   (yellow — agent-finished, awaiting human confirmation), `done` (green).
   Convention: when an LLM agent updates the graph it stops at `review`;
@@ -601,6 +612,8 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
+| POST | `/api/graphs/:gid/uploads` | Raw image bytes (`image/png\|jpeg\|gif\|webp\|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}` — reference the URL from a task's `background-image` frontmatter to render the image inside the node frame. |
+| GET | `/api/graphs/:gid/uploads/:id` | Image bytes, served with stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
 | GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
 | GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
 | GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |
@@ -1309,6 +1322,22 @@ concrete need surfaces.
   intercept ("wait, don't touch that edge"). Reach because the local-
   follow toggle covers most of the perceived need — true pause is a
   nice-to-have, not a daily pain.
+
+- **Upload orphan reaper.** Node background images go through
+  `/api/graphs/:gid/uploads`; today the only cleanup is the cascade on graph
+  delete. If a user replaces or removes a node's `background-image` (or
+  deletes the node entirely), the old `uploads` row sticks around. Per-graph
+  storage grows monotonically until the graph itself is deleted.
+
+  The pragmatic fix is a periodic reaper (pg_cron job or a server-side
+  interval): for each graph, find `uploads` rows whose `id` isn't referenced
+  by any `tasks.content` in that graph, and `DELETE` them. Eventually-
+  consistent, no inline coupling between task PATCH and upload lifecycle,
+  no race with a user who's mid-paste-of-the-same-bytes.
+
+  Worth doing once we see actual storage growth from real use; until then,
+  the cascade-on-graph-delete is the only sweep the system has, and that's
+  fine.
 
 #### Deferred
 

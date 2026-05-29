@@ -562,6 +562,8 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
+| POST | `/api/graphs/:gid/uploads` | Raw image bytes (`Content-Type: image/png|jpeg|gif|webp|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}`; reference the URL from a task's `background-image` frontmatter to make it render on the canvas. |
+| GET | `/api/graphs/:gid/uploads/:id` | Image bytes; served with the stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
 
 ### Markdown frontmatter shape
 
@@ -570,9 +572,20 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 title: string (required, ≤50 chars)
 description: optional string (≤150 chars)
 status: todo | in_progress | review | done   # defaults to todo
+background-image: optional URL string (≤500 chars)   # UI-managed; see below
 ---
 free-form markdown body
 ```
+
+`background-image` holds a URL into the graph's uploads (e.g.
+`/api/graphs/:gid/uploads/:id`). The canvas renders it inside the node frame
+(title above, image below) when present. **UI-managed key** — like
+`x`/`y`/`color`, it's on the `protectedFromAgentRemoval` list in the PATCH
+merge. Agents that rewrite content shouldn't include it; the server preserves
+the existing value when an agent's PATCH omits it. To intentionally clear it,
+send an explicit `null`. To upload bytes from a script: `POST
+/api/graphs/:gid/uploads` with `Content-Type: image/*` and the raw bytes as
+the body (5 MB cap); response is `{id, url, content_type, byte_size}`.
 
 ### Edge shape
 
