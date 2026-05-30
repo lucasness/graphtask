@@ -1627,7 +1627,6 @@ function measureLabelHeight(text) {
 
 function setBgImageData(node, url) {
   const prevUrl = node.data('backgroundImage');
-  node.data('backgroundImage', url);
   if (url === prevUrl && node.data('bgImageH')) {
     // Same image, but the title (or something else) may have changed —
     // re-run the height calc against the cached image dimensions instead
@@ -1635,7 +1634,42 @@ function setBgImageData(node, url) {
     applyBgDimensions(node, node.data('bgImageH'));
     return;
   }
+  if (prevUrl && url !== prevUrl) {
+    // Replacing an image that's already on screen. Don't swap the URL yet:
+    // cytoscape would paint the new (still-loading) URL as a blank frame at
+    // the old height, then jump when the bytes arrive. Decode off-canvas first
+    // and keep the old image visible until the new one is ready — see below.
+    swapBgImageData(node, url);
+    return;
+  }
+  node.data('backgroundImage', url);
   loadBgImageDimensions(node, url);
+}
+
+// Atomic image replace: decode `url` off-canvas, then write the new
+// background-image and its measured height in the same frame so the node never
+// flashes blank or changes size mid-load. The bgPendingUrl marker lets a newer
+// replace supersede one that's still decoding (last write wins).
+function swapBgImageData(node, url) {
+  node.data('bgPendingUrl', url);
+  const img = new Image();
+  img.onload = () => {
+    if (!node || node.empty() || node.data('bgPendingUrl') !== url) return;
+    node.removeData('bgPendingUrl');
+    node.data('backgroundImage', url);
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    const NODE_W = 220;
+    if (nw && nh) applyBgDimensions(node, NODE_W * (nh / nw));
+  };
+  img.onerror = () => {
+    if (!node || node.empty() || node.data('bgPendingUrl') !== url) return;
+    node.removeData('bgPendingUrl');
+    // Decode failed — swap anyway so the user isn't stuck on the old image;
+    // the broken-image canvas renders at the node's existing dimensions.
+    node.data('backgroundImage', url);
+  };
+  img.src = url;
 }
 
 function clearBgImageData(node) {
