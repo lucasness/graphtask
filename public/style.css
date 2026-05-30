@@ -1644,7 +1644,6 @@ body.forbidden #cy {
   font-size: 16px;
   line-height: 1;
 }
-.bg-image-field-icon.hidden { display: none; }
 .bg-image-field-text {
   flex: 1;
   overflow: hidden;
