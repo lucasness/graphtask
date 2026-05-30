@@ -8020,6 +8020,14 @@ document.addEventListener('DOMContentLoaded', () => {
         n.removeClass('editing');
         n.removeStyle('width');
         n.removeStyle('height');
+        // Image nodes own their height (plus background-height and
+        // text-margin-y) via applyBgDimensions. Stripping height alone
+        // collapses the frame and leaves the title shoved outside it — visible
+        // when focus leaves the panel mid-edit, e.g. a confirm modal taking
+        // focus. Re-apply their geometry from the cached image height.
+        if (n.data('backgroundImage') && n.data('bgImageH')) {
+          applyBgDimensions(n, n.data('bgImageH'));
+        }
       });
     }, 0);
   });
