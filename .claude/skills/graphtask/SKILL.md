@@ -602,6 +602,18 @@ screenshot as the image for task T3"). A graph full of agent-chosen
 background images is noise the user has to clear out; a graph where the
 user picked each one is signal.
 
+*Replacing an image that's already there* is more guarded still. When a
+node already has a `background-image`, treat the existing one as the user's
+deliberate choice and **never overwrite it on your own initiative** — only
+replace it when the user explicitly asks you to swap that node's image
+("replace the chart on T3 with this newer one"). This mirrors the UI, which
+asks the user to confirm "Replace image?" before clobbering an existing
+background; the agent's equivalent of that confirmation is to act only on an
+explicit replace instruction. If you think a node's current image should
+change but the user hasn't asked, surface it as a question rather than
+overwriting — e.g. *"T3 already has a background image; want me to replace it
+with the updated chart?"*
+
 **Including images in a node's markdown body** — `![alt](url)` inside the
 body, surfaced in the side panel when the user opens the node. This is
 fair game when the image *materially adds* to the node's content. Use your

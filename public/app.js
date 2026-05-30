@@ -8334,6 +8334,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (taskId == null) return;
     const node = cy.getElementById(String(taskId));
     if (!node || node.empty()) return;
+    // Replacing an existing image — confirm before wasting an upload on bytes
+    // the user might cancel out of. Covers paste, click-to-choose, and a drop
+    // onto the panel field; the canvas-level drop has its own matching confirm.
+    if (node.data('backgroundImage')) {
+      const ok = await confirmDelete('This will delete your current image.', {
+        title: 'Replace image?',
+        confirmText: 'Replace',
+      });
+      if (!ok) return;
+    }
     let upload;
     try {
       upload = await uploadImageFile(file);
