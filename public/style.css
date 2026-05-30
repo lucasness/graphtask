@@ -1638,6 +1638,13 @@ body.forbidden #cy {
   border-color: var(--blue);
   background: var(--ui-2);
 }
+.bg-image-field-icon {
+  flex: 0 0 auto;
+  color: var(--tx-3);
+  font-size: 16px;
+  line-height: 1;
+}
+.bg-image-field-icon.hidden { display: none; }
 .bg-image-field-text {
   flex: 1;
   overflow: hidden;

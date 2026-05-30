@@ -2945,15 +2945,18 @@ function syncBackgroundImageRow() {
   }
   row.classList.remove('hidden');
   const fieldText = document.getElementById('bg-image-field-text');
+  const fieldIcon = document.getElementById('bg-image-field-icon');
   const clearBtn = document.getElementById('bg-image-clear');
   const url = panelLoadedMeta && panelLoadedMeta['background-image'];
   if (url) {
     fieldText.textContent = displayNameFromBgUrl(url);
     fieldText.classList.remove('placeholder');
+    if (fieldIcon) fieldIcon.classList.add('hidden');
     clearBtn.classList.remove('hidden');
   } else {
-    fieldText.textContent = 'Click or drag to set image';
+    fieldText.textContent = 'Click or drag image here';
     fieldText.classList.add('placeholder');
+    if (fieldIcon) fieldIcon.classList.remove('hidden');
     clearBtn.classList.add('hidden');
   }
 }
