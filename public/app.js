@@ -1597,6 +1597,10 @@ function applyBgDimensions(node, imageH) {
     'background-height': `${h}px`,
     'text-margin-y': -h / 2,
   });
+  // Presence pills are anchored to each node's rendered bounding box. A height
+  // change here (image load / replace) doesn't fire cy's 'position' event, so
+  // re-place them explicitly or the "(You)" tag floats off the resized node.
+  if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
 }
 
 // Hidden DOM probe matching cytoscape's label font + wrap width so we know
