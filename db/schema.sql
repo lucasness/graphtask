@@ -63,9 +63,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   CONSTRAINT title_required
     CHECK (meta->>'title' IS NOT NULL AND meta->>'title' != ''),
   CONSTRAINT title_length
-    CHECK (length(meta->>'title') <= 50),
+    CHECK (length(meta->>'title') <= 100),
   CONSTRAINT description_length
-    CHECK (length(meta->>'description') <= 150 OR meta->>'description' IS NULL),
+    CHECK (length(meta->>'description') <= 200 OR meta->>'description' IS NULL),
   CONSTRAINT valid_status
     CHECK (meta->>'status' IN ('todo', 'in_progress', 'review', 'done'))
 );
@@ -94,6 +94,20 @@ DO $$ BEGIN
   ALTER TABLE tasks
     ADD CONSTRAINT valid_status
     CHECK (meta->>'status' IN ('todo', 'in_progress', 'review', 'done'));
+END $$;
+
+-- Raise the title/description length caps (50→100, 150→200) on existing DBs.
+-- CREATE TABLE IF NOT EXISTS won't relax constraints on tables that already
+-- exist. Idempotent: drops and re-adds. Widening only, so existing rows pass.
+DO $$ BEGIN
+  ALTER TABLE tasks DROP CONSTRAINT IF EXISTS title_length;
+  ALTER TABLE tasks
+    ADD CONSTRAINT title_length
+    CHECK (length(meta->>'title') <= 100);
+  ALTER TABLE tasks DROP CONSTRAINT IF EXISTS description_length;
+  ALTER TABLE tasks
+    ADD CONSTRAINT description_length
+    CHECK (length(meta->>'description') <= 200 OR meta->>'description' IS NULL);
 END $$;
 
 -- Bump graphs.updated_at whenever any task or edge in a graph changes, AND

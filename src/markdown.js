@@ -42,11 +42,11 @@ export function validateMeta(meta) {
   if (!meta.title || typeof meta.title !== 'string' || meta.title.trim() === '') {
     return 'title is required';
   }
-  if (typeof meta.title === 'string' && meta.title.length > 50) {
-    return 'title must be 50 characters or less';
+  if (typeof meta.title === 'string' && meta.title.length > 100) {
+    return 'title must be 100 characters or less';
   }
-  if (meta.description !== undefined && typeof meta.description === 'string' && meta.description.length > 150) {
-    return 'description must be 150 characters or less';
+  if (meta.description !== undefined && typeof meta.description === 'string' && meta.description.length > 200) {
+    return 'description must be 200 characters or less';
   }
   if (meta.status && !VALID_STATUSES.includes(meta.status)) {
     return 'status must be todo, in_progress, review, or done';

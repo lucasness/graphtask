@@ -99,17 +99,24 @@ describe('Task CRUD', () => {
       expect(res.body.meta.status).toBe('review');
     });
 
-    it('should reject a task with title > 50 chars', async () => {
+    it('should reject a task with title > 100 chars', async () => {
       const res = await request(app)
         .post(tasksUrl())
-        .send({ content: md('x'.repeat(51)) });
+        .send({ content: md('x'.repeat(101)) });
       expect(res.status).toBe(400);
     });
 
-    it('should reject a task with description > 150 chars', async () => {
+    it('should accept a task with a 100 char title', async () => {
       const res = await request(app)
         .post(tasksUrl())
-        .send({ content: md('Bad', { description: 'x'.repeat(151) }) });
+        .send({ content: md('x'.repeat(100)) });
+      expect(res.status).toBe(201);
+    });
+
+    it('should reject a task with description > 200 chars', async () => {
+      const res = await request(app)
+        .post(tasksUrl())
+        .send({ content: md('Bad', { description: 'x'.repeat(201) }) });
       expect(res.status).toBe(400);
     });
 

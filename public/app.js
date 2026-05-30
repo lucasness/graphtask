@@ -8211,10 +8211,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Title input is mirrored across the panel field, the inline overlay, and the cy node label
   function readTitleFrom(source, e) {
     if (source === 'overlay') {
-      // Strip newlines and enforce 50 char cap
+      // Strip newlines and enforce 100 char cap
       let val = e.target.textContent.replace(/[\r\n]+/g, '');
-      if (val.length > 50) {
-        val = val.slice(0, 50);
+      if (val.length > 100) {
+        val = val.slice(0, 100);
         e.target.textContent = val;
         placeCaretAtEnd(e.target);
       }

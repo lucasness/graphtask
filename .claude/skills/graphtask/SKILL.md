@@ -474,7 +474,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 
 - **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
 - **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
-- **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤50), `description` length (≤150), or `status` value.
+- **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤100), `description` length (≤200), or `status` value.
 - **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
 - **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 8 for valid `settings` shape.
 - **403 on any graph route** — access denied for this caller. See the "Why am I getting 401 / 403?" table near the top to triage by route + verb.
@@ -570,8 +570,8 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 
 ```yaml
 ---
-title: string (required, ≤50 chars)
-description: optional string (≤150 chars)
+title: string (required, ≤100 chars)
+description: optional string (≤200 chars)
 status: todo | in_progress | review | done   # defaults to todo
 background-image: optional URL string (≤500 chars)   # UI-managed; see below
 ---
