@@ -1574,23 +1574,67 @@ const BG_MAX_IMAGE_H = 280;
 
 // Apply the per-node style overrides that cytoscape DOES honor (verified
 // in-browser): height, background-height, text-margin-y. padding-bottom
-// can't be made asymmetric from padding-top, so we set `height` directly
-// to size the node and use the symmetric `padding: 16px` shorthand from
-// the stylesheet. height = TEXT_AREA (fixed, fits 1-2 line titles
-// comfortably) + image area.
-const BG_TEXT_AREA_H = 50;
+// can't be made asymmetric from padding-top — even individual side
+// overrides propagate to all four sides — so we set `height` directly
+// and let the symmetric `padding: 16px` shorthand from the stylesheet
+// provide consistent visual padding above and below the label.
+//
+// The visual structure we're aiming for matches what a normal label-sized
+// node would look like, with the image area glued to the bottom:
+//   outer padding-top (16) → label → 16 gap → image → outer padding-bottom (16)
+//
+// Inner height = label_h + image_h. With text-margin-y = -image_h/2 and
+// text-valign center, the label lands at the top of the inner area
+// (matching label-sized geometry). The outer 16 padding handles both the
+// visual top padding and the visual gap between label bottom and image
+// top — same paddings as a normal node.
 function applyBgDimensions(node, imageH) {
   const h = Math.max(1, Math.min(BG_MAX_IMAGE_H, Math.round(imageH)));
   node.data('bgImageH', h);
+  const labelH = measureLabelHeight(node.data('title') || ' ');
   node.style({
-    'height': `${BG_TEXT_AREA_H + h}px`,
+    'height': `${labelH + h}px`,
     'background-height': `${h}px`,
     'text-margin-y': -h / 2,
   });
 }
 
+// Hidden DOM probe matching cytoscape's label font + wrap width so we know
+// the rendered label height per title. Cytoscape doesn't expose this
+// directly, but we need it to size image nodes so visual padding around
+// the title matches normal label-sized nodes.
+let _labelProbe = null;
+function measureLabelHeight(text) {
+  if (!_labelProbe) {
+    _labelProbe = document.createElement('div');
+    _labelProbe.style.cssText = [
+      'position: absolute',
+      'visibility: hidden',
+      'top: -9999px',
+      'left: -9999px',
+      'font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      'font-size: 13px',
+      'line-height: 1',
+      'width: 188px',
+      'word-wrap: break-word',
+      'white-space: normal',
+    ].join(';');
+    document.body.appendChild(_labelProbe);
+  }
+  _labelProbe.textContent = text || ' ';
+  return _labelProbe.offsetHeight || 13;
+}
+
 function setBgImageData(node, url) {
+  const prevUrl = node.data('backgroundImage');
   node.data('backgroundImage', url);
+  if (url === prevUrl && node.data('bgImageH')) {
+    // Same image, but the title (or something else) may have changed —
+    // re-run the height calc against the cached image dimensions instead
+    // of re-fetching the image bytes.
+    applyBgDimensions(node, node.data('bgImageH'));
+    return;
+  }
   loadBgImageDimensions(node, url);
 }
 
@@ -7121,7 +7165,7 @@ function cytoscapeStyleDark() {
         'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
-        'height': '174px',
+        'height': '137px',
         'padding': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
@@ -7266,7 +7310,7 @@ function cytoscapeStyleLight() {
         'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
-        'height': '174px',
+        'height': '137px',
         'padding': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
