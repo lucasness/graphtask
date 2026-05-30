@@ -1572,13 +1572,21 @@ const BG_TEXT_BOTTOM_PADDING = 16; // matches base node padding (top)
 // dwarf the rest of the graph. ~280 fits a typical portrait-ish photo cleanly.
 const BG_MAX_IMAGE_H = 280;
 
-// Write the measured image height to node data; the stylesheet's three
-// per-element functions read it back and feed padding-bottom / text-margin-y
-// / background-height. Cytoscape re-evaluates those functions on every
-// data change, so no explicit restyle call is needed.
+// Apply the per-node style overrides that cytoscape DOES honor (verified
+// in-browser): height, background-height, text-margin-y. padding-bottom
+// can't be made asymmetric from padding-top, so we set `height` directly
+// to size the node and use the symmetric `padding: 16px` shorthand from
+// the stylesheet. height = TEXT_AREA (fixed, fits 1-2 line titles
+// comfortably) + image area.
+const BG_TEXT_AREA_H = 50;
 function applyBgDimensions(node, imageH) {
   const h = Math.max(1, Math.min(BG_MAX_IMAGE_H, Math.round(imageH)));
   node.data('bgImageH', h);
+  node.style({
+    'height': `${BG_TEXT_AREA_H + h}px`,
+    'background-height': `${h}px`,
+    'text-margin-y': -h / 2,
+  });
 }
 
 function setBgImageData(node, url) {
@@ -1589,6 +1597,13 @@ function setBgImageData(node, url) {
 function clearBgImageData(node) {
   node.removeData('backgroundImage');
   node.removeData('bgImageH');
+  // Drop the per-node overrides so the node returns to base label-sized
+  // geometry.
+  node.style({
+    'height': '',
+    'background-height': '',
+    'text-margin-y': '',
+  });
 }
 
 // Measure the image's natural dimensions, scale to the node's render width
@@ -7083,25 +7098,35 @@ function cytoscapeStyleDark() {
     // background-fit MUST be 'contain' (not 'cover') so background-height
     // is honored as the image-area size; 'cover' stretches the image across
     // the whole node and the title ends up rendered on top of it.
+    // Image-bearing nodes: TWO REGIONS. Top region holds the title, bottom
+    // region is the image flush against the bottom edge. No overlap.
+    //
+    // Cytoscape gotchas this layout has to dodge (verified in-browser):
+    //   - `padding-bottom` as a function or per-element override CANNOT be
+    //     asymmetric from `padding-top` — both sides snap to the same value.
+    //     So we keep the symmetric `padding: 16px` shorthand and don't try
+    //     to stretch the node via padding-bottom.
+    //   - `height: 'label'` auto-sizes only to the label; it can't include
+    //     the image area. So we drop label-auto-sizing for image nodes and
+    //     set `height` directly per-node from applyBgDimensions(): height =
+    //     50 (text strip) + bgImageH (image strip).
+    //   - `text-margin-y` is unitless and DOES accept per-node overrides.
+    //   - `background-height` accepts per-node overrides with `'<n>px'`
+    //     suffix.
+    //
+    // The static defaults below (assuming a 16:9 ≈ 124px-tall image) cover
+    // the brief window between adding the node and the image's onload.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        // text-margin-y is unitless (the base stylesheet uses bare numbers
-        // elsewhere too) but padding-bottom and background-height need
-        // their values explicitly suffixed with 'px' — returning a bare
-        // number gets silently rejected and the node collapses to base
-        // padding.
-        'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
+        'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
-        'height': 'label',
-        'padding-top': '16px',
-        'padding-bottom': (ele) => `${(ele.data('bgImageH') || 124) + 16}px`,
-        'padding-left': '16px',
-        'padding-right': '16px',
+        'height': '174px',
+        'padding': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': (ele) => `${ele.data('bgImageH') || 124}px`,
+        'background-height': '124px',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
@@ -7218,25 +7243,35 @@ function cytoscapeStyleLight() {
     // background-fit MUST be 'contain' (not 'cover') so background-height
     // is honored as the image-area size; 'cover' stretches the image across
     // the whole node and the title ends up rendered on top of it.
+    // Image-bearing nodes: TWO REGIONS. Top region holds the title, bottom
+    // region is the image flush against the bottom edge. No overlap.
+    //
+    // Cytoscape gotchas this layout has to dodge (verified in-browser):
+    //   - `padding-bottom` as a function or per-element override CANNOT be
+    //     asymmetric from `padding-top` — both sides snap to the same value.
+    //     So we keep the symmetric `padding: 16px` shorthand and don't try
+    //     to stretch the node via padding-bottom.
+    //   - `height: 'label'` auto-sizes only to the label; it can't include
+    //     the image area. So we drop label-auto-sizing for image nodes and
+    //     set `height` directly per-node from applyBgDimensions(): height =
+    //     50 (text strip) + bgImageH (image strip).
+    //   - `text-margin-y` is unitless and DOES accept per-node overrides.
+    //   - `background-height` accepts per-node overrides with `'<n>px'`
+    //     suffix.
+    //
+    // The static defaults below (assuming a 16:9 ≈ 124px-tall image) cover
+    // the brief window between adding the node and the image's onload.
     { selector: 'node[backgroundImage]', style: {
         'text-valign': 'center',
-        // text-margin-y is unitless (the base stylesheet uses bare numbers
-        // elsewhere too) but padding-bottom and background-height need
-        // their values explicitly suffixed with 'px' — returning a bare
-        // number gets silently rejected and the node collapses to base
-        // padding.
-        'text-margin-y': (ele) => -(ele.data('bgImageH') || 124) / 2,
+        'text-margin-y': -62,
         'text-max-width': '188px',
         'width': '220px',
-        'height': 'label',
-        'padding-top': '16px',
-        'padding-bottom': (ele) => `${(ele.data('bgImageH') || 124) + 16}px`,
-        'padding-left': '16px',
-        'padding-right': '16px',
+        'height': '174px',
+        'padding': '16px',
         'background-image': 'data(backgroundImage)',
         'background-fit': 'contain',
         'background-width': '100%',
-        'background-height': (ele) => `${ele.data('bgImageH') || 124}px`,
+        'background-height': '124px',
         'background-position-x': '50%',
         'background-position-y': '100%',
         'background-image-containment': 'inside',
