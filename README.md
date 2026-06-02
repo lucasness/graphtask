@@ -1137,9 +1137,9 @@ graphs / tasks / edges are untouched.
 
 ### Roadmap
 
-The canonical "what's next" list — everything planned, deferred, or
-explicitly rejected lives here so contributors don't re-litigate the
-same choices.
+The canonical "what's next" list — what's shipped, what's planned, and
+the aspirational reach items live here so contributors don't re-litigate
+the same choices.
 
 #### Status at a glance
 
@@ -1150,8 +1150,7 @@ Completion checklist — the detailed entries below carry the full context.
 - [x] **Kanban view** — first multi-view lens; status columns, drag-to-PATCH,
   per-user view preference. (`public/app.js`)
 - [x] **Optimistic concurrency (OCC) + three-way merge** — `version` /
-  `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`. Shipped
-  in place of Electric (see *Deferred*).
+  `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`.
 
 **Planned — not started**
 
@@ -1169,13 +1168,6 @@ Completion checklist — the detailed entries below carry the full context.
 - [ ] **Subagent fanout** — parallel subagents claiming ready tasks.
 - [ ] **True pause/play** — server holds the next PATCH while paused.
 - [ ] **Upload orphan reaper** — sweep unreferenced `uploads` rows.
-
-**Deferred — blocked or decided-against**
-
-- [~] **Prod-Clerk cutover** — code path proven (modes 1–3 + dev mode 4 share
-  the adapter); blocked on ops (no prod domain). Cutover steps below.
-- [~] **Electric (Durable Streams)** — declined in favor of OCC (shipped);
-  reconsider triggers listed below.
 
 #### Planned
 
@@ -1408,58 +1400,3 @@ concrete need surfaces.
   Worth doing once we see actual storage growth from real use; until then,
   the cascade-on-graph-delete is the only sweep the system has, and that's
   fine.
-
-#### Deferred
-
-- **Prod-Clerk cutover.** [~] Phase B B7 mode 4 (Hosted, Clerk prod) is the
-  only deployment-matrix row not verified end-to-end. Marked done on
-  2026-05-13 anyway because the blocker is ops, not code — modes 1–3 +
-  dev mode 4 share the same Clerk adapter, so the code path is proven.
-
-  Why deferred: Clerk's production environment requires a verified
-  stable domain in the dashboard's "Domains" section before it'll issue
-  `pk_live_…` / `sk_live_…` keys. `graphtask.wafers.live` is a
-  dev/preview hostname, not the production target. Until a real prod
-  domain exists there's nothing to verify.
-
-  Cutover procedure when ops is unblocked:
-  1. Stand up the prod domain (out of scope for this repo).
-  2. Add the domain to <https://dashboard.clerk.com> → app →
-     Production → Domains.
-  3. Copy `pk_live_…` / `sk_live_…` from Production → API Keys.
-  4. Edit `.env` to replace both `pk_test_…` / `sk_test_…` lines with
-     the live values.
-  5. Redeploy. The boot log will show the Clerk adapter coming up
-     against the prod app and `/api/config` will return the `pk_live_…`
-     publishable key.
-  6. Browser verification: sign-in OTP comes from the prod Clerk app's
-     sender (different sender domain than dev — that's the only
-     user-visible diff during sign-in).
-
-  Gotcha — **Clerk dev and prod are separate user namespaces.** Same
-  email, different `user_xxx`. The `users` table conflict key is
-  `(provider, provider_user_id)`, so signing into prod-Clerk creates a
-  brand-new row in the local `users` table with a new internal UUID.
-  Any graphs owned under a dev-keyed UUID will appear to the prod-keyed
-  identity as either "Shared with me" or "Access denied" depending on
-  `anon_role`. Mitigation if preservation matters:
-  `UPDATE graphs SET owner_user_id = <new> WHERE owner_user_id = <old>`
-  plus the same on `graph_members.user_id`. Skip if the DB is going to
-  be wiped anyway.
-
-- **Electric (Durable Streams + reactive queries).** [~] Considered for
-  race-free concurrent editing, cross-device execution resume, and
-  reconnect-from-offset. Deferred 2026-05-04 after cost/benefit
-  analysis: the wins are too small for graphtask's usage profile (rare
-  same-instant collisions on a notetaking tool), and the concrete
-  lost-update bug it would solve was solvable with ~100 LOC of
-  Postgres-level optimistic concurrency instead. That OCC work shipped
-  (`version` + `last_modified_by` columns on tasks / edges / graphs,
-  three-way merge in `src/merge.js`).
-
-  Reconsider triggers — adopt Electric only when one of these is true:
-  1. Building a server-side Claude runtime for hosted agent sessions.
-  2. Real-time multi-user collaboration becomes a product requirement.
-  3. OCC under load produces user-visible friction (frequent 409
-     retries).
-  4. Electric ships a managed runtime that removes operational cost.
