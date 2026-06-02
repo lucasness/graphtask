@@ -1141,15 +1141,51 @@ The canonical "what's next" list — everything planned, deferred, or
 explicitly rejected lives here so contributors don't re-litigate the
 same choices.
 
+#### Status at a glance
+
+Completion checklist — the detailed entries below carry the full context.
+
+**Shipped**
+
+- [x] **Kanban view** — first multi-view lens; status columns, drag-to-PATCH,
+  per-user view preference. (`public/app.js`)
+- [x] **Optimistic concurrency (OCC) + three-way merge** — `version` /
+  `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`. Shipped
+  in place of Electric (see *Deferred*).
+
+**Planned — not started**
+
+- [ ] **Modular UI primitives** — `View` interface refactor; do *before* tech tree.
+- [ ] **Tech tree view** — Civ-style layered DAG, read-only.
+- [ ] **Future views** — table, calendar (one at a time after tech tree).
+- [ ] **Responsive layout system** — kill hardcoded px; mobile bottom-sheet
+  panel + avatar-bar reflow.
+- [ ] **Configurable custom fields** — graph-declared typed task fields.
+- [ ] **Custom ordering** — per-graph, per-view sort/grouping (needs custom fields).
+- [ ] **Knowledge-base search across graphs** — search over node bodies.
+
+**Reach — aspirational, unscheduled**
+
+- [ ] **Subagent fanout** — parallel subagents claiming ready tasks.
+- [ ] **True pause/play** — server holds the next PATCH while paused.
+- [ ] **Upload orphan reaper** — sweep unreferenced `uploads` rows.
+
+**Deferred — blocked or decided-against**
+
+- [~] **Prod-Clerk cutover** — code path proven (modes 1–3 + dev mode 4 share
+  the adapter); blocked on ops (no prod domain). Cutover steps below.
+- [~] **Electric (Durable Streams)** — declined in favor of OCC (shipped);
+  reconsider triggers listed below.
+
 #### Planned
 
-- **Multi-view: same data, different lenses.** Same `tasks` + `edges`
+- **Multi-view: same data, different lenses.** *(Kanban ✅ shipped · tech tree + future views ⬜ planned)* Same `tasks` + `edges`
   rows, multiple rendering modes. The graph-DAG view (current) stays
   the canonical edit surface; new views are alternate lenses that read
   the same data and translate edits where they make sense.
 
   **Shipped:**
-  - **Kanban** — tasks grouped into columns by `status` (todo /
+  - [x] **Kanban** — tasks grouped into columns by `status` (todo /
     in_progress / review / done). Cards show title + body excerpt; drag
     between columns issues a PATCH that flips `status` (OCC three-way
     merge handles concurrent drags). Edges hidden; the graph view stays
@@ -1160,16 +1196,16 @@ same choices.
     *Views — per-graph view preference* below.
 
   **Planned views:**
-  - **Tech tree** — Civilization-style layered DAG. Tasks ordered into
+  - [ ] **Tech tree** — Civilization-style layered DAG. Tasks ordered into
     rows by topological depth (recursive prereq distance); edges drawn
     between rows. Layout is computed, so the view is primarily
     read-only — click a node to jump back to graph view with that node
     selected.
-  - **Future views** — table view, calendar view, etc. — added one at
+  - [ ] **Future views** — table view, calendar view, etc. — added one at
     a time once a second view shakes out the per-view abstractions
     (see *Modular UI primitives* below).
 
-- **Modular UI primitives.** With Kanban shipped, several surfaces now
+- **Modular UI primitives.** ⬜ With Kanban shipped, several surfaces now
   carry inline `if (currentView === 'kanban') { … }` branches: the
   toolbar's button visibility (CSS-gated), the global keydown switch
   (per-view branch), `peerCursorRefresh` (per-view positioning),
@@ -1185,7 +1221,7 @@ same choices.
   view three lands so the third view doesn't double the per-view
   conditional sprawl.
 
-- **Responsive layout system.** Most of the canvas chrome
+- **Responsive layout system.** ⬜ Most of the canvas chrome
   (`#presence-bar`, `.push-button`, `#panel`, peer-cursor placement,
   modal widths) is currently positioned with hardcoded pixel
   offsets — `top: 104px`, `right: 12px`, `width: 40px`, etc. — tuned
@@ -1239,7 +1275,7 @@ same choices.
     on desktop. Needs to either reflow when the panel is open or move
     out of that corner entirely on small viewports.
 
-- **Configurable custom fields on graphs.** Today every task carries the
+- **Configurable custom fields on graphs.** ⬜ Today every task carries the
   same fixed frontmatter (title, status, optional description / color /
   position). A "custom fields" system would let a graph owner declare
   additional typed fields — `priority: number`, `assignee: string`,
@@ -1248,7 +1284,7 @@ same choices.
   values. Surfaces in the inspector (extra form rows), in the kanban
   group-by picker, and in future views (table columns, calendar dates).
 
-- **Custom ordering.** Once custom fields exist, ordering follows. Per
+- **Custom ordering.** ⬜ Once custom fields exist, ordering follows. Per
   graph, **per view**, persist a sort/grouping strategy:
 
   - **Graph view** — order traversal by a custom numeric field (e.g.
@@ -1271,7 +1307,7 @@ same choices.
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
 
-- **Knowledge-base search across graphs.** Each node body is a piece
+- **Knowledge-base search across graphs.** ⬜ Each node body is a piece
   of markdown that evolves with the work, so a long-lived graph
   already functions as a notebook — but today the only way to find
   "the node about X" is to know the gid and `GET` it. Add a search
@@ -1312,7 +1348,7 @@ Aspirational — interesting if we get to them, but we may never. Not
 actively planned; pull into Planned only if user feedback or a
 concrete need surfaces.
 
-- **Subagent fanout.** Today one agent token = one Claude Code session
+- **Subagent fanout.** ⬜ Today one agent token = one Claude Code session
   walking the graph sequentially. Future: spawn N subagents in parallel,
   each picking up a different ready task. Builds on existing
   infrastructure (multi-agent presence, owner-aware follow filter,
@@ -1348,7 +1384,7 @@ concrete need surfaces.
     and pass them through the subagent's environment so the per-task
     session file picks them up.
 
-- **Pause/play that actually pauses the agent.** Today the toggle is
+- **Pause/play that actually pauses the agent.** ⬜ Today the toggle is
   local-only — it just stops the viewer's camera from following.
   Future: use the broadcasted `announce_focus` from the SKILL.md
   helpers as the ack point. When paused, the server holds the next
@@ -1357,7 +1393,7 @@ concrete need surfaces.
   follow toggle covers most of the perceived need — true pause is a
   nice-to-have, not a daily pain.
 
-- **Upload orphan reaper.** Node background images go through
+- **Upload orphan reaper.** ⬜ Node background images go through
   `/api/graphs/:gid/uploads`; today the only cleanup is the cascade on graph
   delete. If a user replaces or removes a node's `background-image` (or
   deletes the node entirely), the old `uploads` row sticks around. Per-graph
@@ -1375,7 +1411,7 @@ concrete need surfaces.
 
 #### Deferred
 
-- **Prod-Clerk cutover.** Phase B B7 mode 4 (Hosted, Clerk prod) is the
+- **Prod-Clerk cutover.** [~] Phase B B7 mode 4 (Hosted, Clerk prod) is the
   only deployment-matrix row not verified end-to-end. Marked done on
   2026-05-13 anyway because the blocker is ops, not code — modes 1–3 +
   dev mode 4 share the same Clerk adapter, so the code path is proven.
@@ -1411,7 +1447,7 @@ concrete need surfaces.
   plus the same on `graph_members.user_id`. Skip if the DB is going to
   be wiped anyway.
 
-- **Electric (Durable Streams + reactive queries).** Considered for
+- **Electric (Durable Streams + reactive queries).** [~] Considered for
   race-free concurrent editing, cross-device execution resume, and
   reconnect-from-offset. Deferred 2026-05-04 after cost/benefit
   analysis: the wins are too small for graphtask's usage profile (rare
