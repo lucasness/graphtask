@@ -1154,13 +1154,20 @@ Completion checklist — the detailed entries below carry the full context.
 
 **Planned — not started**
 
-- [ ] **Modular UI primitives** — `View` interface refactor; do *before* tech tree.
-- [ ] **Tech tree view** — Civ-style layered DAG, read-only.
-- [ ] **Future views** — table, calendar (one at a time after tech tree).
+- [ ] **Modular UI primitives** — `View` interface refactor; do *before* the
+  first new view.
+- [ ] **Future views** — alternate lenses on the same `tasks`/`edges` data,
+  added one at a time after the modular primitives refactor:
+  - [ ] **Tech tree** — Civ-style layered DAG, read-only.
+  - [ ] **Table view**
+  - [ ] **Calendar view**
 - [ ] **Responsive layout system** — kill hardcoded px; mobile bottom-sheet
   panel + avatar-bar reflow.
 - [ ] **Configurable custom fields** — graph-declared typed task fields.
 - [ ] **Custom ordering** — per-graph, per-view sort/grouping (needs custom fields).
+- [ ] **In-graph find (Cmd/Ctrl+F)** — intercept the browser find hotkey;
+  ranked keyword search over the current graph's node title / description /
+  body, jump-to-node.
 - [ ] **Knowledge-base search across graphs** — search over node bodies.
 
 **Reach — aspirational, unscheduled**
@@ -1298,6 +1305,48 @@ Completion checklist — the detailed entries below carry the full context.
   every view's render pipeline. Worth doing once the multi-view
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
+
+- **In-graph find (Cmd/Ctrl+F).** ⬜ Today pressing Cmd/Ctrl+F on the graph
+  triggers the *browser's* native find — which reports "0/0" even when the
+  word is plainly on screen, because Cytoscape paints node labels onto a
+  `<canvas>` and the browser only searches the DOM text layer. Replace that
+  dead-end with an in-app find bar scoped to the current graph.
+
+  - **Interception.** Intercept the hotkey the same way Cmd/Ctrl+K already
+    opens graph settings (`public/app.js` global keydown handler, ~line
+    7882: `e.preventDefault(); openGraphSettings();`). Add a sibling branch
+    for `e.key === 'f'` that `preventDefault()`s the native find and opens
+    the in-app find bar. No conflict with the bare `f` graph hotkey
+    (zoom-to-fit, `handleGraphKeydown`) — that one carries no modifier.
+
+  - **Search surface.** Lexical keyword match over each node in the current
+    graph across three fields: **title**, **description**, **body**. Client-
+    side over the already-loaded `tasks` is enough at current graph sizes;
+    no new endpoint required to start.
+
+  - **Ranking — tiered by field, then by frequency.** Results group by the
+    strongest field the keyword hits, in this order:
+    1. **Title matches** — top of the list. Within the group, order by how
+       many times the keyword appears (more = higher); tie-break by
+       `created_at` (newest first).
+    2. **Description matches** — next group, ordered the same way (count
+       desc, then newest-first).
+    3. **Body matches** — last group, same ordering.
+
+    A node is ranked by its strongest field only (a title hit outranks a
+    body hit on the same node — it doesn't appear in every group it
+    matches).
+
+  - **UX.** Find bar overlay (top of canvas, like the screenshot's native
+    bar but ours); type to filter live; ↑/↓ (or Enter / Shift+Enter) walk
+    the ranked results; the active result selects + centers its node on the
+    graph (`cy`). Esc closes the bar and restores prior selection.
+
+  - **Relationship to the cross-graph KB search below.** Different feature,
+    don't merge them. This one is *in-graph, client-side, lexical, instant*
+    — the find-on-this-page replacement. The KB search below is *cross-
+    graph, server-side, semantic*. They can share a relevance vocabulary
+    later, but this ships first and standalone.
 
 - **Knowledge-base search across graphs.** ⬜ Each node body is a piece
   of markdown that evolves with the work, so a long-lived graph
