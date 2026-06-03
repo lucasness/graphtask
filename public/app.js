@@ -1262,10 +1262,14 @@ function setViewPref(gid, mode) {
 //   wipePeerCards() / paintPeerCard(id,color,editing) secondary peer-paint
 //                 target for views that mirror selection onto DOM cards.
 //   onRemoteTaskEvent(payload) react to an SSE task INSERT/UPDATE/DELETE.
+//   focusOnTask(payload) agent-follow reveal — move the viewport to / surface
+//                 the task an agent just edited (graph pans + opens the panel;
+//                 kanban relies on its queued scroll + opens the panel on
+//                 UPDATE). Gated upstream by shouldFollowAgentEvent.
 //   createPrimaryItem() the "New" button / G-hotkey create action.
 //
-// Forward-looking: a view may also declare its agent-follow target and
-// applicable selection modes as the tech-tree/table views land.
+// Forward-looking: a view may also declare its applicable selection modes as
+// the tech-tree/table views land.
 let currentView = 'graph';
 function activeView() { return VIEWS[currentView] || VIEWS.graph; }
 
@@ -1365,6 +1369,13 @@ const VIEWS = {
     paintPeerCard() {},
     // SSE-driven canvas refresh is handled by the shared fetchGraph path.
     onRemoteTaskEvent() {},
+    // Agent-follow reveal: pan the camera to the node and (on UPDATE) open the
+    // side panel — followAgentEdit. Only invoked when shouldFollowAgentEvent
+    // has already approved this event.
+    focusOnTask(payload) {
+      const node = cy.getElementById(String(payload.id));
+      if (node && !node.empty()) followAgentEdit(node, payload.op);
+    },
     createPrimaryItem() { createNodeAtCenter(); },
   },
   kanban: {
@@ -1418,6 +1429,15 @@ const VIEWS = {
         queueKanbanFlash(payload.id);
         queueKanbanScrollIntoView(payload.id);
       }
+    },
+    // Agent-follow reveal: kanban has no camera, so the card reveal (flash +
+    // scroll-into-view) is already queued by onRemoteTaskEvent. Here we only
+    // mirror followAgentEdit's panel behavior — open the side panel on UPDATE
+    // so the viewer sees what the agent changed; leave INSERTs to the queued
+    // scroll. Passing { taskId } (not the cy node) keeps showPanel from panning
+    // the hidden cytoscape canvas.
+    focusOnTask(payload) {
+      if (payload.op === 'UPDATE') showPanel({ taskId: payload.id }, { programmatic: true });
     },
     createPrimaryItem() {
       // New task in the selected card's column, falling back to Todo.
@@ -7105,11 +7125,12 @@ async function refreshFromEvent(payload) {
   if (typeof updateToolbar === 'function') updateToolbar();
 
   // Agent-follow: when an external (SSE-delivered) edit lands on a task and
-  // the user isn't actively interacting, pan the camera to the affected
-  // node and (for UPDATE) open the side panel. The "who is editing this"
-  // visual cue now comes from the peer-selected/peer-editing classes in
-  // the writer's color when the agent broadcasts its selection — no more
-  // legacy purple-flash class layered on top.
+  // the user isn't actively interacting, reveal the affected task. HOW that
+  // reveal happens is the active view's call — graph pans the camera + opens
+  // the panel; kanban relies on its queued card scroll + opens the panel on
+  // UPDATE. The "who is editing this" cue comes from the peer-selected/
+  // peer-editing classes in the writer's color when the agent broadcasts its
+  // selection — no legacy purple-flash class layered on top.
   if (
     payload &&
     payload.kind === 'tasks' &&
@@ -7119,10 +7140,7 @@ async function refreshFromEvent(payload) {
     !userInteractedRecently() &&
     shouldFollowAgentEvent(payload)
   ) {
-    const node = cy.getElementById(String(payload.id));
-    if (node && !node.empty()) {
-      followAgentEdit(node, payload.op);
-    }
+    activeView().focusOnTask(payload);
   }
 }
 
