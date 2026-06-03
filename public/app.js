@@ -1240,25 +1240,52 @@ function setViewPref(gid, mode) {
   if (mode !== 'graph' && mode !== 'kanban') return;
   try { localStorage.setItem(VIEW_KEY_PREFIX + gid, mode); } catch {}
 }
+// --- View registry (modular UI primitives) -------------------------------
+// Each rendering lens (graph DAG, kanban, and future tech-tree/table/etc.)
+// is described by one entry in VIEWS implementing the shared View interface
+// below. Code that used to branch inline on `currentView === 'kanban'` now
+// dispatches through `activeView().<method>()` so adding a third view means
+// adding a registry entry, not threading another conditional through every
+// surface. The interface a view fulfils:
+//
+//   id            string id, must match the VIEWS key.
+//   containerId   id of the DOM element that fills the canvas region when
+//                 this view is active (toggled visible by applyView).
+//   bodyClass     body class CSS uses to gate view-specific chrome.
+//   enter(prev)   called when switching INTO this view (lazy render, etc.).
+//   adjustLayout()recompute panel-driven layout for this view.
+//   updateToolbar() paint the bottom toolbar slots for this view.
+//   handleKeydown(e) run this view's hotkeys (graph concepts vs kanban).
+//   onEscape(opts)  extra per-view selection clearing on the Escape key.
+//   renderPeerCursors(groups) position peer cursor markers (peer-anchor
+//                 lookup differs: cy world coords vs card DOM rects).
+//   wipePeerCards() / paintPeerCard(id,color,editing) secondary peer-paint
+//                 target for views that mirror selection onto DOM cards.
+//   onRemoteTaskEvent(payload) react to an SSE task INSERT/UPDATE/DELETE.
+//   createPrimaryItem() the "New" button / G-hotkey create action.
+//
+// Forward-looking: a view may also declare its agent-follow target and
+// applicable selection modes as the tech-tree/table views land.
 let currentView = 'graph';
+function activeView() { return VIEWS[currentView] || VIEWS.graph; }
+
 // Toggle which container fills the canvas region. Idempotent. Cytoscape
 // stays mounted under the hidden #cy so view-flips don't pay the re-init
-// cost; per-view DOM (kanban columns, etc.) renders into #kanban lazily.
+// cost; per-view DOM (kanban columns, etc.) renders into its container lazily
+// via the view's enter() hook.
 function applyView(mode) {
   const prev = currentView;
-  const next = mode === 'kanban' ? 'kanban' : 'graph';
+  const next = VIEWS[mode] ? mode : 'graph';
   currentView = next;
-  const cyEl = document.getElementById('cy');
-  const kbEl = document.getElementById('kanban');
-  if (cyEl) cyEl.classList.toggle('hidden', next !== 'graph');
-  if (kbEl) kbEl.classList.toggle('hidden', next !== 'kanban');
-  document.body.classList.toggle('view-graph', next === 'graph');
-  document.body.classList.toggle('view-kanban', next === 'kanban');
-  // Switching INTO kanban needs an explicit render — fetchGraph may not run
-  // again on its own, and the columns would otherwise look empty.
-  if (next === 'kanban' && prev !== 'kanban') {
-    renderKanban();
+  // Show only the active view's container; gate CSS via the body class.
+  for (const v of Object.values(VIEWS)) {
+    const el = document.getElementById(v.containerId);
+    if (el) el.classList.toggle('hidden', v.id !== next);
+    document.body.classList.toggle(v.bodyClass, v.id === next);
   }
+  // Switching INTO a view may need an explicit (lazy) render — fetchGraph may
+  // not run again on its own, and e.g. kanban columns would look empty.
+  VIEWS[next].enter(prev);
   // Sync the bottom toolbar to the new view (hides cy-only slots when
   // entering kanban, hides tb-kanban-selection when leaving).
   updateToolbar();
@@ -1271,30 +1298,31 @@ function applyView(mode) {
 // the card's own column. Shift the whole kanban left by just enough that the
 // column's right edge sits a margin to the left of the panel. Tracks current
 // shift in a module var so successive recomputes (panel resize, window
-// resize) work against the un-shifted baseline. No-op when not in kanban, no
-// selected card, or panel is closed — in which case the transform clears.
+// resize) work against the un-shifted baseline. Cleared when there's no
+// selected card, the panel is closed, or we're not in kanban view.
 let _kanbanCurrentShift = 0;
 const KANBAN_PANEL_MARGIN = 16;
-function adjustKanbanForPanel() {
+function clearKanbanShift() {
   const kanban = document.getElementById('kanban');
   if (!kanban) return;
-  const clear = () => {
-    if (_kanbanCurrentShift !== 0) {
-      _kanbanCurrentShift = 0;
-      kanban.style.transform = '';
-    }
-  };
-  if (currentView !== 'kanban') return clear();
+  if (_kanbanCurrentShift !== 0) {
+    _kanbanCurrentShift = 0;
+    kanban.style.transform = '';
+  }
+}
+function adjustKanbanLayout() {
+  const kanban = document.getElementById('kanban');
+  if (!kanban) return;
   // Skip on narrow viewports — mobile uses horizontal scroll inside #kanban
   // and the panel will become a bottom-sheet in the responsive roadmap, so
   // shifting doesn't apply.
-  if (window.innerWidth < 768) return clear();
+  if (window.innerWidth < 768) return clearKanbanShift();
   const panel = document.getElementById('panel');
-  if (!panel || panel.classList.contains('hidden')) return clear();
+  if (!panel || panel.classList.contains('hidden')) return clearKanbanShift();
   const selectedCard = document.querySelector('.kb-card.selected');
-  if (!selectedCard) return clear();
+  if (!selectedCard) return clearKanbanShift();
   const column = selectedCard.closest('.kb-column');
-  if (!column) return clear();
+  if (!column) return clearKanbanShift();
   // getBoundingClientRect reflects the current transform; un-shift to get the
   // baseline so the next shift is computed correctly when panel width grows.
   const colRect = column.getBoundingClientRect();
@@ -1311,6 +1339,94 @@ function adjustKanbanForPanel() {
   _kanbanCurrentShift = newShift;
   kanban.style.transform = newShift > 0 ? `translateX(-${newShift}px)` : '';
 }
+// Kept as the stable entry point for the many call sites that recompute
+// layout (panel open/close, resize); dispatches to the active view.
+function adjustKanbanForPanel() { activeView().adjustLayout(); }
+
+// The view registry. Methods reference helpers (updateGraphToolbar,
+// handleKanbanKeydown, peerCursorRefreshKanban, …) declared elsewhere in
+// this file; they run only at call time, so declaration order is fine.
+const VIEWS = {
+  graph: {
+    id: 'graph',
+    containerId: 'cy',
+    bodyClass: 'view-graph',
+    // Cytoscape stays mounted; nothing to render on (re-)entry.
+    enter() {},
+    // Graph view never shifts the kanban; ensure any leftover shift clears.
+    adjustLayout() { clearKanbanShift(); },
+    updateToolbar() { updateGraphToolbar(); },
+    handleKeydown(e) { handleGraphKeydown(e); },
+    // Graph selection is cleared by the shared clearSelection()/cy path.
+    onEscape() {},
+    renderPeerCursors(groups) { peerCursorRefreshGraph(groups); },
+    // No secondary DOM paint target — cy elements are the only target.
+    wipePeerCards() {},
+    paintPeerCard() {},
+    // SSE-driven canvas refresh is handled by the shared fetchGraph path.
+    onRemoteTaskEvent() {},
+    createPrimaryItem() { createNodeAtCenter(); },
+  },
+  kanban: {
+    id: 'kanban',
+    containerId: 'kanban',
+    bodyClass: 'view-kanban',
+    enter(prev) {
+      // First flip into kanban needs an explicit render — the columns would
+      // otherwise look empty. Re-entering kanban (prev already kanban) is a
+      // no-op since the board is already current.
+      if (prev !== 'kanban') renderKanban();
+    },
+    adjustLayout() { adjustKanbanLayout(); },
+    updateToolbar() { updateKanbanToolbar(); },
+    handleKeydown(e) { handleKanbanKeydown(e); },
+    onEscape({ panelWasOpen } = {}) {
+      // Kanban: clear card selection on Esc. hidePanel no longer auto-clears
+      // (mid-flight hides would wipe multi-select), so do it explicitly. When
+      // the panel was open we also clear the cy mirror used for broadcast.
+      document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
+      if (panelWasOpen && cy) cy.elements('.selected').removeClass('selected');
+      updateKanbanToolbar();
+    },
+    renderPeerCursors(groups) { peerCursorRefreshKanban(groups); },
+    wipePeerCards() {
+      document.querySelectorAll('.kb-card.peer-selected, .kb-card.peer-editing').forEach((c) => {
+        c.classList.remove('peer-selected', 'peer-editing');
+        c.style.removeProperty('--peer-color');
+      });
+    },
+    paintPeerCard(elemId, color, isEditing) {
+      // peerSelectionState tracks node + edge ids; cards exist only for nodes
+      // (tasks). Edges are hidden in kanban, so those groups find no card.
+      const card = document.querySelector(`.kb-card[data-task-id="${elemId}"]`);
+      if (!card) return;
+      card.style.setProperty('--peer-color', color);
+      card.classList.add('peer-selected');
+      if (isEditing) card.classList.add('peer-editing');
+    },
+    onRemoteTaskEvent(payload) {
+      // Queue a flash AND a scroll-into-view on the next renderKanban for any
+      // task INSERT/UPDATE. DELETE doesn't need a flash (the card just
+      // vanishes when /tasks no longer returns it). Scroll is gated on
+      // !userInteractedRecently() inside the apply step so an agent edit
+      // doesn't yank the viewport mid-drag or while the user is typing.
+      if (
+        payload && payload.kind === 'tasks'
+        && (payload.op === 'INSERT' || payload.op === 'UPDATE')
+        && payload.id != null
+      ) {
+        queueKanbanFlash(payload.id);
+        queueKanbanScrollIntoView(payload.id);
+      }
+    },
+    createPrimaryItem() {
+      // New task in the selected card's column, falling back to Todo.
+      const selected = document.querySelector('.kb-card.selected');
+      const col = selected && selected.closest('.kb-column');
+      createKanbanTask((col && col.dataset.status) || 'todo');
+    },
+  },
+};
 
 function apiBase() {
   if (activeGraphId == null) {
@@ -1996,12 +2112,12 @@ function fitBottomBar() {
   bar.style.transform = `translateX(-50%) scale(${scale})`;
 }
 
-function updateToolbar() {
-  if (currentView === 'kanban') {
-    updateKanbanToolbar();
-    return;
-  }
-  // Graph-view path. Make sure the kanban slot is hidden after a view flip.
+function updateToolbar() { activeView().updateToolbar(); }
+
+// Graph-view toolbar: show/hide the neutral / node / edge / mixed / creating
+// slots based on the current cy selection mode.
+function updateGraphToolbar() {
+  // Make sure the kanban slot is hidden after a view flip.
   const kanbanSlot = document.getElementById('tb-kanban-selection');
   if (kanbanSlot) kanbanSlot.classList.add('hidden');
   const mode = getSelectionMode();
@@ -6128,12 +6244,10 @@ function applyPeerSelectionToCy() {
     el.removeClass('peer-selected peer-editing');
     el.removeData('peerColor');
   });
-  // Same wipe for kanban cards. Cards are paint-target #2 alongside cy
-  // elements — same source-of-truth (peerSelectionState), parallel render.
-  document.querySelectorAll('.kb-card.peer-selected, .kb-card.peer-editing').forEach((c) => {
-    c.classList.remove('peer-selected', 'peer-editing');
-    c.style.removeProperty('--peer-color');
-  });
+  // Secondary paint target: let the active view mirror peer presence onto its
+  // own DOM (kanban cards). Same source-of-truth (peerSelectionState); the
+  // view owns the DOM-specific wipe. Graph has no secondary target (no-op).
+  activeView().wipePeerCards();
   // Group peers by element id so each element computes its color from the
   // same "lead" peer that the cursor marker uses (editing-first, then by
   // writer_id). Otherwise the node's outline and the marker pill end up
@@ -6177,15 +6291,8 @@ function applyPeerSelectionToCy() {
     // target — the dashed border reads on top of the underlay.
     el.addClass('peer-selected');
     if (g.isEditing) el.addClass('peer-editing');
-    // Kanban: paint the corresponding card if it's rendered. peerSelectionState
-    // tracks node + edge ids; cards exist only for nodes (tasks). Edges are
-    // hidden in kanban, so skip those groups silently.
-    const card = document.querySelector(`.kb-card[data-task-id="${elemId}"]`);
-    if (card) {
-      card.style.setProperty('--peer-color', lead.color);
-      card.classList.add('peer-selected');
-      if (g.isEditing) card.classList.add('peer-editing');
-    }
+    // Mirror onto the active view's secondary DOM target (kanban card).
+    activeView().paintPeerCard(elemId, lead.color, g.isEditing);
   }
   // Refresh labeled cursors in lock-step with the cytoscape highlights.
   if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
@@ -6541,6 +6648,117 @@ function computeLocalCursorSel() {
   return { node_ids: nodeIds, edge_ids: edgeIds, editing: null, cursor_anchor };
 }
 
+// Kanban hotkeys: G (new task in selected card's column, fallback Todo),
+// S (cycle status of the selected card), Delete/Backspace (delete selection).
+// Other keys are no-ops — cytoscape concepts (T/F/E/B/D) don't apply here.
+function handleKanbanKeydown(e) {
+  switch (e.key) {
+    case 'g': case 'G':
+      activeView().createPrimaryItem();
+      break;
+    case 's': case 'S': {
+      const selected = document.querySelector('.kb-card.selected');
+      if (!selected) break;
+      const col = selected.closest('.kb-column');
+      const curStatus = col && col.dataset.status;
+      if (!curStatus) break;
+      const idx = KANBAN_STATUSES.indexOf(curStatus);
+      const next = KANBAN_STATUSES[(idx + 1) % KANBAN_STATUSES.length];
+      const taskId = Number(selected.dataset.taskId);
+      if (Number.isFinite(taskId)) moveKanbanCardToStatus(taskId, next);
+      break;
+    }
+    case 'Delete':
+    case 'Backspace':
+      e.preventDefault();
+      deleteSelectedKanbanCards();
+      break;
+  }
+}
+
+// Graph-view hotkeys: cy-centric — fit/tidy, node create, arrow-move, edge
+// creation/type/direction, status cycle, color palette, delete.
+function handleGraphKeydown(e) {
+  switch (e.key) {
+    case 'f':
+    case 'F':
+      cy.fit(undefined, 50);
+      showHint('Zoom to fit');
+      break;
+    case 't':
+    case 'T':
+      tidyAndFit();
+      break;
+    case 'g':
+    case 'G':
+      activeView().createPrimaryItem();
+      break;
+    case 'ArrowUp':
+    case 'ArrowDown':
+    case 'ArrowLeft':
+    case 'ArrowRight':
+      if (moveSelection(e.key)) e.preventDefault();
+      break;
+    case 'e':
+    case 'E':
+      // E means: cycle direction in an in-progress edge, OR cycle the type
+      // of a selected existing edge, OR start edge creation from a selected
+      // node — depending on current state.
+      if (edgeCreation) {
+        cycleEdgeCreationDirection();
+      } else if (cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length === 1) {
+        cycleSelectedEdgeType();
+      } else {
+        startEdgeCreation();
+      }
+      break;
+    case 's':
+    case 'S':
+      cycleSelectedNodeStatus();
+      break;
+    case 'b':
+    case 'B':
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && openColorPalette()) e.preventDefault();
+      break;
+    case 'c':
+    case 'C':
+      // Edge-context color shortcut. C opens the color palette only when
+      // an edge is selected — nodes still use B (above). Surfaced on the
+      // tb-edge toolbar as the canonical edge-color hotkey.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey
+          && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length >= 1
+          && openColorPalette()) {
+        e.preventDefault();
+      }
+      break;
+    case 'd':
+    case 'D':
+      // Edge-context direction shortcut. D cycles the selected edge's
+      // direction (forward → related → backward). E still works as the
+      // legacy shortcut + the node-context "start edge creation" key.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey
+          && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length === 1) {
+        cycleSelectedEdgeType();
+        e.preventDefault();
+      }
+      break;
+    case 'Enter':
+      if (edgeTypeEditing) {
+        e.preventDefault();
+        commitEdgeTypeEdit();
+      } else if (statusEditing) {
+        e.preventDefault();
+        commitStatusEdit();
+      }
+      break;
+    case 'Delete':
+    case 'Backspace':
+      e.preventDefault();
+      deleteSelected();
+      break;
+  }
+}
+
 function peerCursorRefresh() {
   if (!cy) return;
   // 1. Group peers by anchor key. One DOM marker per group. Idle HUMAN
@@ -6585,14 +6803,16 @@ function peerCursorRefresh() {
       }
     }
   }
-  // Kanban view uses card DOM rects instead of cy renderedBoundingBox.
-  // Skip edge groups (no edges visible in kanban) and let cy-coord groups
-  // fall through to the graph-view path below.
-  if (currentView === 'kanban') {
-    peerCursorRefreshKanban(groups);
-    return;
-  }
+  // Hand off to the active view for positioning. Graph anchors off cy
+  // rendered bounding boxes and slot-picks around nodes; kanban anchors off
+  // card DOM rects. Same `groups`, different geometry.
+  activeView().renderPeerCursors(groups);
+}
 
+// Graph-view cursor positioning: anchor markers off cy rendered bounding
+// boxes and slot-pick around neighbouring nodes to avoid overlaps.
+function peerCursorRefreshGraph(groups) {
+  if (!cy) return;
   // 2. Render each group; collect anchor bboxes for slot picking. Build the
   // "other nodes" bbox list once.
   const allBboxes = cy.nodes().map((n) => ({ id: n.id(), bb: n.renderedBoundingBox() }));
@@ -6775,20 +6995,10 @@ function openGraphEventStream(id) {
 
 async function refreshFromEvent(payload) {
   if (!cy) return;
-  // Kanban flash + scroll hook — queue a flash AND a scroll-into-view on
-  // the next renderKanban for any task INSERT/UPDATE. DELETE doesn't need
-  // a flash (the card just vanishes when /tasks no longer returns it).
-  // Scroll is gated on !userInteractedRecently() inside the apply step so
-  // an agent edit doesn't yank the viewport mid-drag or while the user is typing.
-  if (
-    currentView === 'kanban'
-    && payload && payload.kind === 'tasks'
-    && (payload.op === 'INSERT' || payload.op === 'UPDATE')
-    && payload.id != null
-  ) {
-    queueKanbanFlash(payload.id);
-    queueKanbanScrollIntoView(payload.id);
-  }
+  // Let the active view react to the task event (kanban queues a flash +
+  // scroll-into-view on its next render; graph relies on the canvas refresh
+  // below). The view owns its own INSERT/UPDATE handling.
+  activeView().onRemoteTaskEvent(payload);
   // Graph-row UPDATE (anon_role / settings / name / description). Refetch
   // the row first so currentGraph + viewer_can_edit are fresh, then run a
   // normal canvas refresh — fetchGraph's 403 branch handles access
@@ -7699,21 +7909,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (isPanelOpen()) {
         hidePanel();
-        // Kanban: close panel AND clear selection in one Esc press.
-        // hidePanel no longer auto-clears (mid-flight hides would wipe
-        // multi-select), so do it here explicitly.
-        if (currentView === 'kanban') {
-          document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
-          if (cy) cy.elements('.selected').removeClass('selected');
-          updateKanbanToolbar();
-        }
+        // Per-view selection clearing on Esc. hidePanel no longer auto-clears
+        // (mid-flight hides would wipe multi-select), so the view does it here.
+        activeView().onEscape({ panelWasOpen: true });
         e.preventDefault();
       } else {
         clearSelection();
-        if (currentView === 'kanban') {
-          document.querySelectorAll('.kb-card.selected').forEach((c) => c.classList.remove('selected'));
-          updateKanbanToolbar();
-        }
+        activeView().onEscape({ panelWasOpen: false });
       }
       return;
     }
@@ -7727,116 +7929,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     if (inField) return;
-    // Kanban-specific hotkeys handle G (new task in selected card's column,
-    // fallback todo) and S (cycle status of selected card). Other keys fall
-    // through to no-op in kanban — cytoscape concepts (T/F/E/B) don't apply.
-    if (currentView === 'kanban') {
-      switch (e.key) {
-        case 'g': case 'G': {
-          const selected = document.querySelector('.kb-card.selected');
-          const col = selected && selected.closest('.kb-column');
-          createKanbanTask((col && col.dataset.status) || 'todo');
-          break;
-        }
-        case 's': case 'S': {
-          const selected = document.querySelector('.kb-card.selected');
-          if (!selected) break;
-          const col = selected.closest('.kb-column');
-          const curStatus = col && col.dataset.status;
-          if (!curStatus) break;
-          const idx = KANBAN_STATUSES.indexOf(curStatus);
-          const next = KANBAN_STATUSES[(idx + 1) % KANBAN_STATUSES.length];
-          const taskId = Number(selected.dataset.taskId);
-          if (Number.isFinite(taskId)) moveKanbanCardToStatus(taskId, next);
-          break;
-        }
-        case 'Delete':
-        case 'Backspace':
-          e.preventDefault();
-          deleteSelectedKanbanCards();
-          break;
-      }
-      return;
-    }
-
-    switch (e.key) {
-      case 'f':
-      case 'F':
-        cy.fit(undefined, 50);
-        showHint('Zoom to fit');
-        break;
-      case 't':
-      case 'T':
-        tidyAndFit();
-        break;
-      case 'g':
-      case 'G':
-        createNodeAtCenter();
-        break;
-      case 'ArrowUp':
-      case 'ArrowDown':
-      case 'ArrowLeft':
-      case 'ArrowRight':
-        if (moveSelection(e.key)) e.preventDefault();
-        break;
-      case 'e':
-      case 'E':
-        // E means: cycle direction in an in-progress edge, OR cycle the type
-        // of a selected existing edge, OR start edge creation from a selected
-        // node — depending on current state.
-        if (edgeCreation) {
-          cycleEdgeCreationDirection();
-        } else if (cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length === 1) {
-          cycleSelectedEdgeType();
-        } else {
-          startEdgeCreation();
-        }
-        break;
-      case 's':
-      case 'S':
-        cycleSelectedNodeStatus();
-        break;
-      case 'b':
-      case 'B':
-        if (!e.metaKey && !e.ctrlKey && !e.altKey && openColorPalette()) e.preventDefault();
-        break;
-      case 'c':
-      case 'C':
-        // Edge-context color shortcut. C opens the color palette only when
-        // an edge is selected — nodes still use B (above). Surfaced on the
-        // tb-edge toolbar as the canonical edge-color hotkey.
-        if (!e.metaKey && !e.ctrlKey && !e.altKey
-            && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length >= 1
-            && openColorPalette()) {
-          e.preventDefault();
-        }
-        break;
-      case 'd':
-      case 'D':
-        // Edge-context direction shortcut. D cycles the selected edge's
-        // direction (forward → related → backward). E still works as the
-        // legacy shortcut + the node-context "start edge creation" key.
-        if (!e.metaKey && !e.ctrlKey && !e.altKey
-            && cy.edges('.selected').filter((x) => !x.id().startsWith('__')).length === 1) {
-          cycleSelectedEdgeType();
-          e.preventDefault();
-        }
-        break;
-      case 'Enter':
-        if (edgeTypeEditing) {
-          e.preventDefault();
-          commitEdgeTypeEdit();
-        } else if (statusEditing) {
-          e.preventDefault();
-          commitStatusEdit();
-        }
-        break;
-      case 'Delete':
-      case 'Backspace':
-        e.preventDefault();
-        deleteSelected();
-        break;
-    }
+    // Per-view hotkeys: each view owns its keymap. Graph carries the cy
+    // concepts (edges, tidy, fit, arrow-move); kanban handles column add +
+    // status moves. See handleGraphKeydown / handleKanbanKeydown.
+    activeView().handleKeydown(e);
   });
 
   // --- Kanban column add buttons (one per column) ---
@@ -7939,17 +8035,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Toolbar buttons ---
-  // New button branches on view: graph → cytoscape ghost flow; kanban →
-  // createKanbanTask in the selected card's column (or Todo). Matches the
-  // G hotkey's per-view behavior.
+  // The "New" button is the active view's primary-create control: graph →
+  // cytoscape ghost flow; kanban → new task in the selected card's column
+  // (or Todo). Same dispatch the G hotkey uses.
   document.getElementById('btn-new-node').addEventListener('click', () => {
-    if (currentView === 'kanban') {
-      const selected = document.querySelector('.kb-card.selected');
-      const col = selected && selected.closest('.kb-column');
-      createKanbanTask((col && col.dataset.status) || 'todo');
-    } else {
-      createNodeAtCenter();
-    }
+    activeView().createPrimaryItem();
   });
   document.getElementById('btn-status').addEventListener('click', cycleSelectedNodeStatus);
   document.getElementById('btn-color-node').addEventListener('click', (e) => openColorPalette(e.currentTarget));
