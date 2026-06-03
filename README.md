@@ -1369,10 +1369,16 @@ Completion checklist — the detailed entries below carry the full context.
     `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs"
     as a follow-up gated by the access model — never leak nodes
     across owners.
-  - **References to study.** Karpathy's
-    [`graphify`](https://github.com/karpathy/graphify) on turning a
-    body of notes into a navigable concept graph — the ingestion-
-    and-embed pipeline overlaps with what we'd build here. Microsoft's
+  - **References to study.** `safishamsi`'s
+    [`graphify`](https://github.com/safishamsi/graphify) (Karpathy-
+    *inspired*, not by Karpathy) on turning a body of notes into a
+    navigable concept graph. Notably it uses **no embeddings/vectors** —
+    at index time an LLM distills the corpus into a `graph.json` of
+    named concept nodes + tagged edges + Leiden community clusters; at
+    query time it keyword-matches seed nodes then BFS-walks the subgraph
+    and hands only that to the LLM (~1,700 vs ~123,000 raw tokens). The
+    "relatedness" embeddings would compute is instead precomputed into
+    explicit edges. Microsoft's
     [`graphrag`](https://github.com/microsoft/graphrag) on doing
     retrieval over a graph-structured corpus rather than a flat
     embedding pile — closer to our actual shape, since our data
