@@ -1174,6 +1174,9 @@ Completion checklist — the detailed entries below carry the full context.
 
 **Reach — aspirational, unscheduled**
 
+- [ ] **Autonomous multimodal ingestion → KB graph** — agent builds a concept
+  graph from pasted sources; the ingestion half of KB search. (Future; not
+  the current search work.)
 - [ ] **Subagent fanout** — parallel subagents claiming ready tasks.
 - [ ] **True pause/play** — server holds the next PATCH while paused.
 - [ ] **Upload orphan reaper** — sweep unreferenced `uploads` rows.
@@ -1417,21 +1420,11 @@ Completion checklist — the detailed entries below carry the full context.
     [HybridRAG](https://arxiv.org/pdf/2408.04948) paper (KG + vector beats
     either alone) — the efficiency + fusion ideas worth lifting.
 
-  **Future: multimodal ingestion + autonomous KB construction.** graphify
-  ingests a *folder of mixed inputs* — code (tree-sitter ASTs), docs/papers
-  (LLM concept + relationship extraction), and images (vision extraction) —
-  and normalizes them all into one node/edge graph. Our equivalent: extend
-  the `graphtask` agent skill so an agent (in Claude Code) can be handed **a
-  pile of links / files / pasted sources** and *autonomously research and
-  build a knowledge-base graph* — fetch each source, extract the concepts
-  and the relationships between them, create nodes (with bodies) and typed
-  edges, and keep growing the graph as it reads. The hybrid + graph search
-  above is then what makes that graph *queryable* after the fact. Two halves
-  of the same KB story: this section is **retrieval**; the autonomous
-  builder is **ingestion**. The agent skill already creates nodes/edges via
-  the REST API today — the gap is a guided "ingest these sources → concept
-  graph" workflow (provenance on edges, hub nodes for navigability, source
-  citations in bodies). See the *agent skill construction guidance* notes.
+  This entry is the **retrieval** half of the KB story; its **ingestion**
+  counterpart (autonomously *building* a KB graph from sources) is a separate
+  future feature — see *Autonomous multimodal ingestion* under Reach. This
+  search work does **not** depend on it; we're building the search engine
+  over graphs that already exist.
 
   Pull this into active work once one of: (a) graphs we use daily
   cross the size where manual recall stops working, (b) an agent
@@ -1443,6 +1436,38 @@ Completion checklist — the detailed entries below carry the full context.
 Aspirational — interesting if we get to them, but we may never. Not
 actively planned; pull into Planned only if user feedback or a
 concrete need surfaces.
+
+- **Autonomous multimodal ingestion → KB graph.** ⬜ The **ingestion** half
+  of the knowledge-base story (the retrieval half is *Knowledge-base search*
+  under Planned). graphify ingests a *folder of mixed inputs* — code
+  (tree-sitter ASTs), docs/papers (LLM concept + relationship extraction),
+  and images (vision extraction) — and normalizes them into one node/edge
+  graph. Our equivalent: extend the `graphtask` agent skill so an agent (in
+  Claude Code) can be handed **a pile of links / files / pasted sources** and
+  *autonomously research and build a knowledge-base graph* — fetch each
+  source, extract the concepts and their relationships, create nodes (with
+  bodies) and typed edges, and keep growing the graph as it reads. The agent
+  skill already creates nodes/edges via the REST API today; the gap is a
+  guided "ingest these sources → concept graph" workflow.
+
+  **When we build this, teach the agent skill these construction habits**
+  (lifted from graphify — *not added to the skill yet, to avoid confusing the
+  agent before the feature exists*):
+  - **Provenance on edges** — when drawing a `related` edge, the connected
+    nodes' bodies say whether the connection is *sourced* (cite it) or
+    *inferred* (say so). The node confirmation ladder (claim → being checked
+    → sourced → human-confirmed), applied to edges. Don't draw hunches as
+    facts.
+  - **Hub nodes** — for a large concept map, an explicit index/hub node per
+    major theme (graphify's high-degree "god nodes"), so the graph stays
+    navigable instead of a flat mesh.
+  - **Relationships are edges, not prose** — and one concept per node.
+  - *Not* a construction concern: community detection / centrality ranking
+    (Leiden, PageRank) — those are query-time jobs for the search layer, not
+    something the ingesting agent hand-computes.
+
+  Explicitly **out of scope for the current search work** — we're building
+  the search engine over graphs that already exist; ingestion comes later.
 
 - **Subagent fanout.** ⬜ Today one agent token = one Claude Code session
   walking the graph sequentially. Future: spawn N subagents in parallel,
