@@ -1151,11 +1151,11 @@ Completion checklist — the detailed entries below carry the full context.
   per-user view preference. (`public/app.js`)
 - [x] **Optimistic concurrency (OCC) + three-way merge** — `version` /
   `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`.
+- [x] **Modular UI primitives** — `VIEWS` registry + `View` interface; per-view
+  branching now dispatches through `activeView()`. (`public/app.js`)
 
 **Planned — not started**
 
-- [ ] **Modular UI primitives** — `View` interface refactor; do *before* the
-  first new view.
 - [ ] **Future views** — alternate lenses on the same `tasks`/`edges` data,
   added one at a time after the modular primitives refactor:
   - [ ] **Tech tree** — Civ-style layered DAG, read-only.
@@ -1204,21 +1204,21 @@ Completion checklist — the detailed entries below carry the full context.
     a time once a second view shakes out the per-view abstractions
     (see *Modular UI primitives* below).
 
-- **Modular UI primitives.** ⬜ With Kanban shipped, several surfaces now
-  carry inline `if (currentView === 'kanban') { … }` branches: the
-  toolbar's button visibility (CSS-gated), the global keydown switch
-  (per-view branch), `peerCursorRefresh` (per-view positioning),
-  `applyPeerSelectionToCy` (parallel cy + card paint paths), and
-  `applyView` itself. Two views' worth of branching is fine; a third
-  starts to compound. Before view three (tech tree), refactor toward a
-  small interface pattern: a `View` shape that `GraphView`,
-  `KanbanView`, `TechTreeView`, etc. fulfill. Each view declares its
-  applicable selection modes, hotkeys, peer-anchor lookup, agent-follow
-  target, and rendered controls. Same idea applies to the hotkey legend
-  and any other UI surface that meaningfully diverges by view. Inline
-  conditionals are still cheap for two; pull the abstraction out before
-  view three lands so the third view doesn't double the per-view
-  conditional sprawl.
+- **Modular UI primitives.** ✅ The inline `if (currentView === 'kanban') { … }`
+  branches that had accreted across the codebase — toolbar button visibility,
+  the global keydown switch, `peerCursorRefresh` positioning,
+  `applyPeerSelectionToCy`'s card paint, the Escape handler, SSE task hooks,
+  the "New" control, and `applyView` itself — now dispatch through a single
+  `VIEWS` registry. Each view is one entry implementing a shared `View`
+  interface (`enter`, `adjustLayout`, `updateToolbar`, `handleKeydown`,
+  `onEscape`, `renderPeerCursors`, `wipePeerCards` / `paintPeerCard`,
+  `onRemoteTaskEvent`, `createPrimaryItem`), resolved via `activeView()`.
+  Adding a third view (tech tree) now means adding a registry entry, not
+  threading another conditional through every surface. The registry also
+  documents the forward-looking extension points — a view's agent-follow
+  target and applicable selection modes — for the views still to land. See
+  the "View registry (modular UI primitives)" block at the top of
+  `public/app.js`.
 
 - **Responsive layout system.** ⬜ Most of the canvas chrome
   (`#presence-bar`, `.push-button`, `#panel`, peer-cursor placement,
