@@ -1165,10 +1165,12 @@ Completion checklist — the detailed entries below carry the full context.
   panel + avatar-bar reflow.
 - [ ] **Configurable custom fields** — graph-declared typed task fields.
 - [ ] **Custom ordering** — per-graph, per-view sort/grouping (needs custom fields).
-- [ ] **In-graph find (Cmd/Ctrl+F)** — intercept the browser find hotkey;
-  ranked keyword search over the current graph's node title / description /
-  body, jump-to-node.
-- [ ] **Knowledge-base search across graphs** — search over node bodies.
+- [ ] **Find / search bar (Cmd/Ctrl+F)** — intercept the browser find
+  hotkey; a search bar whose Enter runs the hybrid + graph KB search,
+  jump-to-node. (UI front door for the item below.)
+- [ ] **Knowledge-base search (hybrid + graph)** — BM25 (`pg_search`) +
+  pgvector → RRF → cross-encoder rerank → traverse our `edges`. Postgres-
+  native; Cmd/Ctrl+F is its UI.
 
 **Reach — aspirational, unscheduled**
 
@@ -1306,47 +1308,39 @@ Completion checklist — the detailed entries below carry the full context.
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
 
-- **In-graph find (Cmd/Ctrl+F).** ⬜ Today pressing Cmd/Ctrl+F on the graph
-  triggers the *browser's* native find — which reports "0/0" even when the
-  word is plainly on screen, because Cytoscape paints node labels onto a
-  `<canvas>` and the browser only searches the DOM text layer. Replace that
-  dead-end with an in-app find bar scoped to the current graph.
+- **Find / search bar (Cmd/Ctrl+F) — the front door to KB search.** ⬜
+  Today pressing Cmd/Ctrl+F triggers the *browser's* native find — which
+  reports "0/0" even when the word is plainly on screen, because Cytoscape
+  paints node labels onto a `<canvas>` and the browser only searches the DOM
+  text layer. Replace that dead-end with our own search bar that drives the
+  hybrid + graph search below. *(Tracked as graph task #172, the UI layer;
+  depends on #171, the search backend.)*
 
   - **Interception.** Intercept the hotkey the same way Cmd/Ctrl+K already
     opens graph settings (`public/app.js` global keydown handler, ~line
     7882: `e.preventDefault(); openGraphSettings();`). Add a sibling branch
     for `e.key === 'f'` that `preventDefault()`s the native find and opens
-    the in-app find bar. No conflict with the bare `f` graph hotkey
-    (zoom-to-fit, `handleGraphKeydown`) — that one carries no modifier.
+    the bar. No conflict with the bare `f` graph hotkey (zoom-to-fit,
+    `handleGraphKeydown`) — that one carries no modifier.
 
-  - **Search surface.** Lexical keyword match over each node in the current
-    graph across three fields: **title**, **description**, **body**. Client-
-    side over the already-loaded `tasks` is enough at current graph sizes;
-    no new endpoint required to start.
+  - **Cmd+F just shows a text input bar.** Pressing **Enter triggers our
+    search mechanism** — the lexical (BM25) + vector (hybrid) + graph
+    pipeline in *Knowledge-base search* below. Enter *runs* the search; it
+    is not a live filter.
 
-  - **Ranking — tiered by field, then by frequency.** Results group by the
-    strongest field the keyword hits, in this order:
-    1. **Title matches** — top of the list. Within the group, order by how
-       many times the keyword appears (more = higher); tie-break by
-       `created_at` (newest first).
-    2. **Description matches** — next group, ordered the same way (count
-       desc, then newest-first).
-    3. **Body matches** — last group, same ordering.
+  - **Results.** A ranked list from the search backend; ↑/↓ (or Enter /
+    Shift+Enter) walk the results; the active result selects + centers its
+    node on the graph (`cy`). Esc closes the bar and restores prior
+    selection.
 
-    A node is ranked by its strongest field only (a title hit outranks a
-    body hit on the same node — it doesn't appear in every group it
-    matches).
-
-  - **UX.** Find bar overlay (top of canvas, like the screenshot's native
-    bar but ours); type to filter live; ↑/↓ (or Enter / Shift+Enter) walk
-    the ranked results; the active result selects + centers its node on the
-    graph (`cy`). Esc closes the bar and restores prior selection.
-
-  - **Relationship to the cross-graph KB search below.** Different feature,
-    don't merge them. This one is *in-graph, client-side, lexical, instant*
-    — the find-on-this-page replacement. The KB search below is *cross-
-    graph, server-side, semantic*. They can share a relevance vocabulary
-    later, but this ships first and standalone.
+  - **Optional instant preview.** While typing, *before* Enter, we may show
+    a zero-latency local preview over the current graph's already-loaded
+    nodes — lexical substring over **title / description / body**, tiered by
+    field (title hits first, then description, then body; within a tier
+    order by match frequency, newest-first tie-break; a node ranks by its
+    strongest field only). This local leg is the same matcher the backend's
+    BM25 stage formalizes — the Enter-triggered query is cross-graph,
+    hybrid, and graph-expanded.
 
 - **Knowledge-base search across graphs.** ⬜ Each node body is a piece
   of markdown that evolves with the work, so a long-lived graph
@@ -1356,33 +1350,72 @@ Completion checklist — the detailed entries below carry the full context.
   ("where did I write about cookie storage?") and agents ("read what
   this user already knows about auth before planning").
 
-  Open questions to decide before building:
-  - **Backend.** Likely candidates: pgvector inside the existing
-    Postgres (no new infra; embed task bodies on PATCH; semantic +
-    keyword in one place), Typesense / Meilisearch (faster text
-    relevance, separate process), or a hybrid (pg full-text for
-    lexical, pgvector for semantic). Start from scratch rather than
-    pulling in a heavyweight RAG framework — the corpus is just
-    `tasks.content` rows, indexing on the existing `updated_at`
-    trigger is straightforward.
+  **Architecture — decided (tracked as graph task #171).** Build our own
+  hybrid + graph search on Postgres, taking the best concepts from the
+  field rather than adopting any one framework. Postgres *is* best-in-class
+  at our scale — on one condition: don't use vanilla full-text.
+
+  - **Retrieval recipe (this drives accuracy; it's store-agnostic).**
+    Lexical (BM25) + dense (vector) candidate generation, top ~100 each →
+    fuse with **Reciprocal Rank Fusion (RRF, k=60)** (rank-based, no score
+    normalization) → **cross-encoder rerank** the top 20–50 → **graph
+    expansion**: seed from the reranked hits, then traverse our existing
+    `edges` (k-hop, or Personalized PageRank à la HippoRAG) for multi-hop
+    concepts. Get recall@50 solid *before* layering the reranker — a
+    reranker can only reorder what retrieval already found.
+  - **Storage (Postgres-native — free + self-hostable).**
+    - **Dense:** `pgvector` (HNSW). Matches/beats Qdrant/Milvus under ~50M
+      vectors; our graphs are orders smaller. Embed `tasks.content` on the
+      existing `updated_at` trigger.
+    - **Lexical:** real BM25, **NOT `ts_rank`.** Built-in FTS has no IDF and
+      no document-length normalization — adequate, not best. Use **ParadeDB
+      `pg_search`** (embeds Tantivy, a Rust Lucene; Elasticsearch-equivalent
+      BM25 as a native index) or VectorChord-bm25.
+    - **Rerank:** a self-hosted cross-encoder (`bge-reranker-v2-m3` /
+      `Qwen3-Reranker`) — the single biggest accuracy lever (reranking alone
+      ~3× nDCG@10 on hard benches; ~48% end-to-end retrieval lift), ~zero
+      marginal cost.
+  - **Why this is the *best* path, not just the easy one.** Dedicated
+    engines (Qdrant / Milvus / Elasticsearch / Neo4j) only pull ahead past
+    50–100M vectors or when horizontal scale is needed — task-graphs won't
+    hit that, and the DB is rarely even the bottleneck (embedding latency
+    dominates). And our unfair advantage: **our data is already a graph**
+    (authored nodes + edges), so we skip the expensive LLM graph-*extraction*
+    step every framework below pays for. The relatedness they compute, we
+    already have for free.
+  - **UI.** Cmd/Ctrl+F is the front door (see *Find / search bar* above):
+    the bar takes a query, **Enter runs this pipeline.**
   - **Scope.** Per-graph search first (lives next to the existing
-    `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs"
-    as a follow-up gated by the access model — never leak nodes
-    across owners.
-  - **References to study.** `safishamsi`'s
-    [`graphify`](https://github.com/safishamsi/graphify) (Karpathy-
-    *inspired*, not by Karpathy) on turning a body of notes into a
-    navigable concept graph. Notably it uses **no embeddings/vectors** —
-    at index time an LLM distills the corpus into a `graph.json` of
-    named concept nodes + tagged edges + Leiden community clusters; at
-    query time it keyword-matches seed nodes then BFS-walks the subgraph
-    and hands only that to the LLM (~1,700 vs ~123,000 raw tokens). The
-    "relatedness" embeddings would compute is instead precomputed into
-    explicit edges. Microsoft's
-    [`graphrag`](https://github.com/microsoft/graphrag) on doing
-    retrieval over a graph-structured corpus rather than a flat
-    embedding pile — closer to our actual shape, since our data
-    already lives as nodes + edges.
+    `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs" as a
+    follow-up gated by the access model — never leak nodes across owners.
+
+  **References — best-of concepts to borrow (not adopt wholesale).**
+  - `safishamsi`'s [`graphify`](https://github.com/safishamsi/graphify)
+    (Karpathy-*inspired*, not by Karpathy) — turns a folder into a queryable
+    concept graph with **no embeddings/vectors**. A linear pipeline
+    (`detect → extract → build_graph → cluster → analyze → report →
+    export`) builds a `graph.json`: nodes are entities/concepts, edges are
+    **confidence-tagged** (`EXTRACTED` = stated in source like an import or
+    call; `INFERRED` = deduced, e.g. call-graph 2nd pass or co-occurrence;
+    `AMBIGUOUS` = flagged for review). Concepts come from tree-sitter ASTs
+    (code), LLM extraction (docs/papers), vision (images); **Leiden**
+    community detection clusters them and emits per-cluster wiki articles +
+    "god nodes" (highest-degree hubs). SHA256 cache rebuilds only changed
+    files. Query time = keyword-match seed nodes → BFS the subgraph → hand
+    only that to the LLM (~1,700 vs ~123,000 raw tokens). *The takeaway for
+    us: relatedness encoded as explicit typed/confidence-tagged edges —
+    which we already author by hand.*
+  - Microsoft [`graphrag`](https://github.com/microsoft/graphrag) — local
+    search (seed entities → fan out k-hops) vs global search (community
+    summaries). The seed-then-traverse pattern is exactly our graph leg.
+  - [Neo4j GraphRAG](https://neo4j.com/blog/developer/enhancing-hybrid-retrieval-graphrag-python-package/)
+    `HybridCypherRetriever` — vector + full-text → Cypher traversal; the
+    canonical "hybrid + graph" shape we're rebuilding in Postgres.
+  - [LightRAG](https://github.com/hkuds/lightrag) (dual-level: entity +
+    theme), **HippoRAG** (Personalized PageRank traversal), Microsoft
+    **LazyGraphRAG** (defer summarization to query time), and the
+    [HybridRAG](https://arxiv.org/pdf/2408.04948) paper (KG + vector beats
+    either alone) — the efficiency + fusion ideas worth lifting.
 
   Pull this into active work once one of: (a) graphs we use daily
   cross the size where manual recall stops working, (b) an agent
