@@ -620,6 +620,7 @@ body {
    separator. */
 body.view-kanban #btn-zoom-fit,
 body.view-kanban #btn-tidy,
+body.view-kanban #tb-neutral-count,
 body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   display: none;
 }
