@@ -1417,6 +1417,22 @@ Completion checklist — the detailed entries below carry the full context.
     [HybridRAG](https://arxiv.org/pdf/2408.04948) paper (KG + vector beats
     either alone) — the efficiency + fusion ideas worth lifting.
 
+  **Future: multimodal ingestion + autonomous KB construction.** graphify
+  ingests a *folder of mixed inputs* — code (tree-sitter ASTs), docs/papers
+  (LLM concept + relationship extraction), and images (vision extraction) —
+  and normalizes them all into one node/edge graph. Our equivalent: extend
+  the `graphtask` agent skill so an agent (in Claude Code) can be handed **a
+  pile of links / files / pasted sources** and *autonomously research and
+  build a knowledge-base graph* — fetch each source, extract the concepts
+  and the relationships between them, create nodes (with bodies) and typed
+  edges, and keep growing the graph as it reads. The hybrid + graph search
+  above is then what makes that graph *queryable* after the fact. Two halves
+  of the same KB story: this section is **retrieval**; the autonomous
+  builder is **ingestion**. The agent skill already creates nodes/edges via
+  the REST API today — the gap is a guided "ingest these sources → concept
+  graph" workflow (provenance on edges, hub nodes for navigability, source
+  citations in bodies). See the *agent skill construction guidance* notes.
+
   Pull this into active work once one of: (a) graphs we use daily
   cross the size where manual recall stops working, (b) an agent
   workflow asks the question "what does this graph already say
