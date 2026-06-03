@@ -126,6 +126,16 @@ The same primitive (markdown nodes + dependency/related edges + status) covers m
 
 If the user describes work that doesn't fit a row above but has structure, **propose the graph anyway** — the data model is general; the rows above are starting points, not the menu.
 
+### Building research & concept graphs to stay queryable
+
+A concept or relationship graph is a knowledge base — build it so "what do we already know about X?" stays answerable weeks later, and so any later search has clean structure to traverse. Three habits (adapted from concept-graph tools like graphify):
+
+- **Signal provenance on every connection.** When you draw a `related` edge in a research graph, make its *basis* explicit in the connected nodes' bodies: is this connection **stated in a source** (cite it) or **your inference** (say so)? A reader trusts a sourced link differently than a deduced one. Don't draw speculative edges as if they were facts — if a connection is a hunch, note it in the body and add the edge only once you've confirmed it. This is the node confirmation ladder (claim → being checked → sourced → human-confirmed) applied to edges too.
+- **Add hub nodes for major themes.** In a large concept map, create an explicit index/hub node per major theme and connect its cluster to it, rather than leaving a flat mesh. High-degree hubs are what make a graph navigable — they're the anchors a human (or an agent) starts from when asking "what's the stuff about auth?".
+- **One concept per node; relationships are edges, not prose.** If finding A relates to finding C, that's an *edge* — not a sentence buried in A's body. The point is that the structure is queryable; connections trapped in prose aren't.
+
+What **not** to do: don't hand-compute communities/centrality or invent an edge-confidence enum while building — clustering and ranking are query-time jobs for a search layer, not construction chores. Your job is clean nodes, honest edges, and cited bodies; the structure does the rest.
+
 ### Strong triggers — reach for the graph when you see these
 
 - Just exited Plan mode, or the user approved a multi-step plan.
