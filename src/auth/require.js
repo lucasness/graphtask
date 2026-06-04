@@ -8,6 +8,7 @@
 // access.js read directly off the row.
 import * as presence from '../presence.js';
 import { canEdit, canManage, canRead, loadGraph, loadMembership } from './access.js';
+import { resolveAgentName } from '../writerName.js';
 
 const CHECKS = { read: canRead, edit: canEdit, manage: canManage };
 
@@ -34,10 +35,18 @@ export function requireGraph(level) {
     // counts as "I'm here" and refreshes the avatar TTL. Matches the Phase A
     // behavior that lived in app.js, but now only fires after the ACL passes.
     if (req.method !== 'GET' && req.writer?.id) {
+      // Agents are named authoritatively from the token owner (the operator),
+      // not the client-sent X-Writer-Name — which is seeded from the repo's
+      // git author and is wrong on shared repos. Humans pass through unchanged:
+      // the browser owns its identity (Clerk name / rename modal / email), and
+      // this touch fires for human writes too, so we must not override them.
+      const name = req.writer.type === 'agent'
+        ? resolveAgentName({ user: req.user, clientName: req.writer.name })
+        : req.writer.name;
       presence.touch(
         graph.id,
         req.writer.id,
-        req.writer.name,
+        name,
         req.writer.type,
         req.user?.id ?? null,
       );
