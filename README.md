@@ -1391,6 +1391,46 @@ Completion checklist — the detailed entries below carry the full context.
   - **Scope.** Per-graph search first (lives next to the existing
     `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs" as a
     follow-up gated by the access model — never leak nodes across owners.
+  - **Indexing — both sides get embedded.** Cosine similarity needs vectors
+    on the query *and* the content, so node **content is embedded at write
+    time** (`tasks.content` → a `pgvector` column, on the `updated_at`
+    trigger; hash the content to skip re-embedding unchanged nodes) and the
+    **query is embedded at search time**. The lexical (BM25/substring) leg
+    needs *no* embeddings — only the vector leg does. That asymmetry is what
+    makes the tiers below possible.
+
+  **Deployment & self-host tiers — search is progressive enhancement.**
+  Search degrades cleanly by available compute: it runs on a laptop with zero
+  ML and scales up to a GPU. Each tier is an opt-in config flag; the floor
+  needs no models at all, so self-hosters turn on only what their hardware
+  supports.
+
+  - **Tier 0 — Lexical** *(always on)* — BM25 / substring find. Needs only
+    Postgres. Runs on any box. This is the Cmd+F floor.
+  - **+ Graph expansion** *(always on)* — expand hits across `edges`. SQL
+    only, **no model** — so it layers onto any tier for free.
+  - **Tier 1 — Semantic** *(opt-in)* — vector search via `pgvector`. Needs an
+    **embedding model at *both* write time (to index content) and query
+    time**. Floor: a small CPU model (e5-small ~118M, ~1–2 GB RAM), or an
+    embedding API / Modal. No model configured → this tier stays off and
+    lexical still works.
+  - **Tier 2 — Rerank** *(opt-in)* — cross-encoder precision. Needs a
+    **reranker** — a small one on CPU, or a GPU / Modal. The heaviest tier;
+    leave it off on a constrained box and Tier 0/1 still deliver.
+
+  **How the two deployments differ:**
+  - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the
+    Wafer; embedding + reranking run on **Modal** (serverless GPU,
+    scale-to-zero, ~free at our volume) so the ML never contends with the
+    Claude Code process on the box. Full topology + costs in graph task #173.
+  - **Self-hosting:** the model backend is **pluggable** — choose by what you
+    have. Run Tier 0 + Graph with *zero* models (fully local, no GPU); flip
+    on Tier 1 by pointing at any embedding endpoint (a local
+    `sentence-transformers` / ONNX model, or an API); flip on Tier 2 only if
+    you have the CPU/GPU headroom for a cross-encoder. Bigger models + GPU =
+    more accuracy; small CPU models = lighter but still useful. Use the eval
+    harness (below) to measure exactly what accuracy and latency a given
+    stack buys you before committing.
 
   **References — best-of concepts to borrow (not adopt wholesale).**
   - `safishamsi`'s [`graphify`](https://github.com/safishamsi/graphify)
