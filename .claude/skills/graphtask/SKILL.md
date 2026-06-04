@@ -38,17 +38,37 @@ When the user reports an auth error from the canvas or asks you to debug one, wo
 
 ## Agent identity (do this once per session)
 
-Every write should carry three headers so the live canvas shows you as `🤖 <owner>'s Claude` in the top-right avatar bar alongside human collaborators:
+Every write should carry three headers so the live canvas shows you as `🤖 <operator>'s Claude` in the top-right avatar bar alongside human collaborators:
 
 - `X-Writer-Type: agent`
 - `X-Writer-Id` — a session-stable uuid
-- `X-Writer-Name` — `<owner>'s Claude` (owner = `git config user.name`, fallback random animal)
+- `X-Writer-Name` — `<name>'s <AgentLabel>` (a **fallback** label; see below)
 
-Persist the identity to `.graphtask/agent-session.json` so all writes within one Claude Code session look like the same agent. Run this once at the top of your bash work and reference `${WRITE_HEADERS[@]}` in every subsequent curl that writes:
+**Who names the avatar.** On auth-enabled instances the *server* names you
+authoritatively from the **token owner** — the human the agent token belongs to
+(the *operator*) — using their display name or the local part of their email
+(`lucas@…` → `Lucas's Claude`). It keeps the `'s <AgentLabel>` suffix from your
+`X-Writer-Name` (so `…'s Codex` stays `Codex`), but the *operator* part comes
+from the token, not from your header. So `X-Writer-Name` only actually shows on
+**anonymous / no-auth** instances (no token → nothing to attribute to). This
+matters because the local heuristics below can be wrong: `git config user.name`
+is the **repo author**, not necessarily the person driving the agent.
+
+Resolution order for the displayed name, strongest first:
+
+1. **Token owner** (server-side, automatic on authed instances) — display name, else email local part.
+2. **The operator you already know** — if your harness/account context tells you who the user is, write *that* into the name below instead of trusting git.
+3. **`git config user.name`** — a weak proxy; may be the repo author.
+4. **Random animal** — last resort so two anonymous agents stay distinct.
+
+Persist the identity to `.graphtask/agent-session.json` so all writes within one session look like the same agent. Run this once at the top of your bash work and reference `${WRITE_HEADERS[@]}` in every subsequent curl that writes. The `name` is only the fallback (steps 2–4); the server overrides it with the token owner on authed instances:
 
 ```bash
 mkdir -p .graphtask
 if [ ! -f .graphtask/agent-session.json ]; then
+  # Fallback operator name only — the server uses the token owner when authed.
+  # Prefer an operator you actually know (step 2) over git (step 3, the repo
+  # author) over a random animal (step 4).
   OWNER="$(git config --get user.name 2>/dev/null)"
   if [ -z "$OWNER" ]; then
     ANIMALS=(Otter Heron Fox Bison Lynx Owl Quokka Hare Falcon Newt Badger Pangolin Wren Marten Capybara Caracal)
@@ -56,6 +76,8 @@ if [ ! -f .graphtask/agent-session.json ]; then
     OWNER="${ADJECTIVES[$((RANDOM % ${#ADJECTIVES[@]}))]} ${ANIMALS[$((RANDOM % ${#ANIMALS[@]}))]}"
   fi
   AGENT_ID="$(cat /proc/sys/kernel/random/uuid)"
+  # The "'s <AgentLabel>" suffix names the harness (Claude here); the server
+  # parses it so a different harness's skill can send e.g. "…'s Codex".
   echo "{\"id\":\"$AGENT_ID\",\"name\":\"${OWNER}'s Claude\"}" > .graphtask/agent-session.json
 fi
 AGENT_ID="$(jq -r .id .graphtask/agent-session.json)"
@@ -492,7 +514,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 
 ## Presence lifecycle
 
-Your writes drop `🤖 <owner>'s Claude` into the canvas avatar bar. Two things can clear it:
+Your writes drop `🤖 <operator>'s Claude` into the canvas avatar bar (the operator = the token owner on authed instances; see [Agent identity](#agent-identity-do-this-once-per-session)). Two things can clear it:
 
 - **Claude Code lifecycle hooks** (set up at install time, outside this skill): a `Stop` hook departs your presence on every graph you've touched at the end of each turn, and `SessionStart` clears stale identity files. With hooks installed, the avatar blinks in on your first write and out the moment you finish responding.
 - **Server-side idle reaper** — sweeps inactive presence after ~30 minutes. The safety net if hooks aren't installed or a session ends ungracefully.
