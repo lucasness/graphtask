@@ -20,7 +20,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { lexicalSearch } from '../public/search-lexical.js';
+import { assemblePipeline } from '../src/search/service.js';
+import { defaultConfig } from '../src/search/config.js';
 import { scoreQuery, meanScores, percentile } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,9 +62,18 @@ async function loadLiveCorpus(gid) {
   });
 }
 
-// The retrieval tier under test. Swap this body in later phases (hybrid + graph).
-function runTier(query, corpus) {
-  return lexicalSearch(query, corpus, { limit: 100 }).map((r) => r.id);
+// The retrieval tier under test is now the SAME configured SearchPipeline the
+// route runs, not a bespoke call — so the eval measures exactly what ships
+// (#173 §11 "two callers, one pipeline"). EVAL_CONFIG is the boring Tier-0
+// default with a wide top-K (recall@K needs a deep list); later phases flip
+// EMBEDDING_BACKEND / the config to light up dense → rerank → graph and this
+// harness A/Bs each on the same frozen set. Corpus rides in ctx — no DB.
+const EVAL_CONFIG = { ...defaultConfig(), topK: 100 };
+const pipeline = assemblePipeline(EVAL_CONFIG, {});
+
+async function runTier(query, corpus) {
+  const { candidates } = await pipeline.run(query, { corpus, lexicalTopK: 100 });
+  return candidates.map((c) => c.taskId);
 }
 
 function fmt(n) { return (Math.round(n * 1000) / 1000).toFixed(3); }
@@ -75,7 +85,7 @@ async function main() {
   const { queries, qrels } = dataset;
   const qids = Object.keys(queries);
 
-  console.log(`\nKB search eval — tier: lexical (Tier-0)`);
+  console.log(`\nKB search eval — pipeline: ${EVAL_CONFIG.retrievers.join('+')} · fusion ${EVAL_CONFIG.fusion.mode}(k=${EVAL_CONFIG.fusion.k})`);
   console.log(`corpus: ${args.gid ? `live graph ${args.gid}` : 'fixture'} (${corpus.length} docs) · queries: ${qids.length} · cutoffs: ${args.ks.join(',')}\n`);
 
   const perQuery = [];
@@ -83,7 +93,7 @@ async function main() {
   for (const qid of qids) {
     const qrel = qrels[qid] || {};
     const t0 = performance.now();
-    const ranked = runTier(queries[qid], corpus);
+    const ranked = await runTier(queries[qid], corpus);
     latencies.push(performance.now() - t0);
     const scores = scoreQuery(ranked.map(String), qrel, args.ks);
     perQuery.push(scores);

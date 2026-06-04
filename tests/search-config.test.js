@@ -1,0 +1,87 @@
+import { describe, it, expect } from 'vitest';
+import { defaultConfig, validateConfig, assertConfig, configFromEnv } from '../src/search/config.js';
+
+describe('defaultConfig', () => {
+  it('is Tier-0 lexical, RRF k=60, topK 10, no model providers', () => {
+    const c = defaultConfig();
+    expect(c.retrievers).toEqual(['lexical']);
+    expect(c.fusion).toEqual({ mode: 'rrf', k: 60 });
+    expect(c.postprocessors).toEqual([]);
+    expect(c.topK).toBe(10);
+    expect(c.providers.embedding.backend).toBe('none');
+  });
+
+  it('returns a fresh object each call (no shared mutation)', () => {
+    const a = defaultConfig();
+    a.retrievers.push('dense');
+    expect(defaultConfig().retrievers).toEqual(['lexical']);
+  });
+});
+
+describe('validateConfig', () => {
+  it('accepts the default and reports no errors', () => {
+    expect(validateConfig(defaultConfig()).errors).toEqual([]);
+  });
+
+  it('normalizes a partial config over defaults', () => {
+    const { config, errors } = validateConfig({ topK: 25 });
+    expect(errors).toEqual([]);
+    expect(config.topK).toBe(25);
+    expect(config.fusion.k).toBe(60); // filled from default
+  });
+
+  it('rejects unknown retrievers and postprocessors', () => {
+    expect(validateConfig({ retrievers: ['lexical', 'magic'] }).errors[0]).toMatch(/unknown retriever "magic"/);
+    expect(validateConfig({ postprocessors: ['nope'] }).errors[0]).toMatch(/unknown postprocessor "nope"/);
+  });
+
+  it('accepts known-but-future stage names (dense / graphExpand / rerank)', () => {
+    expect(validateConfig({ retrievers: ['lexical', 'dense'] }).errors).toEqual([]);
+    expect(validateConfig({ postprocessors: ['graphExpand', 'rerank'] }).errors).toEqual([]);
+  });
+
+  it('rejects bad fusion mode, non-positive k, bad topK', () => {
+    expect(validateConfig({ fusion: { mode: 'xx', k: 60 } }).errors.join()).toMatch(/fusion.mode/);
+    expect(validateConfig({ fusion: { mode: 'rrf', k: 0 } }).errors.join()).toMatch(/fusion.k/);
+    expect(validateConfig({ topK: -1 }).errors.join()).toMatch(/topK/);
+  });
+
+  it('rejects an unknown provider backend', () => {
+    const { errors } = validateConfig({ providers: { embedding: { backend: 'banana' } } });
+    expect(errors.join()).toMatch(/providers.embedding.backend/);
+  });
+
+  it('requires a non-empty retrievers array', () => {
+    expect(validateConfig({ retrievers: [] }).errors.join()).toMatch(/non-empty/);
+  });
+});
+
+describe('assertConfig', () => {
+  it('throws a 400-tagged error on invalid config', () => {
+    try {
+      assertConfig({ topK: 0 });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e.status).toBe(400);
+      expect(e.errors.join()).toMatch(/topK/);
+    }
+  });
+});
+
+describe('configFromEnv', () => {
+  it('defaults to Tier-0 lexical with no env', () => {
+    const c = configFromEnv({});
+    expect(c.retrievers).toEqual(['lexical']);
+    expect(c.providers.embedding.backend).toBe('none');
+  });
+
+  it('adds the dense retriever when an embedding backend is configured', () => {
+    const c = configFromEnv({ EMBEDDING_BACKEND: 'http', EMBEDDING_URL: 'http://x/embed', EMBEDDING_MODEL: 'bge-m3', EMBEDDING_DIM: '1024' });
+    expect(c.retrievers).toContain('dense');
+    expect(c.providers.embedding).toMatchObject({ backend: 'http', url: 'http://x/embed', model: 'bge-m3', dim: 1024 });
+  });
+
+  it('respects SEARCH_TOPK', () => {
+    expect(configFromEnv({ SEARCH_TOPK: '20' }).topK).toBe(20);
+  });
+});
