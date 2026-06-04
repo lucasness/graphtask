@@ -2006,6 +2006,13 @@ async function fetchGraph() {
   updateToolbar();
   // Kanban renderer is a no-op when not in kanban view.
   renderKanban();
+  // The lexical search index (node bodies) is now stale; drop the cache so a
+  // later search re-fetches. If the bar is open, refresh it in place.
+  invalidateSearchDocs();
+  if (isSearchBarOpen()) {
+    const input = document.getElementById('search-input');
+    loadSearchDocs().then(() => { if (isSearchBarOpen() && input) renderSearch(input.value); }).catch(() => {});
+  }
 }
 
 async function updateLeafHighlights() {
@@ -3215,6 +3222,297 @@ function restoreViewport(snapshot) {
     { pan: snapshot.pan, zoom: snapshot.zoom },
     { duration: 220, easing: 'ease-out' }
   );
+}
+
+// ===========================================================================
+// Find / search bar (Cmd/Ctrl+F) — Tier-0 lexical "this graph" search.
+// The front door to KB search (graph tasks #171/#172). Phase 1 is lexical
+// only, fully client-side: one /tasks fetch gives us the node BODIES (the
+// /graph payload omits them), then the shared pure ranker in
+// public/search-lexical.js (window.LexicalSearch) ranks them with the tiered
+// contract (title > description > body; frequency desc; newest-first). No
+// models, no server changes — runs on the Wafer as-is. Later phases swap the
+// ranker call for the hybrid + graph backend behind the same UI.
+// ===========================================================================
+
+// Per-graph cache of {id,title,description,body,createdAt} docs for the
+// lexical leg. Invalidated when the active graph changes.
+let _searchDocsCache = { gid: null, docs: null, loading: null };
+// Live UI state while the bar is open: null when closed.
+let _searchState = null;
+
+function searchBarEl() { return document.getElementById('search-bar'); }
+function isSearchBarOpen() {
+  const el = searchBarEl();
+  return !!el && !el.classList.contains('hidden');
+}
+
+// Pull full task rows (incl. body) once and shape them for the ranker. The
+// /graph view nodes carry only title/description/status, so we hit /tasks to
+// get `content`, then reuse parseFrontmatter to split frontmatter from body.
+async function loadSearchDocs() {
+  const gid = activeGraphId;
+  if (gid == null) return [];
+  if (_searchDocsCache.gid === gid && _searchDocsCache.docs) return _searchDocsCache.docs;
+  if (_searchDocsCache.gid === gid && _searchDocsCache.loading) return _searchDocsCache.loading;
+  const p = (async () => {
+    const res = await fetch(`${apiBase()}/tasks`);
+    if (!res.ok) throw new Error(`search: failed to load tasks (${res.status})`);
+    const rows = await res.json();
+    const docs = rows.map((row) => {
+      const { meta, body } = parseFrontmatter(row.content || '');
+      return {
+        id: row.id,
+        title: meta.title || '',
+        description: meta.description || '',
+        body: body || '',
+        createdAt: row.created_at || null,
+      };
+    });
+    _searchDocsCache = { gid, docs, loading: null };
+    return docs;
+  })();
+  _searchDocsCache = { gid, docs: null, loading: p };
+  return p;
+}
+
+// Invalidate the lexical doc cache so the next search re-fetches bodies.
+// Called on graph switch and after local task writes keep results honest.
+function invalidateSearchDocs() {
+  _searchDocsCache = { gid: null, docs: null, loading: null };
+}
+
+function openSearchBar() {
+  if (activeGraphId == null || !cy) return;
+  const bar = searchBarEl();
+  const input = document.getElementById('search-input');
+  if (!bar || !input) return;
+  if (!isSearchBarOpen()) {
+    // Snapshot what to restore on Esc: current selection + camera.
+    _searchState = {
+      results: [],
+      active: -1,
+      restore: {
+        selectedIds: cy.nodes('.selected').map((n) => n.id()),
+        viewport: captureViewport(),
+      },
+    };
+    bar.classList.remove('hidden');
+    // Warm the doc cache; re-render once bodies land in case the user is
+    // already typing.
+    loadSearchDocs()
+      .then(() => { if (isSearchBarOpen()) renderSearch(input.value); })
+      .catch(() => {});
+  }
+  input.focus();
+  input.select();
+}
+
+function closeSearchBar({ restore = true } = {}) {
+  const bar = searchBarEl();
+  if (!bar) return;
+  const state = _searchState;
+  bar.classList.add('hidden');
+  const input = document.getElementById('search-input');
+  if (input) input.value = '';
+  const results = document.getElementById('search-results');
+  if (results) results.innerHTML = '';
+  const count = document.getElementById('search-count');
+  if (count) count.textContent = '';
+  _searchState = null;
+  if (restore && state && cy) {
+    cy.nodes().removeClass('selected');
+    cy.edges().removeClass('selected');
+    for (const id of state.restore.selectedIds) {
+      const n = cy.getElementById(id);
+      if (n && !n.empty()) n.addClass('selected');
+    }
+    restoreViewport(state.restore.viewport);
+    if (typeof updateToolbar === 'function') updateToolbar();
+  }
+}
+
+// Append `text` to `parent`, wrapping the [start,end) ranges in <mark>.
+// Built with text nodes (never innerHTML) so node content can't inject markup.
+function appendHighlighted(parent, text, ranges) {
+  if (!ranges || ranges.length === 0) {
+    parent.appendChild(document.createTextNode(text));
+    return;
+  }
+  let cursor = 0;
+  for (const [s, e] of ranges) {
+    if (s > cursor) parent.appendChild(document.createTextNode(text.slice(cursor, s)));
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(s, e);
+    parent.appendChild(mark);
+    cursor = e;
+  }
+  if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
+}
+
+// Run the lexical ranker for `query` and paint the results list. Pure render
+// — does NOT move the camera; selection/centering happens on walk/commit so
+// "Enter runs, arrows walk" stays predictable.
+function renderSearch(query) {
+  if (!_searchState) return;
+  const lib = window.LexicalSearch;
+  const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
+  const results = (lib && query && query.trim() && docs.length)
+    ? lib.lexicalSearch(query, docs, { limit: 50 })
+    : [];
+  _searchState.results = results;
+  _searchState.active = -1;
+
+  const list = document.getElementById('search-results');
+  const count = document.getElementById('search-count');
+  if (!list) return;
+  list.innerHTML = '';
+
+  if (!query || !query.trim()) {
+    if (count) count.textContent = '';
+    return;
+  }
+  if (results.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'search-empty';
+    empty.textContent = docs.length ? 'No matches in this graph.' : 'Indexing…';
+    list.appendChild(empty);
+    if (count) count.textContent = '0';
+    return;
+  }
+  if (count) count.textContent = String(results.length);
+
+  results.forEach((r, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'search-result';
+    row.dataset.index = String(i);
+
+    const titleLine = document.createElement('div');
+    titleLine.className = 'search-result-title';
+    const titleText = document.createElement('span');
+    titleText.className = 'search-result-title-text';
+    if (r.field === 'title') {
+      const tr = lib.matchRanges(r.doc.title || '', lib.tokenize(query));
+      appendHighlighted(titleText, r.doc.title || 'Untitled', tr);
+    } else {
+      titleText.textContent = r.doc.title || 'Untitled';
+    }
+    const fieldTag = document.createElement('span');
+    fieldTag.className = 'search-result-field';
+    fieldTag.textContent = r.field;
+    titleLine.appendChild(titleText);
+    titleLine.appendChild(fieldTag);
+    row.appendChild(titleLine);
+
+    if (r.snippet && r.snippet.text) {
+      const snip = document.createElement('div');
+      snip.className = 'search-result-snippet';
+      appendHighlighted(snip, r.snippet.text, r.snippet.ranges);
+      row.appendChild(snip);
+    }
+
+    row.addEventListener('mousedown', (ev) => {
+      // mousedown (not click) so the input keeps focus through the selection.
+      ev.preventDefault();
+      commitSearchResult(i);
+    });
+    list.appendChild(row);
+  });
+}
+
+// Select + center the node for result `index`. Selection mirrors a normal
+// node tap (single-select), and the camera pans it into the visible area.
+function focusSearchResult(index) {
+  if (!_searchState) return;
+  const results = _searchState.results;
+  if (!results.length) return;
+  const clamped = Math.max(0, Math.min(index, results.length - 1));
+  _searchState.active = clamped;
+
+  const list = document.getElementById('search-results');
+  if (list) {
+    list.querySelectorAll('.search-result.active').forEach((el) => el.classList.remove('active'));
+    const row = list.querySelector(`.search-result[data-index="${clamped}"]`);
+    if (row) {
+      row.classList.add('active');
+      row.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  const count = document.getElementById('search-count');
+  if (count) count.textContent = `${clamped + 1}/${results.length}`;
+
+  const node = cy.getElementById(String(results[clamped].id));
+  if (node && !node.empty()) {
+    cy.nodes().not(node).removeClass('selected');
+    cy.edges().removeClass('selected');
+    node.addClass('selected');
+    centerNodeInVisibleArea(node);
+    if (typeof updateToolbar === 'function') updateToolbar();
+  }
+}
+
+// Commit a result (click, or Enter on the already-focused row): focus it and
+// open the inspector so the user lands on the node's content.
+function commitSearchResult(index) {
+  focusSearchResult(index);
+  if (!_searchState) return;
+  const r = _searchState.results[_searchState.active];
+  if (!r) return;
+  const node = cy.getElementById(String(r.id));
+  if (node && !node.empty() && typeof showPanel === 'function') {
+    // The bar stays open above the panel; closing here would fight the
+    // panel's own camera pan. Keep state so Esc still restores.
+    showPanel(node, { programmatic: true });
+  }
+}
+
+function walkSearch(delta) {
+  if (!_searchState || !_searchState.results.length) return;
+  const next = _searchState.active < 0
+    ? (delta > 0 ? 0 : _searchState.results.length - 1)
+    : _searchState.active + delta;
+  focusSearchResult(next);
+}
+
+function initSearchBar() {
+  const input = document.getElementById('search-input');
+  if (!input) return;
+  // Live preview while typing — instant, no camera move (spec: Enter runs).
+  input.addEventListener('input', () => renderSearch(input.value));
+  // The bar owns Enter / arrows / Esc; stop them reaching the global handler
+  // (which would arrow-move nodes, zoom-fit, or clear selection).
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeSearchBar({ restore: true });
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_searchState && _searchState.active >= 0) {
+        // Already walking → commit (open the node).
+        commitSearchResult(_searchState.active);
+      } else {
+        walkSearch(e.shiftKey ? -1 : +1); // first Enter: jump to first hit
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      e.stopPropagation();
+      walkSearch(+1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      e.stopPropagation();
+      walkSearch(-1);
+      return;
+    }
+  });
 }
 
 // Tracks whether the side panel was opened programmatically (by
@@ -5832,6 +6130,8 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   presenceState = new Map();
   accessDenied = false;
   activeGraphId = id;
+  invalidateSearchDocs();
+  if (isSearchBarOpen()) closeSearchBar({ restore: false });
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
   applyView(getViewPref(id));
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
@@ -7902,6 +8202,15 @@ document.addEventListener('DOMContentLoaded', () => {
       openGraphSettings();
       return;
     }
+    // Cmd/Ctrl+F opens our in-app search bar instead of the browser's native
+    // find, which reports "0/0" over the Cytoscape <canvas>. Front door to KB
+    // search (graph tasks #171/#172). Sibling to Cmd+K above; the bar's own
+    // keydown (see initSearchBar) handles Enter / arrows / Esc once focused.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault();
+      openSearchBar();
+      return;
+    }
     if (handleSettingsKey(e)) return;
     if (handleColorPaletteKey(e)) return;
     // Esc always works (closes overlay/panel/clears selection/cancels edge)
@@ -7952,6 +8261,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // status moves. See handleGraphKeydown / handleKanbanKeydown.
     activeView().handleKeydown(e);
   });
+
+  // --- Find / search bar (Cmd/Ctrl+F) wiring ---
+  initSearchBar();
 
   // --- Kanban column add buttons (one per column) ---
   document.querySelectorAll('.kb-column-add').forEach((btn) => {

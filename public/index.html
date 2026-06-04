@@ -545,6 +545,33 @@
 
   <div id="cmd-box" class="cmd-box hidden"></div>
 
+  <!-- Find / search bar (Cmd/Ctrl+F). The front door to KB search (graph
+       tasks #171/#172). Phase 1 ships Tier-0 lexical "this graph" search,
+       client-side over the loaded task bodies. Intercepts the native find
+       (which returns 0/0 over the Cytoscape canvas). Enter runs the search;
+       up/down walk results; selecting centers the node on the canvas. -->
+  <div id="search-bar" class="search-bar hidden" role="search">
+    <div class="search-row">
+      <svg class="search-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d="M11.7 11l3 3M7 12.5a5.5 5.5 0 100-11 5.5 5.5 0 000 11z"
+              fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round"/>
+      </svg>
+      <input id="search-input" class="search-input" type="text"
+             placeholder="Search this graph — Enter to run"
+             autocomplete="off" spellcheck="false" aria-label="Search">
+      <span id="search-count" class="search-count" aria-live="polite"></span>
+      <div class="search-scope" role="tablist" aria-label="Search scope">
+        <button id="search-scope-graph" class="search-scope-btn active"
+                role="tab" aria-selected="true" type="button">This graph</button>
+        <button id="search-scope-all" class="search-scope-btn" role="tab"
+                aria-selected="false" type="button" disabled
+                title="Cross-graph search is coming soon">All graphs<span class="search-soon">soon</span></button>
+      </div>
+    </div>
+    <div id="search-results" class="search-results" role="listbox" aria-label="Search results"></div>
+  </div>
+
   <div id="empty-state" class="hidden">
     <p>Click here for a new task</p>
   </div>
@@ -623,6 +650,14 @@
 
   <script src="https://unpkg.com/cytoscape@3/dist/cytoscape.min.js"></script>
   <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
+  <!-- Tier-0 lexical searcher is a pure ES module shared with the Node eval
+       harness; expose it on window so the (non-module) app.js can call it.
+       Module scripts run after parse but before any user keypress, so it is
+       always present by the time Cmd/Ctrl+F fires. -->
+  <script type="module">
+    import * as LexicalSearch from '/search-lexical.js';
+    window.LexicalSearch = LexicalSearch;
+  </script>
   <script src="/app.js"></script>
 <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9fb48c35da61281b',t:'MTc3ODcwNTU1NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

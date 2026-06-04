@@ -2713,6 +2713,149 @@ kbd {
 }
 .cmd-box.hidden { display: none; }
 
+/* Find / search bar (Cmd/Ctrl+F) — floats at the top of the canvas band,
+   the front door to KB search (#171/#172). Mirrors the settings-card surface
+   tokens so it reads as the same family as the other floating chrome. */
+.search-bar {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-cards);
+  box-shadow: var(--shadow-md);
+  z-index: 31;
+  overflow: hidden;
+}
+.search-bar.hidden { display: none; }
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px var(--space-4);
+}
+.search-icon {
+  flex: 0 0 auto;
+  color: var(--color-steel);
+}
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color-graphite-nav);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+}
+.search-input::placeholder { color: var(--tx-3); }
+.search-count {
+  flex: 0 0 auto;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: var(--text-meta);
+  color: var(--color-steel);
+  min-width: 2.5em;
+  text-align: right;
+}
+.search-scope {
+  flex: 0 0 auto;
+  display: inline-flex;
+  background: var(--color-blush-tint);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-full);
+  padding: 2px;
+}
+.search-scope-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-ui);
+  font-size: var(--text-meta);
+  color: var(--color-steel);
+  cursor: pointer;
+}
+.search-scope-btn.active {
+  background: var(--color-pure-white);
+  color: var(--color-graphite-nav);
+  box-shadow: var(--shadow-sm);
+}
+.search-scope-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.search-soon {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-ember-orange);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full);
+  padding: 0 4px;
+  line-height: 1.4;
+}
+.search-results {
+  max-height: 320px;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-mist);
+  padding: 6px;
+}
+.search-results:empty { display: none; }
+.search-result {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-graphite-nav);
+}
+.search-result + .search-result { margin-top: 2px; }
+.search-result:hover { background: var(--color-blush-tint); }
+.search-result.active { background: var(--color-blush-tint); }
+.search-result-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: 1.3;
+}
+.search-result-field {
+  flex: 0 0 auto;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-steel);
+}
+.search-result-snippet {
+  margin-top: 2px;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  line-height: 1.4;
+  color: var(--color-steel);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result mark {
+  background: color-mix(in srgb, var(--color-ember-orange) 24%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.search-empty {
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  color: var(--color-steel);
+}
+
 /* Hotkey hint toast — small floating card. */
 /* Hint toast — spans the canvas band (between sidebar and right edge / panel)
    and centers the badge inside that band with flex, so the toast tracks the
