@@ -442,3 +442,52 @@ CREATE TABLE IF NOT EXISTS uploads (
     CHECK (byte_size > 0)
 );
 CREATE INDEX IF NOT EXISTS uploads_graph_id_idx ON uploads(graph_id);
+
+-- Dense-retrieval chunk store for semantic search (graph task #190, P2.2).
+-- One node → many title-prefixed passages (see src/search/chunking.js); each
+-- carries its embedding for ANN search, then results collapse back to nodes by
+-- task_id (max-pool) and fuse with the lexical leg via RRF.
+--
+-- The WHOLE block is guarded on pgvector being present. The deployed app's
+-- image bakes in postgresql-17-pgvector (see Dockerfile), so this lights up on
+-- every deploy; the local Wafer dev Postgres doesn't ship pgvector, where this
+-- is a clean no-op — the dense leg's eval runs in-memory (cosine over chunked
+-- vectors), and the pgvector table is only the production store. schema.sql is
+-- applied on every boot, so this must never error when the extension is absent.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+    CREATE EXTENSION IF NOT EXISTS vector;
+    -- DDL is EXECUTE'd so the halfvec type / hnsw opclass are only resolved
+    -- after the extension is guaranteed loaded (and never parsed where absent).
+    EXECUTE $ddl$
+      CREATE TABLE IF NOT EXISTS task_chunks (
+        id              SERIAL PRIMARY KEY,
+        task_id         INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        graph_id        TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
+        chunk_index     INTEGER NOT NULL,
+        chunk_text      TEXT NOT NULL,
+        -- sha256 of the whole node content: re-chunk only when this changes,
+        -- so an unchanged node skips re-embedding entirely (#190 write path).
+        content_sha     TEXT NOT NULL,
+        embedding_model TEXT NOT NULL,
+        -- BGE-M3 default (1024-dim) — the size-driven pick from #190. halfvec
+        -- halves storage vs full float for negligible recall loss.
+        embedding       halfvec(1024),
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (task_id, chunk_index)
+      )
+    $ddl$;
+    -- task_id IS the chunk→node link; CASCADE auto-cleans chunks when a node is
+    -- deleted. graph_id is the "this graph" scope filter (and the column a
+    -- later cross-graph access filter rides on).
+    EXECUTE 'CREATE INDEX IF NOT EXISTS task_chunks_task_id_idx ON task_chunks(task_id)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS task_chunks_graph_id_idx ON task_chunks(graph_id)';
+    -- HNSW over cosine. m/ef are immaterial at <1k vectors (#190) but cost
+    -- nothing to set now and matter once a graph grows.
+    EXECUTE 'CREATE INDEX IF NOT EXISTS task_chunks_embedding_idx ON task_chunks '
+         || 'USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)';
+  ELSE
+    RAISE NOTICE 'pgvector not available — skipping task_chunks (dense store deferred; eval runs in-memory)';
+  END IF;
+END $$;
