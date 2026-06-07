@@ -448,12 +448,13 @@ CREATE INDEX IF NOT EXISTS uploads_graph_id_idx ON uploads(graph_id);
 -- carries its embedding for ANN search, then results collapse back to nodes by
 -- task_id (max-pool) and fuse with the lexical leg via RRF.
 --
--- The WHOLE block is guarded on pgvector being present. The deployed app's
--- image bakes in postgresql-17-pgvector (see Dockerfile), so this lights up on
--- every deploy; the local Wafer dev Postgres doesn't ship pgvector, where this
--- is a clean no-op — the dense leg's eval runs in-memory (cosine over chunked
--- vectors), and the pgvector table is only the production store. schema.sql is
--- applied on every boot, so this must never error when the extension is absent.
+-- The WHOLE block is guarded on pgvector being present. Both deploy paths now
+-- ship it: the self-host image bakes in postgresql-17-pgvector (see Dockerfile)
+-- and the Wafer worker image gained vector 0.8.2 (2026-06-07) — the guard
+-- remains for self-hosters running their own pre-pgvector Postgres, where this
+-- is a clean no-op and the dense leg falls back to in-memory ranking.
+-- schema.sql is applied on every boot, so this must never error when the
+-- extension is absent.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN

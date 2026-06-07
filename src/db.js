@@ -19,7 +19,10 @@ export async function applySchema(targetPool) {
   await targetPool.query(sql);
 }
 
-function resolveConnectionString() {
+// Exported for modules that need their own dedicated connection to the same
+// database (the search indexer's LISTEN client; src/sse.js predates the export
+// and keeps its local copy).
+export function resolveConnectionString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
   const bootstrap = process.env.PG_BOOTSTRAP_URL;
   const dbName = process.env.DATABASE_NAME;

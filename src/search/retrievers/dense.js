@@ -1,18 +1,23 @@
 // DenseRetriever (Tier 1) — the semantic leg, implementing the Retriever port
-// (graph task #190, P2.2). This is the IN-MEMORY form: it chunks ctx.corpus,
-// embeds the chunks via the injected EmbeddingProvider, and ranks by cosine —
-// no pgvector. That's the form #173 §10 calls for in the eval ("embed in-memory
-// → cosine → RRF → metrics, so it isolates the model; pgvector is the production
-// store"), and it's exactly what lets us get real semantic numbers before the
-// pgvector store exists on the Wafer host.
+// (graph task #190, P2.2). Two forms behind the same `dense` stage name:
 //
-// One node → many chunk-vectors → collapse back to the node by MAX-POOL (a node
-// is as relevant as its strongest passage, #190), carrying that passage as the
-// snippet. Output is ordered strongest-first so fusion (RRF) reads it by
+//   • createDenseRetriever — IN-MEMORY: chunk ctx.corpus, embed, rank by
+//     cosine. The eval's form (#173 §10: "embed in-memory → cosine → RRF →
+//     metrics, so it isolates the model") and the fallback wherever the
+//     pgvector store can't run.
+//   • createStoreDenseRetriever — PRODUCTION: embed the query only, ANN over
+//     the pre-embedded `task_chunks` rows (store.js), scoped to ctx.gid. The
+//     corpus was embedded at WRITE time by the indexer; a search embeds ONE
+//     string instead of the whole graph.
+//
+// Both: one node → many chunk-vectors → collapse back to the node by MAX-POOL
+// (a node is as relevant as its strongest passage, #190), carrying that passage
+// as the snippet. Output is ordered strongest-first so fusion (RRF) reads it by
 // position, same as the lexical leg.
 
 import { chunkParts } from '../chunking.js';
 import { makeCandidate } from '../types.js';
+import { chunkStoreAvailable, annSearchChunks } from '../store.js';
 
 const DEFAULT_TOPK = 50; // #173 §10: dense top-k 50 (collapsed nodes)
 
@@ -95,4 +100,67 @@ export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts 
   };
 }
 
-export default { createDenseRetriever };
+/**
+ * The pgvector-backed form (#190 query path): embed query → ANN over
+ * `task_chunks` (WHERE graph_id, top `chunkTopK` CHUNKS — counted in chunks,
+ * deliberately ≥ node top-K so one chunk-heavy node can't crowd others out) →
+ * collapse by task_id, max-pool → Candidate[] carrying the winning passage.
+ *
+ * Falls back to the in-memory leg when ANN can't or shouldn't run:
+ *   • no ctx.gid, or the caller supplied its own corpus (the eval's frozen
+ *     fixture must not be ranked against live store rows);
+ *   • `task_chunks` absent — Postgres without pgvector (checked once);
+ *   • the store has no rows for this graph yet (indexer still backfilling) —
+ *     slower but correct beats silently empty.
+ *
+ * @param {{pool:Object, provider: import('../types.js').EmbeddingProvider,
+ *          topK?:number, chunkTopK?:number, chunkOpts?:Object}} opts
+ * @returns {import('../types.js').Retriever}
+ */
+export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK, chunkTopK = DEFAULT_TOPK, chunkOpts = {} } = {}) {
+  if (!pool) throw new Error('createStoreDenseRetriever needs a pool');
+  const memory = createDenseRetriever({ provider, topK, chunkOpts });
+  let availablePromise = null; // table existence can't change mid-process; check once
+
+  return {
+    name: 'dense',
+    async retrieve(query, ctx = {}) {
+      const eligible = ctx.gid && ctx.corpusFromStore === true;
+      if (!eligible) return memory.retrieve(query, ctx);
+      if (!availablePromise) availablePromise = chunkStoreAvailable(pool);
+      if (!(await availablePromise)) return memory.retrieve(query, ctx);
+
+      const [qvec] = await provider.embed([query]);
+      if (!qvec) return [];
+
+      const rows = await annSearchChunks(pool, {
+        vector: qvec,
+        gid: ctx.gid,
+        modelId: provider.modelId,
+        limit: ctx.denseTopK ?? chunkTopK,
+      });
+      if (rows.length === 0) return memory.retrieve(query, ctx);
+
+      // Rows arrive nearest-first; the first chunk seen per task IS its
+      // max-pool winner. similarity = 1 - cosine distance.
+      const out = [];
+      const seen = new Set();
+      for (const row of rows) {
+        if (seen.has(row.task_id)) continue;
+        seen.add(row.task_id);
+        const distance = Number(row.distance);
+        const score = 1 - distance;
+        out.push(
+          makeCandidate(row.task_id, score, 'dense', {
+            snippet: { text: row.chunk_text, ranges: [] },
+            meta: { similarity: score, distance },
+          }),
+        );
+        if (out.length >= topK) break;
+      }
+      return out;
+    },
+  };
+}
+
+export default { createDenseRetriever, createStoreDenseRetriever };

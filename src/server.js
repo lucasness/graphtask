@@ -1,5 +1,8 @@
 import app from './app.js';
 import pool, { applySchema } from './db.js';
+import { configFromEnv } from './search/config.js';
+import { createEmbeddingProvider } from './search/providers/embedding.js';
+import { createChunkIndexer } from './search/indexer.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -12,6 +15,23 @@ try {
 } catch (err) {
   console.error('graphtask schema apply failed —', err.message);
   process.exit(1);
+}
+
+// Semantic-search indexer (#190 write path): with an embedding backend
+// configured, keep task_chunks in step with tasks — LISTEN on the graph_change
+// trigger + a boot backfill. Deliberately NOT awaited: model warm-up and the
+// first backfill can take seconds and the server must serve immediately
+// (lexical search answers regardless; dense fills in as the store catches up).
+try {
+  const provider = createEmbeddingProvider(configFromEnv().providers.embedding);
+  if (provider) {
+    const indexer = createChunkIndexer({ pool, provider });
+    indexer.start().catch((err) => {
+      console.error('[search-index] failed to start —', err.message);
+    });
+  }
+} catch (err) {
+  console.error('[search-index] not started —', err.message);
 }
 
 app.listen(PORT, '127.0.0.1', () => {

@@ -17,7 +17,7 @@ import { validateConfig } from './config.js';
 import { getJoiner } from './fusion.js';
 import { SearchPipeline } from './pipeline.js';
 import { createLexicalRetriever } from './retrievers/lexical.js';
-import { createDenseRetriever } from './retrievers/dense.js';
+import { createDenseRetriever, createStoreDenseRetriever } from './retrievers/dense.js';
 import { createEmbeddingProvider } from './providers/embedding.js';
 import { parseMarkdown } from '../markdown.js';
 
@@ -27,10 +27,16 @@ import { parseMarkdown } from '../markdown.js';
 const RETRIEVER_FACTORIES = {
   lexical: () => createLexicalRetriever(),
   // Dense needs an EmbeddingProvider; with backend `none` (or unconfigured) the
-  // provider is null → dense drops → lexical-only. This is the in-memory leg
-  // (chunk ctx.corpus → embed → cosine); the pgvector-backed store is P2.2's
-  // production path, swapped in behind this same retriever name later.
-  dense: (deps) => (deps.embeddingProvider ? createDenseRetriever({ provider: deps.embeddingProvider }) : null),
+  // provider is null → dense drops → lexical-only. With a pool the store-backed
+  // form runs (ANN over task_chunks, embedded at write time by the indexer) and
+  // itself falls back to the in-memory leg (chunk ctx.corpus → embed → cosine)
+  // where ANN can't apply — caller-supplied corpus, no pgvector, empty store.
+  dense: (deps) => {
+    if (!deps.embeddingProvider) return null;
+    return deps.pool
+      ? createStoreDenseRetriever({ pool: deps.pool, provider: deps.embeddingProvider })
+      : createDenseRetriever({ provider: deps.embeddingProvider });
+  },
 };
 
 const POSTPROCESSOR_FACTORIES = {
@@ -123,13 +129,19 @@ export class SearchService {
    */
   async search(query, ctx = {}) {
     let corpus = ctx.corpus;
+    // corpusFromStore tells the dense retriever whether ANN over task_chunks
+    // ranks the SAME documents the caller is searching. A caller-supplied
+    // corpus (eval fixture, tests) must be ranked in-memory, never against
+    // live store rows.
+    let corpusFromStore = false;
     if (!corpus) {
       if (!this.pool || !ctx.gid) {
         throw new Error('SearchService.search needs either ctx.corpus or (pool + ctx.gid)');
       }
       corpus = await loadCorpus(this.pool, ctx.gid);
+      corpusFromStore = true;
     }
-    return this.pipeline.run(query, { ...ctx, corpus });
+    return this.pipeline.run(query, { ...ctx, corpus, corpusFromStore });
   }
 }
 
