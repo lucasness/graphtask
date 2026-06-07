@@ -127,6 +127,22 @@ export function assertConfig(input) {
  *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 (Phase 3)
  *   SEARCH_TOPK         final top-K (default 10)
  */
+// Auth credentials for a provider, read with a per-provider prefix so embedding
+// and rerank can point at different backends. Modal proxy-auth (key+secret) or
+// a bearer token; the provider picks the header from whichever is set (#173
+// §10). MODAL_KEY/MODAL_SECRET act as a shared fallback so a single Modal app
+// secret serves both providers without repeating it.
+function authFromEnv(env, prefix) {
+  const out = {};
+  const token = env[`${prefix}_TOKEN`];
+  const modalKey = env[`${prefix}_MODAL_KEY`] || env.MODAL_KEY;
+  const modalSecret = env[`${prefix}_MODAL_SECRET`] || env.MODAL_SECRET;
+  if (token) out.token = token;
+  if (modalKey) out.modalKey = modalKey;
+  if (modalSecret) out.modalSecret = modalSecret;
+  return out;
+}
+
 export function configFromEnv(env = process.env) {
   const cfg = defaultConfig();
 
@@ -136,6 +152,7 @@ export function configFromEnv(env = process.env) {
     ...(env.EMBEDDING_URL ? { url: env.EMBEDDING_URL } : {}),
     ...(env.EMBEDDING_MODEL ? { model: env.EMBEDDING_MODEL } : {}),
     ...(env.EMBEDDING_DIM ? { dim: Number(env.EMBEDDING_DIM) } : {}),
+    ...authFromEnv(env, 'EMBEDDING'),
   };
   if (embBackend !== 'none' && !cfg.retrievers.includes('dense')) {
     cfg.retrievers.push('dense');
@@ -146,6 +163,7 @@ export function configFromEnv(env = process.env) {
     backend: rrBackend,
     ...(env.RERANK_URL ? { url: env.RERANK_URL } : {}),
     ...(env.RERANK_MODEL ? { model: env.RERANK_MODEL } : {}),
+    ...authFromEnv(env, 'RERANK'),
   };
   // Reranker postprocessor is Phase 3; env wiring is forward-looking only.
 
