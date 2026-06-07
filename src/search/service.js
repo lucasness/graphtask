@@ -17,15 +17,20 @@ import { validateConfig } from './config.js';
 import { getJoiner } from './fusion.js';
 import { SearchPipeline } from './pipeline.js';
 import { createLexicalRetriever } from './retrievers/lexical.js';
+import { createDenseRetriever } from './retrievers/dense.js';
+import { createEmbeddingProvider } from './providers/embedding.js';
 import { parseMarkdown } from '../markdown.js';
 
-// Stage registry. Each entry is a factory (deps) => instance | null. Returning
-// null means "not available in this phase / not configured" — the assembler
-// drops it and the pipeline degrades to the remaining stages. Dense, rerank,
-// and graphExpand register here in P2.1–P2.2 and Phase 3.
+// Stage registry. Each entry is a factory (deps, config) => instance | null.
+// Returning null means "not available / not configured" — the assembler drops
+// it and the pipeline degrades to the remaining stages (lexical always answers).
 const RETRIEVER_FACTORIES = {
   lexical: () => createLexicalRetriever(),
-  dense: () => null, // P2.2 — needs EmbeddingProvider (P2.1) + pgvector
+  // Dense needs an EmbeddingProvider; with backend `none` (or unconfigured) the
+  // provider is null → dense drops → lexical-only. This is the in-memory leg
+  // (chunk ctx.corpus → embed → cosine); the pgvector-backed store is P2.2's
+  // production path, swapped in behind this same retriever name later.
+  dense: (deps) => (deps.embeddingProvider ? createDenseRetriever({ provider: deps.embeddingProvider }) : null),
 };
 
 const POSTPROCESSOR_FACTORIES = {
@@ -43,8 +48,16 @@ const POSTPROCESSOR_FACTORIES = {
  * @returns {SearchPipeline}
  */
 export function assemblePipeline(config, deps = {}) {
+  // Adapters from config: build the embedding provider once and inject it so
+  // the dense factory (and later the rerank postprocessor) just consume it.
+  // A caller can pre-supply deps.embeddingProvider (tests inject a fake one).
+  const stageDeps = {
+    ...deps,
+    embeddingProvider: deps.embeddingProvider ?? createEmbeddingProvider(config.providers?.embedding || {}, deps),
+  };
+
   const retrievers = config.retrievers
-    .map((name) => (RETRIEVER_FACTORIES[name] ? RETRIEVER_FACTORIES[name](deps, config) : null))
+    .map((name) => (RETRIEVER_FACTORIES[name] ? RETRIEVER_FACTORIES[name](stageDeps, config) : null))
     .filter(Boolean);
   if (retrievers.length === 0) {
     // Never leave the pipeline legless: lexical is the always-on floor.
@@ -52,7 +65,7 @@ export function assemblePipeline(config, deps = {}) {
   }
 
   const postprocessors = config.postprocessors
-    .map((name) => (POSTPROCESSOR_FACTORIES[name] ? POSTPROCESSOR_FACTORIES[name](deps, config) : null))
+    .map((name) => (POSTPROCESSOR_FACTORIES[name] ? POSTPROCESSOR_FACTORIES[name](stageDeps, config) : null))
     .filter(Boolean);
 
   return new SearchPipeline({

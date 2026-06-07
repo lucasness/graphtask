@@ -21,7 +21,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { assemblePipeline } from '../src/search/service.js';
-import { defaultConfig } from '../src/search/config.js';
+import { defaultConfig, configFromEnv } from '../src/search/config.js';
 import { scoreQuery, meanScores, percentile } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,17 +62,20 @@ async function loadLiveCorpus(gid) {
   });
 }
 
-// The retrieval tier under test is now the SAME configured SearchPipeline the
-// route runs, not a bespoke call — so the eval measures exactly what ships
-// (#173 §11 "two callers, one pipeline"). EVAL_CONFIG is the boring Tier-0
-// default with a wide top-K (recall@K needs a deep list); later phases flip
-// EMBEDDING_BACKEND / the config to light up dense → rerank → graph and this
-// harness A/Bs each on the same frozen set. Corpus rides in ctx — no DB.
-const EVAL_CONFIG = { ...defaultConfig(), topK: 100 };
+// The retrieval tier under test is the SAME configured SearchPipeline the route
+// runs, not a bespoke call — so the eval measures exactly what ships (#173 §11
+// "two callers, one pipeline"). Default is the boring Tier-0 lexical with a wide
+// top-K (recall@K needs a deep list); setting EMBEDDING_BACKEND (e.g.
+// `local-onnx`) flips on the dense leg via configFromEnv, and this harness A/Bs
+// each backend on the same frozen set. Corpus rides in ctx — no DB.
+const ENV_BACKEND = process.env.EMBEDDING_BACKEND;
+const EVAL_CONFIG = ENV_BACKEND && ENV_BACKEND !== 'none'
+  ? { ...configFromEnv(process.env), topK: 100 }
+  : { ...defaultConfig(), topK: 100 };
 const pipeline = assemblePipeline(EVAL_CONFIG, {});
 
 async function runTier(query, corpus) {
-  const { candidates } = await pipeline.run(query, { corpus, lexicalTopK: 100 });
+  const { candidates } = await pipeline.run(query, { corpus, lexicalTopK: 100, denseTopK: 100 });
   return candidates.map((c) => c.taskId);
 }
 

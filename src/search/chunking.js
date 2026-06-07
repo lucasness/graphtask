@@ -158,31 +158,31 @@ function packWithOverlap(units, target, overlap, estimate) {
 }
 
 /**
- * Split one node into title-prefixed, header-aware chunks (#190).
+ * Chunk already-parsed node parts — the shared core. Used by `splitMarkdown`
+ * (which parses raw content first) AND by the dense retriever, which gets the
+ * corpus as parsed `{title,description,body}` Docs and must chunk them WITHOUT
+ * re-parsing frontmatter (one chunking implementation, two callers — same shape
+ * the lexical leg already shares with the eval).
  *
  * Each chunk's `text` is the raw passage stored as `chunk_text`; `embedText` is
  * what actually hits the model — title prepended for topic context ("contextual
  * chunking"), with `description` folded into chunk 0 when present. `tokens` is
- * the estimate of `embedText`, because that is the string measured against the
+ * the estimate of `embedText`, because that's the string measured against the
  * 512 / 8192 windows.
  *
- * @param {string} content  full node content (frontmatter + body)
+ * @param {{title?:string, description?:string, body?:string}} parts
  * @param {{targetTokens?:number, overlapTokens?:number,
  *          estimateTokens?:(t:string)=>number}} [opts]
- * @returns {{nodeSha:string, title:string,
- *            chunks:Array<{index:number, text:string, embedText:string, tokens:number}>}}
+ * @returns {Array<{index:number, text:string, embedText:string, tokens:number}>}
  */
-export function splitMarkdown(content, opts = {}) {
+export function chunkParts({ title = '', description = '', body = '' } = {}, opts = {}) {
   const target = opts.targetTokens ?? DEFAULT_TARGET_TOKENS;
   const overlap = opts.overlapTokens ?? DEFAULT_OVERLAP_TOKENS;
   const estimate = opts.estimateTokens ?? estimateTokens;
 
-  const { title, description, body } = parseNode(content);
-  const nodeSha = contentSha(content);
-
   // Body → sections → (sub-split oversized sections) → ordered passages.
   const passages = [];
-  for (const section of splitSections(body)) {
+  for (const section of splitSections((body || '').trim())) {
     if (estimate(section) <= target) {
       passages.push(section);
     } else {
@@ -194,14 +194,32 @@ export function splitMarkdown(content, opts = {}) {
   if (passages.length === 0) passages.push('');
 
   const titlePrefix = title ? title + '\n\n' : '';
-  const chunks = passages.map((text, index) => {
+  return passages.map((text, index) => {
     let embedText = titlePrefix + text;
     if (index === 0 && description) embedText = titlePrefix + description + '\n\n' + text;
     embedText = embedText.trim();
     return { index, text, embedText, tokens: estimate(embedText) };
   });
-
-  return { nodeSha, title, chunks };
 }
 
-export default { splitMarkdown, parseNode, contentSha, estimateTokens, DEFAULT_TARGET_TOKENS, DEFAULT_OVERLAP_TOKENS };
+/**
+ * Split one raw node (frontmatter + body) into title-prefixed, header-aware
+ * chunks (#190). Thin wrapper: parse → chunk → stamp the content sha (the
+ * re-chunk trigger for the write path).
+ *
+ * @param {string} content  full node content (frontmatter + body)
+ * @param {{targetTokens?:number, overlapTokens?:number,
+ *          estimateTokens?:(t:string)=>number}} [opts]
+ * @returns {{nodeSha:string, title:string,
+ *            chunks:Array<{index:number, text:string, embedText:string, tokens:number}>}}
+ */
+export function splitMarkdown(content, opts = {}) {
+  const { title, description, body } = parseNode(content);
+  return {
+    nodeSha: contentSha(content),
+    title,
+    chunks: chunkParts({ title, description, body }, opts),
+  };
+}
+
+export default { splitMarkdown, chunkParts, parseNode, contentSha, estimateTokens, DEFAULT_TARGET_TOKENS, DEFAULT_OVERLAP_TOKENS };

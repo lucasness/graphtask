@@ -25,8 +25,15 @@ describe('createEmbeddingProvider — backend selection', () => {
     expect(createEmbeddingProvider({})).toBeNull();
   });
 
-  it('throws a clear error for the deferred local-onnx backend', () => {
-    expect(() => createEmbeddingProvider({ backend: 'local-onnx' })).toThrow(/local-onnx/);
+  it('builds a real in-process provider for local-onnx (lazy model load)', async () => {
+    // Inject a fake transformers lib so the test never loads the real model.
+    const fakeExtractor = async (batch) => ({ tolist: () => batch.map(() => [1, 0]) });
+    const transformers = { pipeline: async () => fakeExtractor };
+    const p = createEmbeddingProvider({ backend: 'local-onnx', model: 'm' }, { transformers });
+    expect(p.modelId).toBe('m');
+    const v = await p.embed(['a', 'b']);
+    expect(v).toEqual([[1, 0], [1, 0]]);
+    expect(p.dim).toBe(2); // learned from the first embed
   });
 
   it('requires a url for the http backend', () => {

@@ -28,10 +28,65 @@ export function createEmbeddingProvider(cfg = {}, deps = {}) {
   const backend = cfg.backend || 'none';
   if (backend === 'none') return null;
   if (HTTP_BACKENDS.has(backend)) return createHttpEmbeddingProvider(cfg, deps);
-  if (backend === 'local-onnx') {
-    throw new Error("embedding backend 'local-onnx' is not wired yet (optional in-process dev path; lands with the P2.3 local track)");
-  }
+  if (backend === 'local-onnx') return createLocalOnnxProvider(cfg, deps);
   throw new Error(`unknown embedding backend "${backend}"`);
+}
+
+// In-process embedding via transformers.js / ONNX — the zero-service self-host
+// backend (#173 §9: "OSS self-hosters run models locally"). No Docker, no
+// endpoint: the model runs inside the Node server. @huggingface/transformers is
+// an OPTIONAL dependency (it pulls onnxruntime, which `none`/`http` users
+// shouldn't pay for), so it's imported lazily and a clear error fires if a
+// self-hoster selected this backend without installing it.
+//
+// Default model is the ONNX build of BAAI/bge-small-en-v1.5 (#173 §10 Track A);
+// override via EMBEDDING_MODEL. transformers.js does mean-pooling + L2-normalize
+// internally when asked, matching the provider contract.
+const DEFAULT_ONNX_MODEL = 'Xenova/bge-small-en-v1.5';
+
+function createLocalOnnxProvider(cfg, { transformers } = {}) {
+  const model = cfg.model || DEFAULT_ONNX_MODEL;
+  const batchSize = cfg.batchSize ?? DEFAULT_BATCH;
+  let resolvedDim = cfg.dim ?? null;
+  let extractorPromise = null;
+
+  async function getExtractor() {
+    if (!extractorPromise) {
+      extractorPromise = (async () => {
+        let lib = transformers; // injectable for tests
+        if (!lib) {
+          try {
+            lib = await import('@huggingface/transformers');
+          } catch (err) {
+            throw new Error(
+              "embedding backend 'local-onnx' needs the optional '@huggingface/transformers' package — run: npm install @huggingface/transformers",
+            );
+          }
+        }
+        return lib.pipeline('feature-extraction', model);
+      })();
+    }
+    return extractorPromise;
+  }
+
+  return {
+    modelId: model,
+    get dim() { return resolvedDim; },
+    async embed(texts) {
+      if (!Array.isArray(texts)) throw new Error('embed(texts) expects an array of strings');
+      if (texts.length === 0) return [];
+      const extractor = await getExtractor();
+      const out = [];
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize);
+        const tensor = await extractor(batch, { pooling: 'mean', normalize: true });
+        const rows = tensor.tolist(); // [batch][dim], already L2-normalized
+        for (const v of rows) out.push(v);
+      }
+      if (resolvedDim == null && out[0]) resolvedDim = out[0].length;
+      return out;
+    },
+  };
 }
 
 function createHttpEmbeddingProvider(cfg, { fetchImpl } = {}) {
