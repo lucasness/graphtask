@@ -52,7 +52,10 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
         "sentence-transformers==3.3.1",
-        "torch==2.5.1",
+        # torch >= 2.6 is REQUIRED: newer transformers refuses torch.load on
+        # older torch (CVE-2025-32434) when a model ships .bin weights, which
+        # blocks baking BGE-M3. 2.6+ lifts the restriction.
+        "torch==2.6.0",
         "hf_transfer==0.1.8",
         "fastapi[standard]==0.115.5",
     )
