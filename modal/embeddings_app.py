@@ -34,7 +34,6 @@ Deploy: `modal deploy modal/embeddings_app.py`  (full steps in modal/README.md)
 """
 
 import modal
-from pydantic import BaseModel
 
 MODEL_ID = "BAAI/bge-m3"
 CACHE_DIR = "/cache"  # model weights are baked into the image at this path
@@ -67,12 +66,6 @@ image = (
 app = modal.App("graphtask-embeddings", image=image)
 
 
-# Request body mirrors the Wafer's http provider (src/search/providers/http.js).
-class EmbedRequest(BaseModel):
-    texts: list[str]
-    model: str | None = None
-
-
 @app.cls(
     gpu=GPU,
     scaledown_window=300,  # stay warm 5 min after the last call, then scale to zero
@@ -89,15 +82,21 @@ class Embedder:
         self.model.encode(["warm up"], normalize_embeddings=True)
 
     @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-    def embed(self, request: EmbedRequest):
+    def embed(self, data: dict):
+        # Body matches the Wafer's http provider (src/search/providers/http.js):
+        # { "texts": [...], "model": "<id>" }. Typing the param as `dict` lets
+        # FastAPI parse the JSON body WITHOUT importing pydantic at module load,
+        # which `modal deploy` runs locally (pydantic isn't in the CLI env).
+        texts = data.get("texts") or []
+        model = data.get("model") or MODEL_ID
         # Empty batch is valid — the client never sends one, but stay defensive.
-        if not request.texts:
-            return {"embeddings": [], "model": request.model or MODEL_ID, "dim": 1024}
+        if not texts:
+            return {"embeddings": [], "model": model, "dim": 1024}
 
         # normalize_embeddings=True → cosine == dot product downstream, matching
         # the EmbeddingProvider contract (the Wafer L2-normalizes again anyway).
         vectors = self.model.encode(
-            request.texts,
+            texts,
             normalize_embeddings=True,
             batch_size=64,
             convert_to_numpy=True,
@@ -105,6 +104,6 @@ class Embedder:
         embeddings = [v.tolist() for v in vectors]
         return {
             "embeddings": embeddings,
-            "model": request.model or MODEL_ID,
+            "model": model,
             "dim": len(embeddings[0]),
         }
