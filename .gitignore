@@ -5,3 +5,7 @@ dist
 build
 .wafer/
 .graphtask/
+
+# Python bytecode (Modal app)
+__pycache__/
+*.pyc
