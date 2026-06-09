@@ -36,14 +36,17 @@ Deploy: `modal deploy modal/embeddings_app.py`  (full steps in modal/README.md)
 import modal
 
 MODEL_ID = "BAAI/bge-m3"
+RERANKER_ID = "BAAI/bge-reranker-v2-m3"  # Tier-2 cross-encoder (#173 §10 Modal track)
 CACHE_DIR = "/cache"  # model weights are baked into the image at this path
 GPU = "T4"
 
 
 def _download_model():
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer, CrossEncoder
 
     SentenceTransformer(MODEL_ID, cache_folder=CACHE_DIR)
+    # Bake the reranker too so its container also cold-starts without a HF pull.
+    CrossEncoder(RERANKER_ID, cache_folder=CACHE_DIR)
 
 
 # Pins are known-good as of authoring; if pip resolution fails on deploy, relax
@@ -110,3 +113,36 @@ class Embedder:
             "model": model,
             "dim": len(embeddings[0]),
         }
+
+
+@app.cls(
+    gpu=GPU,
+    scaledown_window=300,
+    max_containers=4,
+)
+@modal.concurrent(max_inputs=10)
+class Reranker:
+    """Tier-2 cross-encoder. Separate scale-to-zero container so it's only billed
+    when a search actually reranks. Speaks the Wafer's RerankProvider contract
+    (src/search/providers/rerank.js): { query, documents, model } -> { scores }."""
+
+    @modal.enter()
+    def load(self):
+        from sentence_transformers import CrossEncoder
+
+        self.model = CrossEncoder(RERANKER_ID, cache_folder=CACHE_DIR, device="cuda")
+        # Warm-up so the first real query doesn't pay JIT/alloc.
+        self.model.predict([("warm", "up")])
+
+    @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
+    def rerank(self, data: dict):
+        query = data.get("query") or ""
+        docs = data.get("documents") or []
+        model = data.get("model") or RERANKER_ID
+        if not docs:
+            return {"scores": [], "model": model}
+        # CrossEncoder scores each (query, doc) pair jointly; default activation
+        # for this single-logit model is sigmoid → [0,1], matching the local path.
+        pairs = [(query, d) for d in docs]
+        scores = self.model.predict(pairs, batch_size=32, convert_to_numpy=True)
+        return {"scores": [float(s) for s in scores], "model": model}

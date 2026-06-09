@@ -127,7 +127,10 @@ export function assertConfig(input) {
  *   EMBEDDING_TIMEOUT_MS  per-request timeout (default 10000; raise for cold/remote backends)
  *   EMBEDDING_RETRIES   bounded retries on timeout/5xx (default 2)
  *   EMBEDDING_BATCH     embed batch size (default 64; lower for long docs)
- *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 (Phase 3)
+ *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 cross-encoder; setting a
+ *                       backend enables the rerank postprocessor
+ *   RERANK_TIMEOUT_MS/RETRIES  transport knobs (cold/remote GPU reranker)
+ *   RERANK_TOPM         how many fused hits to rerank (default 50)
  *   SEARCH_TOPK         final top-K (default 10)
  */
 // Auth credentials for a provider, read with a per-provider prefix so embedding
@@ -172,9 +175,16 @@ export function configFromEnv(env = process.env) {
     backend: rrBackend,
     ...(env.RERANK_URL ? { url: env.RERANK_URL } : {}),
     ...(env.RERANK_MODEL ? { model: env.RERANK_MODEL } : {}),
+    ...(env.RERANK_TIMEOUT_MS ? { timeoutMs: Number(env.RERANK_TIMEOUT_MS) } : {}),
+    ...(env.RERANK_RETRIES ? { retries: Number(env.RERANK_RETRIES) } : {}),
+    ...(env.RERANK_TOPM ? { topM: Number(env.RERANK_TOPM) } : {}),
     ...authFromEnv(env, 'RERANK'),
   };
-  // Reranker postprocessor is Phase 3; env wiring is forward-looking only.
+  // Tier-2 cross-encoder rerank: configuring a backend lights up the rerank
+  // postprocessor (the slot is implemented; #173 §2/§11). `none` leaves it off.
+  if (rrBackend !== 'none' && !cfg.postprocessors.includes('rerank')) {
+    cfg.postprocessors.push('rerank');
+  }
 
   if (env.SEARCH_TOPK) cfg.topK = Number(env.SEARCH_TOPK);
 

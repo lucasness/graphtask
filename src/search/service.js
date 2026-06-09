@@ -19,6 +19,8 @@ import { SearchPipeline } from './pipeline.js';
 import { createLexicalRetriever } from './retrievers/lexical.js';
 import { createDenseRetriever, createStoreDenseRetriever } from './retrievers/dense.js';
 import { createEmbeddingProvider } from './providers/embedding.js';
+import { createRerankProvider } from './providers/rerank.js';
+import { createReranker } from './postprocessors/rerank.js';
 import { parseMarkdown } from '../markdown.js';
 
 // Stage registry. Each entry is a factory (deps, config) => instance | null.
@@ -41,7 +43,13 @@ const RETRIEVER_FACTORIES = {
 
 const POSTPROCESSOR_FACTORIES = {
   graphExpand: () => null, // Phase 3 — k-hop over edges (SQL, no model)
-  rerank: () => null,      // Phase 3 — cross-encoder via RerankProvider
+  // Tier 2 cross-encoder. Needs a RerankProvider; with backend `none` (or
+  // unconfigured) the provider is null → rerank drops and the fused order
+  // stands (graceful). topM caps how many fused hits get scored (cost knob).
+  rerank: (deps, config) => {
+    if (!deps.rerankProvider) return null;
+    return createReranker({ provider: deps.rerankProvider, topM: config.providers?.rerank?.topM });
+  },
 };
 
 /**
@@ -60,6 +68,7 @@ export function assemblePipeline(config, deps = {}) {
   const stageDeps = {
     ...deps,
     embeddingProvider: deps.embeddingProvider ?? createEmbeddingProvider(config.providers?.embedding || {}, deps),
+    rerankProvider: deps.rerankProvider ?? createRerankProvider(config.providers?.rerank || {}, deps),
   };
 
   const retrievers = config.retrievers

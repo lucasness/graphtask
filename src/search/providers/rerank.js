@@ -8,21 +8,83 @@ import { authHeaders, postJson } from './http.js';
 
 const HTTP_BACKENDS = new Set(['http', 'local', 'modal', 'api']);
 
+// Permissively-licensed cross-encoder, ONNX build for in-process use (#173 §2
+// "LICENSE WATCH: Jina rerankers are CC-BY-NC; bge-reranker is permissive").
+// The smaller `base` is the CPU/local-track default (§10); the bigger
+// bge-reranker-v2-m3 is the Modal/GPU track, served over the http backend.
+const DEFAULT_ONNX_RERANKER = 'Xenova/bge-reranker-base';
+
 /**
  * @param {{backend?:string, url?:string, model?:string, token?:string,
  *          modalKey?:string, modalSecret?:string,
  *          timeoutMs?:number, retries?:number}} [cfg]
- * @param {{fetchImpl?:Function}} [deps]
+ * @param {{fetchImpl?:Function, transformers?:Object}} [deps]
  * @returns {import('../types.js').RerankProvider | null}
  */
 export function createRerankProvider(cfg = {}, deps = {}) {
   const backend = cfg.backend || 'none';
   if (backend === 'none') return null;
   if (HTTP_BACKENDS.has(backend)) return createHttpRerankProvider(cfg, deps);
-  if (backend === 'local-onnx') {
-    throw new Error("rerank backend 'local-onnx' is not wired yet (optional in-process dev path; Phase 3)");
-  }
+  if (backend === 'local-onnx') return createLocalOnnxRerankProvider(cfg, deps);
   throw new Error(`unknown rerank backend "${backend}"`);
+}
+
+// In-process cross-encoder via @huggingface/transformers (ONNX) — the zero-
+// service local track, mirroring the local-onnx EMBEDDING provider. A
+// cross-encoder scores (query, doc) PAIRS jointly (vs the bi-encoder's separate
+// encodings), so we tokenize with text_pair and read the single regression
+// logit → sigmoid → [0,1]. @huggingface/transformers is an OPTIONAL dep
+// (imported lazily) so http/none users don't pay for onnxruntime.
+function createLocalOnnxRerankProvider(cfg, { transformers } = {}) {
+  const model = cfg.model || DEFAULT_ONNX_RERANKER;
+  let modelPromise = null;
+
+  async function getModel() {
+    if (!modelPromise) {
+      modelPromise = (async () => {
+        let lib = transformers;
+        if (!lib) {
+          try {
+            lib = await import('@huggingface/transformers');
+          } catch (err) {
+            throw new Error(
+              "rerank backend 'local-onnx' needs the optional '@huggingface/transformers' package — run: npm install @huggingface/transformers",
+            );
+          }
+        }
+        const [tokenizer, seqModel] = await Promise.all([
+          lib.AutoTokenizer.from_pretrained(model),
+          lib.AutoModelForSequenceClassification.from_pretrained(model),
+        ]);
+        return { tokenizer, seqModel };
+      })();
+    }
+    return modelPromise;
+  }
+
+  return {
+    modelId: model,
+    async rerank(query, docs) {
+      if (typeof query !== 'string') throw new Error('rerank(query, docs) expects a string query');
+      if (!Array.isArray(docs)) throw new Error('rerank(query, docs) expects an array of documents');
+      if (docs.length === 0) return [];
+      const { tokenizer, seqModel } = await getModel();
+      // One cross-encoder pass over all (query, doc) pairs; the query repeats as
+      // the first segment, each doc is the text_pair second segment.
+      const inputs = tokenizer(new Array(docs.length).fill(query), {
+        text_pair: docs,
+        padding: true,
+        truncation: true,
+      });
+      const { logits } = await seqModel(inputs);
+      // bge-reranker is single-logit regression; sigmoid → [0,1] relevance.
+      const raw = logits.tolist();
+      return raw.map((row) => {
+        const x = Array.isArray(row) ? row[0] : row;
+        return 1 / (1 + Math.exp(-x));
+      });
+    },
+  };
 }
 
 function createHttpRerankProvider(cfg, { fetchImpl } = {}) {
