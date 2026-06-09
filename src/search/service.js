@@ -21,6 +21,7 @@ import { createDenseRetriever, createStoreDenseRetriever } from './retrievers/de
 import { createEmbeddingProvider } from './providers/embedding.js';
 import { createRerankProvider } from './providers/rerank.js';
 import { createReranker } from './postprocessors/rerank.js';
+import { createGraphExpander } from './postprocessors/graphExpand.js';
 import { parseMarkdown } from '../markdown.js';
 
 // Stage registry. Each entry is a factory (deps, config) => instance | null.
@@ -42,7 +43,11 @@ const RETRIEVER_FACTORIES = {
 };
 
 const POSTPROCESSOR_FACTORIES = {
-  graphExpand: () => null, // Phase 3 — k-hop over edges (SQL, no model)
+  // Phase 3 recall lever — k-hop BFS over `edges` (SQL/in-memory, no model).
+  // Unlike rerank it has no provider to gate on: it runs whenever an edge
+  // source exists (deps.pool+gid on the route, ctx.edges in eval/tests) and is
+  // a graceful no-op otherwise, so the factory always returns the stage.
+  graphExpand: (deps, config) => createGraphExpander({ pool: deps.pool, ...(config.graphExpand || {}) }),
   // Tier 2 cross-encoder. Needs a RerankProvider; with backend `none` (or
   // unconfigured) the provider is null → rerank drops and the fused order
   // stands (graceful). topM caps how many fused hits get scored (cost knob).

@@ -7,7 +7,7 @@
 // shape, so an operator swaps the local-VM backend for Modal with an env change
 // and no code change (#173 §10).
 
-import { RETRIEVERS, POSTPROCESSORS, FUSION_MODES, PROVIDER_BACKENDS } from './types.js';
+import { RETRIEVERS, POSTPROCESSORS, FUSION_MODES, PROVIDER_BACKENDS, EDGE_TYPES } from './types.js';
 
 /**
  * The boring default: Tier-0 lexical only, RRF joiner, top-K 10, no model
@@ -28,6 +28,11 @@ export function defaultConfig() {
       embedding: { backend: 'none' },
       rerank: { backend: 'none' },
     },
+    // graphExpand knobs (#197). Carried even when the stage is off so enabling
+    // it (postprocessors:['graphExpand']) inherits sane caps; the stage reads
+    // these from config.graphExpand. hops=1 is the cheap, high-precision layer;
+    // the caps bound fan-out so a hub node can't flood the list.
+    graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
   };
 }
 
@@ -67,6 +72,7 @@ export function validateConfig(input = {}) {
       embedding: { ...base.providers.embedding, ...(isPlainObject(input.providers?.embedding) ? input.providers.embedding : {}) },
       rerank: { ...base.providers.rerank, ...(isPlainObject(input.providers?.rerank) ? input.providers.rerank : {}) },
     },
+    graphExpand: { ...base.graphExpand, ...(isPlainObject(input.graphExpand) ? input.graphExpand : {}) },
   };
 
   if (!Array.isArray(cfg.retrievers) || cfg.retrievers.length === 0) {
@@ -94,6 +100,22 @@ export function validateConfig(input = {}) {
 
   if (!Number.isInteger(cfg.topK) || cfg.topK < 1) {
     errors.push('topK must be a positive integer');
+  }
+
+  // graphExpand caps must be positive integers; edgeTypes (optional) a subset of
+  // the real edge types so a typo'd type can't silently match nothing.
+  for (const key of ['hops', 'maxAddedPerSeed', 'maxAdded']) {
+    const v = cfg.graphExpand[key];
+    if (!Number.isInteger(v) || v < 1) errors.push(`graphExpand.${key} must be a positive integer`);
+  }
+  if (cfg.graphExpand.edgeTypes !== undefined) {
+    if (!Array.isArray(cfg.graphExpand.edgeTypes)) {
+      errors.push('graphExpand.edgeTypes must be an array');
+    } else {
+      for (const t of cfg.graphExpand.edgeTypes) {
+        if (!EDGE_TYPES.includes(t)) errors.push(`graphExpand.edgeTypes has unknown type "${t}" (known: ${EDGE_TYPES.join(', ')})`);
+      }
+    }
   }
 
   validateProvider('embedding', cfg.providers.embedding, errors);
@@ -131,6 +153,10 @@ export function assertConfig(input) {
  *                       backend enables the rerank postprocessor
  *   RERANK_TIMEOUT_MS/RETRIES  transport knobs (cold/remote GPU reranker)
  *   RERANK_TOPM         how many fused hits to rerank (default 50)
+ *   GRAPH_EXPAND        1/true (or any GRAPH_EXPAND_* knob) enables k-hop
+ *                       graph expansion — the recall lever, no model (#197)
+ *   GRAPH_EXPAND_HOPS / _MAX_PER_SEED / _MAX  BFS depth + fan-out caps
+ *   GRAPH_EXPAND_EDGE_TYPES  comma list to restrict traversal (default: all)
  *   SEARCH_TOPK         final top-K (default 10)
  */
 // Auth credentials for a provider, read with a per-provider prefix so embedding
@@ -168,6 +194,23 @@ export function configFromEnv(env = process.env) {
   };
   if (embBackend !== 'none' && !cfg.retrievers.includes('dense')) {
     cfg.retrievers.push('dense');
+  }
+
+  // Graph expansion (#197): the recall lever, off by default. GRAPH_EXPAND
+  // (1/true) — or simply setting any GRAPH_EXPAND_* knob — lights up the
+  // postprocessor. Pushed BEFORE rerank below so when both are on the order is
+  // graphExpand → rerank (expand the pool, then rerank what's in it; #197).
+  const geOn = ['1', 'true', 'yes'].includes(String(env.GRAPH_EXPAND || '').toLowerCase())
+    || env.GRAPH_EXPAND_HOPS || env.GRAPH_EXPAND_MAX_PER_SEED
+    || env.GRAPH_EXPAND_MAX || env.GRAPH_EXPAND_EDGE_TYPES;
+  if (geOn) {
+    if (env.GRAPH_EXPAND_HOPS) cfg.graphExpand.hops = Number(env.GRAPH_EXPAND_HOPS);
+    if (env.GRAPH_EXPAND_MAX_PER_SEED) cfg.graphExpand.maxAddedPerSeed = Number(env.GRAPH_EXPAND_MAX_PER_SEED);
+    if (env.GRAPH_EXPAND_MAX) cfg.graphExpand.maxAdded = Number(env.GRAPH_EXPAND_MAX);
+    if (env.GRAPH_EXPAND_EDGE_TYPES) {
+      cfg.graphExpand.edgeTypes = env.GRAPH_EXPAND_EDGE_TYPES.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (!cfg.postprocessors.includes('graphExpand')) cfg.postprocessors.push('graphExpand');
   }
 
   const rrBackend = env.RERANK_BACKEND || 'none';

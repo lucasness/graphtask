@@ -105,5 +105,8 @@ export const RETRIEVERS = Object.freeze(['lexical', 'dense']);
 export const POSTPROCESSORS = Object.freeze(['graphExpand', 'rerank']);
 export const FUSION_MODES = Object.freeze(['rrf', 'merge', 'concat']);
 export const PROVIDER_BACKENDS = Object.freeze(['none', 'http', 'local-onnx', 'local', 'modal', 'api']);
+// Edge types the graphExpander may traverse — mirrors edges.js VALID_TYPES so
+// config can restrict expansion to a subset and validate against the real set.
+export const EDGE_TYPES = Object.freeze(['dependency', 'related']);
 
-export default { makeCandidate, RETRIEVERS, POSTPROCESSORS, FUSION_MODES, PROVIDER_BACKENDS };
+export default { makeCandidate, RETRIEVERS, POSTPROCESSORS, FUSION_MODES, PROVIDER_BACKENDS, EDGE_TYPES };
