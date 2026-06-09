@@ -1453,32 +1453,33 @@ Completion checklist — the detailed entries below carry the full context.
     **The CPU path is viable after all — with a small model, for the agent
     flow.** Two measurements (#198):
 
-    *Model size (bake-off, `eval/rerank-bench.js`):* accuracy is **flat across
-    every MiniLM size** (L-2 = L-6 = L-12 at precision@1 0.60), only latency
-    grows, and `bge-reranker-base` was ~2.4 s/query — so the smallest wins:
-    **`ms-marco-MiniLM-L-2-v2` @ q8 is the local default**. q8 (int8) matched
-    fp32 on accuracy. The big `bge-reranker-v2-m3` stays on the GPU/Modal `http`
-    track for self-hosters who want it.
+    *Model + truncation sweep (`eval/rerank-bench.js`, #198):* two levers stack —
+    **document length dominates latency** (2000→512 chars ≈ 3–8× faster, since
+    it's compute-bound) and **TinyBERT-L-2 is ~4× lighter than MiniLM-L-2** at
+    tied accuracy. The winner is **`ms-marco-TinyBERT-L-2-v2` @ q8, docs capped
+    at 512 chars** — it reranks the top-20 in **~62 ms on ONE CPU core** vs
+    ~940 ms for MiniLM-L-2 @ 2000 chars, a ~15× speedup at the same accuracy.
+    That's the local default. MiniLM-L-2 is a slightly-stronger, ~4× slower
+    fallback; the big `bge-reranker-v2-m3` is the GPU/Modal `http` track.
 
     *Real pipeline (hybrid-at-50, `eval/hybrid-ab.js`):* on the **production**
-    config — lexical(top-50)+dense(top-50)→RRF — rerank is a big precision win:
+    config — lexical(top-50)+dense(top-50)→RRF — rerank is a big precision win.
+    With the default TinyBERT-L-2 @ 512 chars, top-20 (one core):
 
-    | rerank | precision@1 | nDCG@10 | MRR | latency p50 |
-    |---|---|---|---|---|
-    | off | 0.60 | 0.762 | 0.762 | **29 ms** |
-    | top-5 | 0.875 | 0.851 | 0.908 | ~293 ms |
-    | top-10 | **0.90** | 0.874 | 0.926 | ~544 ms |
-    | top-20 | 0.90 | 0.887 | 0.936 | ~921 ms |
+    | rerank | precision@1 | nDCG@10 | MRR | recall@10 | latency |
+    |---|---|---|---|---|---|
+    | off | 0.60 | 0.762 | 0.762 | 0.823 | **29 ms** |
+    | **TinyBERT-L-2, top-20** | **0.875** | 0.883 | 0.923 | 0.859 | **~62 ms** |
 
-    Honest latency note: an earlier "~167 ms" figure was the lexical-only case
-    (few/short candidates); reranking 20 **full** hybrid docs is **~0.5–1 s on
-    CPU**, so **<200 ms is not reachable on CPU** for the real config — that
-    needs a GPU or reranking the short matched *chunk* instead of the full doc.
-    The sweet spot is **`RERANK_TOPM=10`** (full precision@1 0.90, ~544 ms).
-    Rerank stays **off by default** (our flows are recall-first), but it's the
-    right call for the **agent / best-single-answer** path, where ~0.5 s for
-    precision@1 0.60→0.90 is a fine trade. Method + full tables in graph #198;
-    earlier GPU A/B in #196.
+    Keep **`RERANK_TOPM=20`**: 15% of queries have the wanted doc in fused
+    positions 11–20 (so recall@10 holds 0.859 vs 0.823 at top-10), and at ~62 ms
+    top-20 is essentially free. Latency is compute-bound, so more vCPUs scale it
+    further (this number is from a 1-core box). Rerank stays **off by default**
+    (our flows are recall-first), but at ~62 ms it's cheap to flip on for the
+    **agent / best-single-answer** path. On our English notes the tiny local
+    model matched bge-reranker-v2-m3 on quality at a fraction of the cost; bge's
+    edge only shows on harder/multilingual corpora. Tables + method in graph
+    #198; earlier GPU A/B in #196.
 
   **How the two deployments differ:**
   - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.
