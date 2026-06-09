@@ -1361,11 +1361,14 @@ Completion checklist — the detailed entries below carry the full context.
   - **Retrieval recipe (this drives accuracy; it's store-agnostic).**
     Lexical (BM25) + dense (vector) candidate generation, top ~100 each →
     fuse with **Reciprocal Rank Fusion (RRF, k=60)** (rank-based, no score
-    normalization) → **cross-encoder rerank** the top 20–50 → **graph
-    expansion**: seed from the reranked hits, then traverse our existing
+    normalization) → *(optional)* **cross-encoder rerank** the top 20–50 →
+    **graph expansion**: seed from the hits, then traverse our existing
     `edges` (k-hop, or Personalized PageRank à la HippoRAG) for multi-hop
     concepts. Get recall@50 solid *before* layering the reranker — a
-    reranker can only reorder what retrieval already found.
+    reranker can only reorder what retrieval already found (it can't fix a
+    retrieval miss; **graph expansion** can). Rerank is **off by default** for
+    our flows (see *How search is used* above); graph expansion is the
+    higher-value next layer.
   - **Storage (Postgres-native — free + self-hostable).**
     - **Dense:** `pgvector` (HNSW). Matches/beats Qdrant/Milvus under ~50M
       vectors; our graphs are orders smaller. Embed `tasks.content` on the
@@ -1398,6 +1401,33 @@ Completion checklist — the detailed entries below carry the full context.
     **query is embedded at search time**. The lexical (BM25/substring) leg
     needs *no* embeddings — only the vector leg does. That asymmetry is what
     makes the tiers below possible.
+
+  - **How search is used — two flows, and why the *list* matters more than
+    rank #1.**
+    1. **Human (Cmd/Ctrl+F).** The bar opens a **results dropdown**. ↑/↓ walk
+       the list; as the active result changes, its node is **focused on the
+       graph** and the **side panel opens** — the same mechanism as selecting a
+       node or watching an agent — but keyboard focus stays in the dropdown.
+       **Enter / click commits:** the dropdown closes, the node becomes the
+       active selection, and the matched span is highlighted **by how it was
+       found** — a **lexical** title/keyword hit highlights the matched *word*;
+       a **dense** hit highlights the matched *chunk*, and the markdown viewer
+       **scrolls that chunk into view** (bodies are long; the winning chunk may
+       sit near the bottom). The highlight is **transient** (fades after focus)
+       so it guides without nagging.
+    2. **Agent.** An agent calls the search skill, gets the ranked list, and
+       picks using its own context — no UI, no highlight. It just needs the
+       right node **present** in the results.
+
+    **Consequence for ranking — we optimize recall@k, not rank-1.** Neither
+    flow needs the best answer at **#1**; it only needs to be **in the visible
+    list (top ~10–20)** — the human scrolls to it, the agent reads the list.
+    Measured on a real graph: **no-rerank recall@20 ≈ 0.885 ≈ rerank
+    recall@10 ≈ 0.905** — i.e. *showing a slightly longer list matches what the
+    reranker buys, for free and ~30× faster.* The reranker mostly improves
+    **rank-1 (MRR 0.74→0.90)**, which these flows don't need. That is **why
+    Tier-2 rerank is off by default** (next section). A self-hoster whose flow
+    *does* need #1 precision can flip it on.
 
   **Deployment & self-host tiers — search is progressive enhancement.**
   Search degrades cleanly by available compute: it runs on a laptop with zero
