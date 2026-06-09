@@ -1450,29 +1450,35 @@ Completion checklist — the detailed entries below carry the full context.
     expansion does that). It's the **precision lever**; graph expansion is the
     recall lever.
 
-    **The CPU path is viable after all — it just needs a small model.** The
-    #198 bake-off measured every cross-encoder size on the Wafer CPU (no GPU,
-    in-process ONNX) for *both* latency and eval accuracy on the stock graph,
-    reranking the top-20:
+    **The CPU path is viable after all — with a small model, for the agent
+    flow.** Two measurements (#198):
 
-    | model | rerank stage p50 | precision@1 | nDCG@10 | MRR |
+    *Model size (bake-off, `eval/rerank-bench.js`):* accuracy is **flat across
+    every MiniLM size** (L-2 = L-6 = L-12 at precision@1 0.60), only latency
+    grows, and `bge-reranker-base` was ~2.4 s/query — so the smallest wins:
+    **`ms-marco-MiniLM-L-2-v2` @ q8 is the local default**. q8 (int8) matched
+    fp32 on accuracy. The big `bge-reranker-v2-m3` stays on the GPU/Modal `http`
+    track for self-hosters who want it.
+
+    *Real pipeline (hybrid-at-50, `eval/hybrid-ab.js`):* on the **production**
+    config — lexical(top-50)+dense(top-50)→RRF — rerank is a big precision win:
+
+    | rerank | precision@1 | nDCG@10 | MRR | latency p50 |
     |---|---|---|---|---|
-    | *lexical, no rerank* | — | 0.35 | 0.455 | 0.466 |
-    | **ms-marco-MiniLM-L-2-v2 (q8)** | **~167 ms** | **0.60** | 0.563 | 0.621 |
-    | MiniLM-L-6 (q8) | ~470 ms | 0.60 | 0.562 | 0.626 |
-    | MiniLM-L-12 (q8) | ~770 ms | 0.60 | 0.561 | 0.625 |
-    | bge-reranker-base | ~2.4 s/query | *fails the latency gate* | | |
+    | off | 0.60 | 0.762 | 0.762 | **29 ms** |
+    | top-5 | 0.875 | 0.851 | 0.908 | ~293 ms |
+    | top-10 | **0.90** | 0.874 | 0.926 | ~544 ms |
+    | top-20 | 0.90 | 0.887 | 0.936 | ~921 ms |
 
-    Accuracy is **flat across every MiniLM size** — only latency grows — so the
-    smallest wins: **`ms-marco-MiniLM-L-2-v2` @ q8 is the local default**, the
-    only cell under the ~200 ms budget, and it lifts precision@1 from 0.35 to
-    0.60. q8 (int8) matched fp32 on accuracy. The old "~166 s, non-viable on
-    CPU" figure was specifically `bge-reranker-base` (15× over budget); that
-    big model stays on the GPU/Modal `http` track (`bge-reranker-v2-m3`) for
-    self-hosters who want it. Rerank is **still off by default** because our
-    flows are recall-first, but it's now cheap enough to flip on for the
-    **agent / best-single-answer** path with no GPU. Full table + method in
-    graph task #198 (`node eval/rerank-bench.js`); earlier GPU A/B in #196.
+    Honest latency note: an earlier "~167 ms" figure was the lexical-only case
+    (few/short candidates); reranking 20 **full** hybrid docs is **~0.5–1 s on
+    CPU**, so **<200 ms is not reachable on CPU** for the real config — that
+    needs a GPU or reranking the short matched *chunk* instead of the full doc.
+    The sweet spot is **`RERANK_TOPM=10`** (full precision@1 0.90, ~544 ms).
+    Rerank stays **off by default** (our flows are recall-first), but it's the
+    right call for the **agent / best-single-answer** path, where ~0.5 s for
+    precision@1 0.60→0.90 is a fine trade. Method + full tables in graph #198;
+    earlier GPU A/B in #196.
 
   **How the two deployments differ:**
   - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.
