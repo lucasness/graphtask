@@ -10,12 +10,12 @@ const HTTP_BACKENDS = new Set(['http', 'local', 'modal', 'api']);
 
 // Permissively-licensed cross-encoder, ONNX build for in-process use (#173 §2
 // "LICENSE WATCH: Jina rerankers are CC-BY-NC; bge/MS-MARCO are permissive").
-// Default = ms-marco-MiniLM-L-2-v2 @ q8: the #198 bake-off measured every size
-// on our box and found accuracy FLAT across L-2…L-12 (precision@1 0.60, nDCG@10
-// ~0.562) while latency climbs with size — so the smallest wins. L-2 q8 reranks
-// the top-20 in ~167ms (the only cell under our 200ms budget); bge-reranker-base
-// was ~2.4s/query on CPU (15x over) and is the Modal/GPU `http` track instead.
-const DEFAULT_ONNX_RERANKER = 'Xenova/ms-marco-MiniLM-L-2-v2';
+// Default = ms-marco-TinyBERT-L-2-v2 @ q8: the #198 sweep found it ~4× lighter
+// than MiniLM-L-2 at tied accuracy. Paired with maxChars=512 it reranks the
+// top-20 in ~62ms on ONE CPU core (vs ~940ms for MiniLM-L-2 @ 2000 chars) —
+// accuracy a wash on our eval. MiniLM-L-2 is the slightly-stronger fallback
+// (RERANK_MODEL); the big bge-reranker-v2-m3 is the Modal/GPU `http` track.
+const DEFAULT_ONNX_RERANKER = 'Xenova/ms-marco-TinyBERT-L-2-v2';
 const DEFAULT_ONNX_DTYPE = 'q8'; // int8 — same accuracy as fp32 in the bake-off, ~1.5x faster
 
 /**

@@ -63,6 +63,15 @@ describe('rerank postprocessor', () => {
     const rr = createReranker({ provider: fakeProvider({}) });
     expect(await rr.postprocess('q', [], { corpus })).toEqual([]);
   });
+
+  it('truncates doc text to maxChars before sending to the provider (#198 latency lever)', async () => {
+    let sentLen = -1;
+    const capture = { modelId: 'cap', async rerank(query, docs) { sentLen = docs[0].length; return docs.map(() => 0.5); } };
+    const longCorpus = [{ id: 1, title: 'T', body: 'x'.repeat(5000) }];
+    const rr = createReranker({ provider: capture, maxChars: 100 });
+    await rr.postprocess('q', [{ taskId: 1, score: 0.9, source: 'lexical' }], { corpus: longCorpus });
+    expect(sentLen).toBe(100);
+  });
 });
 
 describe('local-onnx rerank provider', () => {
@@ -86,7 +95,7 @@ describe('local-onnx rerank provider', () => {
     expect(await p.rerank('q', [])).toEqual([]);
   });
 
-  it('defaults to the bake-off winner (MiniLM-L-2) at q8, and passes dtype through', async () => {
+  it('defaults to the sweep winner (TinyBERT-L-2) at q8, and passes dtype through', async () => {
     const seen = [];
     const transformers = {
       AutoTokenizer: { from_pretrained: async () => (texts, opts) => ({ pairs: opts.text_pair }) },
@@ -95,9 +104,9 @@ describe('local-onnx rerank provider', () => {
       },
     };
     const def = createRerankProvider({ backend: 'local-onnx' }, { transformers });
-    expect(def.modelId).toBe('Xenova/ms-marco-MiniLM-L-2-v2');
+    expect(def.modelId).toBe('Xenova/ms-marco-TinyBERT-L-2-v2');
     await def.rerank('q', ['d']);
-    expect(seen[0].model).toBe('Xenova/ms-marco-MiniLM-L-2-v2');
+    expect(seen[0].model).toBe('Xenova/ms-marco-TinyBERT-L-2-v2');
     expect(seen[0].opts).toEqual({ dtype: 'q8' });
 
     const fp = createRerankProvider({ backend: 'local-onnx', model: 'X/y', dtype: 'fp32' }, { transformers });

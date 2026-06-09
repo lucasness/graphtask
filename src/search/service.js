@@ -53,7 +53,11 @@ const POSTPROCESSOR_FACTORIES = {
   // stands (graceful). topM caps how many fused hits get scored (cost knob).
   rerank: (deps, config) => {
     if (!deps.rerankProvider) return null;
-    return createReranker({ provider: deps.rerankProvider, topM: config.providers?.rerank?.topM });
+    return createReranker({
+      provider: deps.rerankProvider,
+      topM: config.providers?.rerank?.topM,
+      maxChars: config.providers?.rerank?.maxChars,
+    });
   },
 };
 

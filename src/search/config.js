@@ -224,6 +224,7 @@ export function configFromEnv(env = process.env) {
     ...(env.RERANK_TIMEOUT_MS ? { timeoutMs: Number(env.RERANK_TIMEOUT_MS) } : {}),
     ...(env.RERANK_RETRIES ? { retries: Number(env.RERANK_RETRIES) } : {}),
     ...(env.RERANK_TOPM ? { topM: Number(env.RERANK_TOPM) } : {}),
+    ...(env.RERANK_MAXCHARS ? { maxChars: Number(env.RERANK_MAXCHARS) } : {}),
     ...authFromEnv(env, 'RERANK'),
   };
   // Tier-2 cross-encoder rerank: configuring a backend lights up the rerank

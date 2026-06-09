@@ -12,7 +12,11 @@
 // reranking scores the real node text, not just the lexical snippet.
 
 const DEFAULT_TOP_M = 50; // rerank this many fused hits; the tail passes through
-const DEFAULT_MAX_CHARS = 2000; // cap doc text sent to the cross-encoder (it truncates anyway)
+// Cap doc text sent to the cross-encoder. 512 is the #198 sweet spot: sequence
+// length dominates latency (2000→512 chars ≈ 3-8× faster) and the title+lead
+// carries the relevance signal, so accuracy holds. Raise via RERANK_MAXCHARS
+// for corpora where the signal sits deep in long bodies.
+const DEFAULT_MAX_CHARS = 512;
 
 /**
  * @param {{provider:import('../types.js').RerankProvider, topM?:number, maxChars?:number}} opts
