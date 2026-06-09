@@ -1414,15 +1414,29 @@ Completion checklist — the detailed entries below carry the full context.
     time**. Floor: a small CPU model (e5-small ~118M, ~1–2 GB RAM), or an
     embedding API / Modal. No model configured → this tier stays off and
     lexical still works.
-  - **Tier 2 — Rerank** *(opt-in)* — cross-encoder precision. Needs a
-    **reranker** — a small one on CPU, or a GPU / Modal. The heaviest tier;
-    leave it off on a constrained box and Tier 0/1 still deliver.
+  - **Tier 2 — Rerank** *(opt-in, **OFF by default** — set `RERANK_BACKEND`)* —
+    cross-encoder precision. A **real but moderate** lift over Tier 1 (measured
+    on the stock-research graph: nDCG@5 0.71→0.85, MRR 0.74→0.90, MAP
+    0.62→0.76), and it only **reorders what retrieval already found** — it
+    cannot fix recall misses. It's the **heaviest, slowest** tier because it
+    runs a big model on *every* query. Measured per-query rerank cost (50
+    candidates): **~6.5 s on a Modal T4 GPU** (unoptimized fp32; tunable to
+    ~1–2 s via fp16 / top-20 / int8) vs **~166 s on the Wafer CPU** — the CPU
+    path is also OOM-prone and effectively **non-viable**. So enable Tier 2
+    **only with a GPU**, and only if getting the single best result to the top
+    matters; behind progressive rendering the user sees instant Tier-0/1
+    results while the rerank refines async. Leave it off and Tier 0/1 still
+    deliver. Full A/B in graph task #196.
 
   **How the two deployments differ:**
-  - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the
-    Wafer; embedding + reranking run on **Modal** (serverless GPU,
-    scale-to-zero, ~free at our volume) so the ML never contends with the
-    Claude Code process on the box. Full topology + costs in graph task #173.
+  - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.
+    **Embeddings default to a local in-process model** — the eval found a small
+    local model *ties* a big GPU one on accuracy **and** is faster per query, so
+    Tier 1 needs no GPU (graph task #193). **Modal** (serverless GPU,
+    scale-to-zero, ~free at our volume) is reserved for the jobs that genuinely
+    need it: the optional Tier-2 **reranker** (where the GPU is required — see
+    above) and bulk re-index acceleration. Full topology + measured costs in
+    graph tasks #173 / #193 / #196.
   - **Self-hosting:** the model backend is **pluggable** — choose by what you
     have. Run Tier 0 + Graph with *zero* models (fully local, no GPU); flip
     on Tier 1 by pointing at any embedding endpoint (a local
