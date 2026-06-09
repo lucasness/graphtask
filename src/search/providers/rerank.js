@@ -9,10 +9,14 @@ import { authHeaders, postJson } from './http.js';
 const HTTP_BACKENDS = new Set(['http', 'local', 'modal', 'api']);
 
 // Permissively-licensed cross-encoder, ONNX build for in-process use (#173 §2
-// "LICENSE WATCH: Jina rerankers are CC-BY-NC; bge-reranker is permissive").
-// The smaller `base` is the CPU/local-track default (§10); the bigger
-// bge-reranker-v2-m3 is the Modal/GPU track, served over the http backend.
-const DEFAULT_ONNX_RERANKER = 'Xenova/bge-reranker-base';
+// "LICENSE WATCH: Jina rerankers are CC-BY-NC; bge/MS-MARCO are permissive").
+// Default = ms-marco-MiniLM-L-2-v2 @ q8: the #198 bake-off measured every size
+// on our box and found accuracy FLAT across L-2…L-12 (precision@1 0.60, nDCG@10
+// ~0.562) while latency climbs with size — so the smallest wins. L-2 q8 reranks
+// the top-20 in ~167ms (the only cell under our 200ms budget); bge-reranker-base
+// was ~2.4s/query on CPU (15x over) and is the Modal/GPU `http` track instead.
+const DEFAULT_ONNX_RERANKER = 'Xenova/ms-marco-MiniLM-L-2-v2';
+const DEFAULT_ONNX_DTYPE = 'q8'; // int8 — same accuracy as fp32 in the bake-off, ~1.5x faster
 
 /**
  * @param {{backend?:string, url?:string, model?:string, token?:string,
@@ -40,6 +44,11 @@ const DEFAULT_RERANK_BATCH = 8; // bound cross-encoder activation memory (long d
 function createLocalOnnxRerankProvider(cfg, { transformers } = {}) {
   const model = cfg.model || DEFAULT_ONNX_RERANKER;
   const batchSize = cfg.batchSize ?? DEFAULT_RERANK_BATCH;
+  // dtype selects the ONNX weights variant: 'q8' (int8, the default) measured
+  // identical eval accuracy to 'fp32' in the #198 bake-off at ~1.5x the speed.
+  // Override per deployment (RERANK_DTYPE) — e.g. 'fp32' if a model lacks q8
+  // weights. Only applies to local-onnx; the http/GPU track is unaffected.
+  const dtype = cfg.dtype ?? DEFAULT_ONNX_DTYPE;
   let modelPromise = null;
 
   async function getModel() {
@@ -55,9 +64,10 @@ function createLocalOnnxRerankProvider(cfg, { transformers } = {}) {
             );
           }
         }
+        const modelOpts = dtype ? { dtype } : {};
         const [tokenizer, seqModel] = await Promise.all([
           lib.AutoTokenizer.from_pretrained(model),
-          lib.AutoModelForSequenceClassification.from_pretrained(model),
+          lib.AutoModelForSequenceClassification.from_pretrained(model, modelOpts),
         ]);
         return { tokenizer, seqModel };
       })();

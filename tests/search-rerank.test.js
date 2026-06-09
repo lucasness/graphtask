@@ -85,6 +85,25 @@ describe('local-onnx rerank provider', () => {
     const p = createRerankProvider({ backend: 'local-onnx' }, { transformers: {} });
     expect(await p.rerank('q', [])).toEqual([]);
   });
+
+  it('defaults to the bake-off winner (MiniLM-L-2) at q8, and passes dtype through', async () => {
+    const seen = [];
+    const transformers = {
+      AutoTokenizer: { from_pretrained: async () => (texts, opts) => ({ pairs: opts.text_pair }) },
+      AutoModelForSequenceClassification: {
+        from_pretrained: async (model, opts) => { seen.push({ model, opts }); return async (inp) => ({ logits: { tolist: () => inp.pairs.map(() => [0]) } }); },
+      },
+    };
+    const def = createRerankProvider({ backend: 'local-onnx' }, { transformers });
+    expect(def.modelId).toBe('Xenova/ms-marco-MiniLM-L-2-v2');
+    await def.rerank('q', ['d']);
+    expect(seen[0].model).toBe('Xenova/ms-marco-MiniLM-L-2-v2');
+    expect(seen[0].opts).toEqual({ dtype: 'q8' });
+
+    const fp = createRerankProvider({ backend: 'local-onnx', model: 'X/y', dtype: 'fp32' }, { transformers });
+    await fp.rerank('q', ['d']);
+    expect(seen[1]).toEqual({ model: 'X/y', opts: { dtype: 'fp32' } });
+  });
 });
 
 describe('rerank config + assembly wiring', () => {
