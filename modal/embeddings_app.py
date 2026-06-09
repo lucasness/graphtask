@@ -45,8 +45,9 @@ def _download_model():
     from sentence_transformers import SentenceTransformer, CrossEncoder
 
     SentenceTransformer(MODEL_ID, cache_folder=CACHE_DIR)
-    # Bake the reranker too so its container also cold-starts without a HF pull.
-    CrossEncoder(RERANKER_ID, cache_folder=CACHE_DIR)
+    # CrossEncoder has no cache_folder arg; it honors the HF cache (HF_HOME, set
+    # on the image to CACHE_DIR) so its weights bake into the image layer too.
+    CrossEncoder(RERANKER_ID)
 
 
 # Pins are known-good as of authoring; if pip resolution fails on deploy, relax
@@ -62,8 +63,9 @@ image = (
         "hf_transfer==0.1.8",
         "fastapi[standard]==0.115.5",
     )
-    # Faster weight downloads while baking the image.
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # Faster weight downloads + a stable HF cache path so the reranker (which
+    # has no cache_folder arg) bakes into the image alongside the embed model.
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "HF_HOME": CACHE_DIR})
     # Bake the weights INTO the image so cold-start containers never re-download
     # from HuggingFace (#173 §10: ".run_function(download_model)").
     .run_function(_download_model)
@@ -130,7 +132,7 @@ class Reranker:
     def load(self):
         from sentence_transformers import CrossEncoder
 
-        self.model = CrossEncoder(RERANKER_ID, cache_folder=CACHE_DIR, device="cuda")
+        self.model = CrossEncoder(RERANKER_ID, device="cuda")
         # Warm-up so the first real query doesn't pay JIT/alloc.
         self.model.predict([("warm", "up")])
 

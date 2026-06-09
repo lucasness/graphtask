@@ -35,8 +35,11 @@ export function createRerankProvider(cfg = {}, deps = {}) {
 // encodings), so we tokenize with text_pair and read the single regression
 // logit → sigmoid → [0,1]. @huggingface/transformers is an OPTIONAL dep
 // (imported lazily) so http/none users don't pay for onnxruntime.
+const DEFAULT_RERANK_BATCH = 8; // bound cross-encoder activation memory (long docs OOM in one shot)
+
 function createLocalOnnxRerankProvider(cfg, { transformers } = {}) {
   const model = cfg.model || DEFAULT_ONNX_RERANKER;
+  const batchSize = cfg.batchSize ?? DEFAULT_RERANK_BATCH;
   let modelPromise = null;
 
   async function getModel() {
@@ -69,20 +72,25 @@ function createLocalOnnxRerankProvider(cfg, { transformers } = {}) {
       if (!Array.isArray(docs)) throw new Error('rerank(query, docs) expects an array of documents');
       if (docs.length === 0) return [];
       const { tokenizer, seqModel } = await getModel();
-      // One cross-encoder pass over all (query, doc) pairs; the query repeats as
-      // the first segment, each doc is the text_pair second segment.
-      const inputs = tokenizer(new Array(docs.length).fill(query), {
-        text_pair: docs,
-        padding: true,
-        truncation: true,
-      });
-      const { logits } = await seqModel(inputs);
-      // bge-reranker is single-logit regression; sigmoid → [0,1] relevance.
-      const raw = logits.tolist();
-      return raw.map((row) => {
-        const x = Array.isArray(row) ? row[0] : row;
-        return 1 / (1 + Math.exp(-x));
-      });
+      const out = [];
+      // Batched cross-encoder passes. The query repeats as the first segment,
+      // each doc is the text_pair second segment. Small batches keep peak
+      // activation memory bounded — a single pass over many long docs OOMs.
+      for (let i = 0; i < docs.length; i += batchSize) {
+        const batch = docs.slice(i, i + batchSize);
+        const inputs = tokenizer(new Array(batch.length).fill(query), {
+          text_pair: batch,
+          padding: true,
+          truncation: true,
+        });
+        const { logits } = await seqModel(inputs);
+        // bge-reranker is single-logit regression; sigmoid → [0,1] relevance.
+        for (const row of logits.tolist()) {
+          const x = Array.isArray(row) ? row[0] : row;
+          out.push(1 / (1 + Math.exp(-x)));
+        }
+      }
+      return out;
     },
   };
 }
