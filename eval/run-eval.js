@@ -32,8 +32,23 @@ function parseArgs(argv) {
     if (argv[i] === '--gid') args.gid = argv[++i];
     else if (argv[i] === '--k') args.ks = argv[++i].split(',').map((n) => parseInt(n, 10)).filter(Boolean);
     else if (argv[i] === '--dataset') args.dataset = argv[++i];
+    else if (argv[i] === '--ab-expand') args.abExpand = true;
   }
   return args;
+}
+
+// Edges for graph expansion (#197). Live graph: the /graph view returns
+// { nodes, links } with links shaped {source,target,type}. Fixture: an optional
+// `edges` array on the dataset. Either way the expander gets the same shape.
+async function loadLiveEdges(gid) {
+  const base = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
+  const headers = process.env.GRAPHTASK_AGENT_TOKEN
+    ? { Authorization: `Bearer ${process.env.GRAPHTASK_AGENT_TOKEN}` }
+    : {};
+  const res = await fetch(`${base}/api/graphs/${gid}/graph`, { headers });
+  if (!res.ok) throw new Error(`failed to load edges for graph ${gid}: ${res.status}`);
+  const { links = [] } = await res.json();
+  return links.map((l) => ({ source: l.source, target: l.target, type: l.type }));
 }
 
 async function loadLiveCorpus(gid) {
@@ -73,14 +88,49 @@ const ENV_BACKEND = process.env.EMBEDDING_BACKEND;
 const EVAL_CONFIG = ENV_BACKEND && ENV_BACKEND !== 'none'
   ? { ...configFromEnv(process.env), topK: 100 }
   : { ...defaultConfig(), topK: 100 };
-const pipeline = assemblePipeline(EVAL_CONFIG, {});
 
-async function runTier(query, corpus) {
-  const { candidates } = await pipeline.run(query, { corpus, lexicalTopK: 100, denseTopK: 100 });
+// Build a pipeline from EVAL_CONFIG, optionally appending graphExpand so the
+// A/B compares the SAME retrieval tier with vs without the recall lever (#197).
+function buildPipeline({ expand = false } = {}) {
+  const cfg = { ...EVAL_CONFIG, postprocessors: [...EVAL_CONFIG.postprocessors] };
+  if (expand && !cfg.postprocessors.includes('graphExpand')) cfg.postprocessors.push('graphExpand');
+  return assemblePipeline(cfg, {});
+}
+
+async function runTier(pipeline, query, corpus, edges) {
+  const ctx = { corpus, lexicalTopK: 100, denseTopK: 100 };
+  if (edges) ctx.edges = edges; // only the expand pipeline traverses these
+  const { candidates } = await pipeline.run(query, ctx);
   return candidates.map((c) => c.taskId);
 }
 
 function fmt(n) { return (Math.round(n * 1000) / 1000).toFixed(3); }
+function delta(n) { const s = fmt(Math.abs(n)); return n > 0 ? `+${s}` : n < 0 ? `−${s}` : ' 0.000'; }
+
+// A/B recall table: baseline vs +graphExpand on the same frozen set, so the
+// gate (#197) is legible — does expansion lift recall@k without tanking nDCG?
+async function runAbExpand(args, corpus, edges, queries, qrels, qids) {
+  const base = buildPipeline({ expand: false });
+  const exp = buildPipeline({ expand: true });
+  const bQ = [];
+  const eQ = [];
+  for (const qid of qids) {
+    const qrel = qrels[qid] || {};
+    bQ.push(scoreQuery((await runTier(base, queries[qid], corpus)).map(String), qrel, args.ks));
+    eQ.push(scoreQuery((await runTier(exp, queries[qid], corpus, edges)).map(String), qrel, args.ks));
+  }
+  const bm = meanScores(bQ);
+  const em = meanScores(eQ);
+  console.log(`\n  ── A/B: baseline vs +graphExpand (edges: ${edges.length}) ──`);
+  console.log(`     ${'metric'.padEnd(12)} ${'baseline'.padStart(9)} ${'+expand'.padStart(9)} ${'Δ'.padStart(8)}`);
+  for (const key of Object.keys(bm)) {
+    console.log(`     ${key.padEnd(12)} ${fmt(bm[key]).padStart(9)} ${fmt(em[key]).padStart(9)} ${delta(em[key] - bm[key]).padStart(8)}`);
+  }
+  const recallKeys = Object.keys(bm).filter((k) => k.startsWith('recall@'));
+  const lifted = recallKeys.some((k) => em[k] > bm[k] + 1e-9);
+  const hurt = (em['ndcg@' + args.ks[0]] ?? 0) < (bm['ndcg@' + args.ks[0]] ?? 0) - 1e-9;
+  console.log(`\n  Gate: ${lifted ? 'recall LIFTED' : 'no recall lift'}${hurt ? ' · WARNING nDCG dropped (precision cost)' : ''}\n`);
+}
 
 async function main() {
   const args = parseArgs(process.argv);
@@ -98,12 +148,25 @@ async function main() {
   console.log(`\nKB search eval — pipeline: ${EVAL_CONFIG.retrievers.join('+')} · fusion ${EVAL_CONFIG.fusion.mode}(k=${EVAL_CONFIG.fusion.k})`);
   console.log(`corpus: ${args.gid ? `live graph ${args.gid}` : 'fixture'} (${corpus.length} docs) · queries: ${qids.length} · cutoffs: ${args.ks.join(',')}\n`);
 
+  // A/B mode (#197): compare baseline vs +graphExpand and stop. Edges come from
+  // the live graph (--gid) or an `edges` array on the fixture dataset.
+  if (args.abExpand) {
+    const edges = args.gid ? await loadLiveEdges(args.gid) : (dataset.edges || []);
+    if (edges.length === 0) {
+      console.log('  --ab-expand: no edges available (need --gid or dataset.edges) — nothing to expand.\n');
+      return;
+    }
+    await runAbExpand(args, corpus, edges, queries, qrels, qids);
+    return;
+  }
+
+  const pipeline = buildPipeline();
   const perQuery = [];
   const latencies = [];
   for (const qid of qids) {
     const qrel = qrels[qid] || {};
     const t0 = performance.now();
-    const ranked = await runTier(queries[qid], corpus);
+    const ranked = await runTier(pipeline, queries[qid], corpus);
     latencies.push(performance.now() - t0);
     const scores = scoreQuery(ranked.map(String), qrel, args.ks);
     perQuery.push(scores);
