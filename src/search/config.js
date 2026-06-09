@@ -124,6 +124,9 @@ export function assertConfig(input) {
  *   EMBEDDING_URL       provider endpoint (http backend)
  *   EMBEDDING_MODEL     model id (part of the index version)
  *   EMBEDDING_DIM       vector dimension
+ *   EMBEDDING_TIMEOUT_MS  per-request timeout (default 10000; raise for cold/remote backends)
+ *   EMBEDDING_RETRIES   bounded retries on timeout/5xx (default 2)
+ *   EMBEDDING_BATCH     embed batch size (default 64; lower for long docs)
  *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 (Phase 3)
  *   SEARCH_TOPK         final top-K (default 10)
  */
@@ -152,6 +155,12 @@ export function configFromEnv(env = process.env) {
     ...(env.EMBEDDING_URL ? { url: env.EMBEDDING_URL } : {}),
     ...(env.EMBEDDING_MODEL ? { model: env.EMBEDDING_MODEL } : {}),
     ...(env.EMBEDDING_DIM ? { dim: Number(env.EMBEDDING_DIM) } : {}),
+    // Transport knobs: a cold/remote backend (e.g. Modal scaled-to-zero, or a
+    // large corpus index batch) can blow past the 10s default and silently
+    // degrade to lexical. Let operators raise the ceiling per deployment.
+    ...(env.EMBEDDING_TIMEOUT_MS ? { timeoutMs: Number(env.EMBEDDING_TIMEOUT_MS) } : {}),
+    ...(env.EMBEDDING_RETRIES ? { retries: Number(env.EMBEDDING_RETRIES) } : {}),
+    ...(env.EMBEDDING_BATCH ? { batchSize: Number(env.EMBEDDING_BATCH) } : {}),
     ...authFromEnv(env, 'EMBEDDING'),
   };
   if (embBackend !== 'none' && !cfg.retrievers.includes('dense')) {

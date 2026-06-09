@@ -27,10 +27,11 @@ import { scoreQuery, meanScores, percentile } from './metrics.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
-  const args = { ks: [5, 10], gid: null };
+  const args = { ks: [5, 10], gid: null, dataset: null };
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--gid') args.gid = argv[++i];
     else if (argv[i] === '--k') args.ks = argv[++i].split(',').map((n) => parseInt(n, 10)).filter(Boolean);
+    else if (argv[i] === '--dataset') args.dataset = argv[++i];
   }
   return args;
 }
@@ -83,7 +84,13 @@ function fmt(n) { return (Math.round(n * 1000) / 1000).toFixed(3); }
 
 async function main() {
   const args = parseArgs(process.argv);
-  const dataset = JSON.parse(fs.readFileSync(path.join(__dirname, 'dataset.json'), 'utf-8'));
+  // --dataset points at an alternate frozen query set (e.g. the live-graph
+  // qrels in eval/dataset-stocks.json); defaults to the offline fixture. Queries
+  // + qrels always come from this file; --gid only swaps the CORPUS for live nodes.
+  const datasetPath = args.dataset
+    ? path.resolve(process.cwd(), args.dataset)
+    : path.join(__dirname, 'dataset.json');
+  const dataset = JSON.parse(fs.readFileSync(datasetPath, 'utf-8'));
   const corpus = args.gid ? await loadLiveCorpus(args.gid) : dataset.corpus;
   const { queries, qrels } = dataset;
   const qids = Object.keys(queries);
