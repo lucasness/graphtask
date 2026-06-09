@@ -1445,18 +1445,34 @@ Completion checklist — the detailed entries below carry the full context.
     embedding API / Modal. No model configured → this tier stays off and
     lexical still works.
   - **Tier 2 — Rerank** *(opt-in, **OFF by default** — set `RERANK_BACKEND`)* —
-    cross-encoder precision. A **real but moderate** lift over Tier 1 (measured
-    on the stock-research graph: nDCG@5 0.71→0.85, MRR 0.74→0.90, MAP
-    0.62→0.76), and it only **reorders what retrieval already found** — it
-    cannot fix recall misses. It's the **heaviest, slowest** tier because it
-    runs a big model on *every* query. Measured per-query rerank cost (50
-    candidates): **~6.5 s on a Modal T4 GPU** (unoptimized fp32; tunable to
-    ~1–2 s via fp16 / top-20 / int8) vs **~166 s on the Wafer CPU** — the CPU
-    path is also OOM-prone and effectively **non-viable**. So enable Tier 2
-    **only with a GPU**, and only if getting the single best result to the top
-    matters; behind progressive rendering the user sees instant Tier-0/1
-    results while the rerank refines async. Leave it off and Tier 0/1 still
-    deliver. Full A/B in graph task #196.
+    cross-encoder precision. It only **reorders what retrieval already found** —
+    it lifts the *ranking* (the best answer to the top), not *recall* (graph
+    expansion does that). It's the **precision lever**; graph expansion is the
+    recall lever.
+
+    **The CPU path is viable after all — it just needs a small model.** The
+    #198 bake-off measured every cross-encoder size on the Wafer CPU (no GPU,
+    in-process ONNX) for *both* latency and eval accuracy on the stock graph,
+    reranking the top-20:
+
+    | model | rerank stage p50 | precision@1 | nDCG@10 | MRR |
+    |---|---|---|---|---|
+    | *lexical, no rerank* | — | 0.35 | 0.455 | 0.466 |
+    | **ms-marco-MiniLM-L-2-v2 (q8)** | **~167 ms** | **0.60** | 0.563 | 0.621 |
+    | MiniLM-L-6 (q8) | ~470 ms | 0.60 | 0.562 | 0.626 |
+    | MiniLM-L-12 (q8) | ~770 ms | 0.60 | 0.561 | 0.625 |
+    | bge-reranker-base | ~2.4 s/query | *fails the latency gate* | | |
+
+    Accuracy is **flat across every MiniLM size** — only latency grows — so the
+    smallest wins: **`ms-marco-MiniLM-L-2-v2` @ q8 is the local default**, the
+    only cell under the ~200 ms budget, and it lifts precision@1 from 0.35 to
+    0.60. q8 (int8) matched fp32 on accuracy. The old "~166 s, non-viable on
+    CPU" figure was specifically `bge-reranker-base` (15× over budget); that
+    big model stays on the GPU/Modal `http` track (`bge-reranker-v2-m3`) for
+    self-hosters who want it. Rerank is **still off by default** because our
+    flows are recall-first, but it's now cheap enough to flip on for the
+    **agent / best-single-answer** path with no GPU. Full table + method in
+    graph task #198 (`node eval/rerank-bench.js`); earlier GPU A/B in #196.
 
   **How the two deployments differ:**
   - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.
