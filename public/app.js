@@ -2009,10 +2009,7 @@ async function fetchGraph() {
   // The lexical search index (node bodies) is now stale; drop the cache so a
   // later search re-fetches. If the bar is open, refresh it in place.
   invalidateSearchDocs();
-  if (isSearchBarOpen()) {
-    const input = document.getElementById('search-input');
-    loadSearchDocs().then(() => { if (isSearchBarOpen() && input) renderSearch(input.value); }).catch(() => {});
-  }
+  refreshOpenSearch();
 }
 
 async function updateLeafHighlights() {
@@ -3111,6 +3108,13 @@ function loadIntoEditor(content, task = null) {
   if (richEditor) richEditor.setMarkdown(body, false);
   lastSavedContent = content;
   syncBackgroundImageRow();
+  // One-shot hook for the search bar's commit flow: highlight-the-match needs
+  // the body RENDERED first. Double-rAF so ProseMirror has painted.
+  if (_searchEditorLoadedHook) {
+    const hook = _searchEditorLoadedHook;
+    _searchEditorLoadedHook = null;
+    requestAnimationFrame(() => requestAnimationFrame(hook));
+  }
 }
 
 // Reflect the current panelLoadedMeta['background-image'] in the panel's
@@ -3225,14 +3229,18 @@ function restoreViewport(snapshot) {
 }
 
 // ===========================================================================
-// Find / search bar (Cmd/Ctrl+F) — Tier-0 lexical "this graph" search.
-// The front door to KB search (graph tasks #171/#172). Phase 1 is lexical
-// only, fully client-side: one /tasks fetch gives us the node BODIES (the
-// /graph payload omits them), then the shared pure ranker in
-// public/search-lexical.js (window.LexicalSearch) ranks them with the tiered
-// contract (title > description > body; frequency desc; newest-first). No
-// models, no server changes — runs on the Wafer as-is. Later phases swap the
-// ranker call for the hybrid + graph backend behind the same UI.
+// Find / search bar (Cmd/Ctrl+F) — the front door to KB search (#171/#172).
+// Two layers behind one UI (progressive rendering, #173 §7):
+//   • While TYPING: instant client-side lexical preview — the shared pure
+//     ranker in public/search-lexical.js over a cached /tasks fetch. No
+//     network per keystroke, no models.
+//   • On ENTER: the SERVER pipeline (POST /search — hybrid lexical+dense →
+//     RRF → graph expansion → rerank, ~250ms warm) re-ranks the list in
+//     place when it lands; window.KbSearch maps candidates to dropdown rows.
+// Walking results opens the node + side panel (focus stays in the bar);
+// committing closes the bar and highlights the match BY HOW IT WAS FOUND —
+// lexical word → mark the word, semantic chunk → mark the chunk and scroll
+// it into view (CSS Custom Highlight API; never mutates ProseMirror's DOM).
 // ===========================================================================
 
 // Per-graph cache of {id,title,description,body,createdAt} docs for the
@@ -3288,13 +3296,18 @@ function openSearchBar() {
   const input = document.getElementById('search-input');
   if (!bar || !input) return;
   if (!isSearchBarOpen()) {
-    // Snapshot what to restore on Esc: current selection + camera.
+    // Snapshot what to restore on Esc: current selection + camera + whether
+    // the side panel was open (walking results opens it, Esc must undo that).
+    const panel = document.getElementById('panel');
     _searchState = {
       results: [],
       active: -1,
+      query: '',
+      server: { query: null, pending: false },
       restore: {
         selectedIds: cy.nodes('.selected').map((n) => n.id()),
         viewport: captureViewport(),
+        panelWasOpen: !!panel && !panel.classList.contains('hidden'),
       },
     };
     bar.classList.remove('hidden');
@@ -3313,6 +3326,8 @@ function closeSearchBar({ restore = true } = {}) {
   if (!bar) return;
   const state = _searchState;
   bar.classList.add('hidden');
+  setSearchPending(false);
+  if (_searchPanelTimer) { clearTimeout(_searchPanelTimer); _searchPanelTimer = null; }
   const input = document.getElementById('search-input');
   if (input) input.value = '';
   const results = document.getElementById('search-results');
@@ -3321,6 +3336,12 @@ function closeSearchBar({ restore = true } = {}) {
   if (count) count.textContent = '';
   _searchState = null;
   if (restore && state && cy) {
+    // Walking results opens the panel; if it wasn't open before the search,
+    // Esc closes it again as part of putting the world back.
+    if (!state.restore.panelWasOpen && typeof hidePanel === 'function') {
+      const panel = document.getElementById('panel');
+      if (panel && !panel.classList.contains('hidden')) hidePanel();
+    }
     cy.nodes().removeClass('selected');
     cy.edges().removeClass('selected');
     for (const id of state.restore.selectedIds) {
@@ -3350,18 +3371,40 @@ function appendHighlighted(parent, text, ranges) {
   if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
 }
 
-// Run the lexical ranker for `query` and paint the results list. Pure render
-// — does NOT move the camera; selection/centering happens on walk/commit so
-// "Enter runs, arrows walk" stays predictable.
+// Live lexical preview for `query` — instant, client-side, no camera move
+// (spec: Enter runs). Typing also invalidates any server ranking for the
+// previous query; the next Enter re-runs the pipeline.
 function renderSearch(query) {
   if (!_searchState) return;
+  _searchState.query = query;
+  _searchState.server = { query: null, pending: false };
+  setSearchPending(false);
   const lib = window.LexicalSearch;
   const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
-  const results = (lib && query && query.trim() && docs.length)
+  const hits = (lib && query && query.trim() && docs.length)
     ? lib.lexicalSearch(query, docs, { limit: 50 })
     : [];
-  _searchState.results = results;
+  // Same row shape KbSearch.mapServerResults produces, so one painter serves
+  // both layers. Lexical matchType mirrors the server mapping: title flashes,
+  // body marks the word, description has no in-panel target.
+  _searchState.results = hits.map((r) => ({
+    id: r.id,
+    doc: r.doc,
+    field: r.field,
+    snippet: r.snippet,
+    matchType: r.field === 'title' ? 'title' : r.field === 'body' ? 'word' : 'none',
+  }));
   _searchState.active = -1;
+  paintSearchResults({ indexing: !docs.length });
+}
+
+// Paint the dropdown from _searchState.results. Pure render — selection and
+// camera moves happen on walk/commit only.
+function paintSearchResults({ indexing = false } = {}) {
+  if (!_searchState) return;
+  const lib = window.LexicalSearch;
+  const query = _searchState.query || '';
+  const results = _searchState.results;
 
   const list = document.getElementById('search-results');
   const count = document.getElementById('search-count');
@@ -3375,7 +3418,7 @@ function renderSearch(query) {
   if (results.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'search-empty';
-    empty.textContent = docs.length ? 'No matches in this graph.' : 'Indexing…';
+    empty.textContent = indexing ? 'Indexing…' : 'No matches in this graph.';
     list.appendChild(empty);
     if (count) count.textContent = '0';
     return;
@@ -3421,8 +3464,86 @@ function renderSearch(query) {
   });
 }
 
-// Select + center the node for result `index`. Selection mirrors a normal
-// node tap (single-select), and the camera pans it into the visible area.
+// Toggle the bar's "server ranking in flight" affordance.
+function setSearchPending(on) {
+  const bar = searchBarEl();
+  if (bar) bar.classList.toggle('search-pending', !!on);
+}
+
+// Refresh an open bar after the graph changed under it (fetchGraph tail —
+// SSE edits, access flips). The lexical preview re-renders over fresh docs;
+// if a SERVER ranking was up for the current query, re-run it too — otherwise
+// the refresh would silently stomp the hybrid+rerank order with the preview.
+function refreshOpenSearch() {
+  if (!isSearchBarOpen()) return;
+  const input = document.getElementById('search-input');
+  if (!input) return;
+  const serverQ = _searchState && _searchState.server && _searchState.server.query;
+  loadSearchDocs()
+    .then(() => {
+      if (!isSearchBarOpen()) return;
+      renderSearch(input.value); // clears server state; instant lexical pass
+      if (serverQ && input.value.trim() === serverQ) runServerSearch(serverQ);
+    })
+    .catch(() => {});
+}
+
+// Enter → run the real pipeline (POST /search: hybrid → RRF → graph expansion
+// → rerank) and re-paint the dropdown in the server's order when it lands.
+// The lexical preview stays up while this is in flight (progressive
+// rendering); any failure or empty answer leaves it untouched — the server
+// ranking is an enhancement, never a gate.
+async function runServerSearch(rawQuery) {
+  if (!_searchState) return;
+  const q = String(rawQuery || '').trim();
+  if (!q || _searchState.server.query === q) return; // already ran / in flight
+  _searchState.server = { query: q, pending: true };
+  setSearchPending(true);
+  try {
+    const res = await fetch(`${apiBase()}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q }),
+    });
+    if (!res.ok) throw new Error(`search ${res.status}`);
+    const data = await res.json();
+    // Stale guards: bar closed, graph switched, or the user kept typing.
+    const input = document.getElementById('search-input');
+    if (!_searchState || !isSearchBarOpen() || !input || input.value.trim() !== q) return;
+    const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
+    const rows = (window.KbSearch && window.KbSearch.mapServerResults(data.results, docs)) || [];
+    if (!rows.length) return;
+    // Re-paint in server order, keeping the user's place: if they were
+    // already walking, stay on the same NODE at its new rank (or jump to the
+    // new best hit if it dropped off). If nobody was walking — e.g. the
+    // refreshOpenSearch path re-ran us after an SSE edit — repaint only:
+    // auto-focusing here would re-open the panel and, in read-only mode,
+    // re-trigger the 403 → fetchGraph → refresh cycle forever.
+    const prev = _searchState.active >= 0 ? _searchState.results[_searchState.active] : null;
+    _searchState.results = rows;
+    _searchState.active = -1;
+    paintSearchResults();
+    if (prev) {
+      const idx = rows.findIndex((r) => String(r.id) === String(prev.id));
+      focusSearchResult(idx >= 0 ? idx : 0);
+    }
+  } catch {
+    // Lexical preview stands; nothing to clean up.
+  } finally {
+    if (_searchState && _searchState.server.query === q) {
+      _searchState.server.pending = false;
+      setSearchPending(false);
+    }
+  }
+}
+
+// Debounce handle for the walk-opens-panel behavior: arrowing quickly through
+// results shouldn't fire a task fetch per step, only for where you settle.
+let _searchPanelTimer = null;
+
+// Select + center the node for result `index`, and open the side panel on it
+// (UX spec on #172: walking previews the node like node-select / agent-follow
+// — keyboard focus stays in the bar; showPanel never steals focus).
 function focusSearchResult(index) {
   if (!_searchState) return;
   const results = _searchState.results;
@@ -3449,21 +3570,138 @@ function focusSearchResult(index) {
     node.addClass('selected');
     centerNodeInVisibleArea(node);
     if (typeof updateToolbar === 'function') updateToolbar();
+    if (typeof showPanel === 'function') {
+      if (_searchPanelTimer) clearTimeout(_searchPanelTimer);
+      _searchPanelTimer = setTimeout(() => {
+        _searchPanelTimer = null;
+        // Still on this result, bar still open?
+        if (_searchState && _searchState.active === clamped) {
+          showPanel(node, { programmatic: true });
+        }
+      }, 140);
+    }
   }
 }
 
-// Commit a result (click, or Enter on the already-focused row): focus it and
-// open the inspector so the user lands on the node's content.
+// Commit a result (click, or Enter on the already-focused row): the dropdown
+// closes, the node stays selected with the panel open, and the matched span
+// is highlighted by HOW it was found (word / chunk / title flash).
 function commitSearchResult(index) {
   focusSearchResult(index);
   if (!_searchState) return;
   const r = _searchState.results[_searchState.active];
   if (!r) return;
+  const query = _searchState.query || '';
+  if (_searchPanelTimer) { clearTimeout(_searchPanelTimer); _searchPanelTimer = null; }
+  closeSearchBar({ restore: false });
   const node = cy.getElementById(String(r.id));
   if (node && !node.empty() && typeof showPanel === 'function') {
-    // The bar stays open above the panel; closing here would fight the
-    // panel's own camera pan. Keep state so Esc still restores.
+    // showPanel re-fetches the task; the one-shot hook runs after that content
+    // lands in the editor, so the highlight always targets the loaded body.
+    _searchEditorLoadedHook = () => highlightCommittedMatch(r, query);
     showPanel(node, { programmatic: true });
+  }
+}
+
+// --- Commit-time match highlighting ----------------------------------------
+// Uses the CSS Custom Highlight API (CSS.highlights) so we never mutate the
+// ProseMirror DOM — injected <mark>s could get serialized into the saved doc.
+// Browsers without the API still get the scroll-into-view, just no paint.
+
+let _searchEditorLoadedHook = null; // one-shot, armed by commitSearchResult
+let _searchHighlightTimer = null;
+
+function clearSearchHighlight() {
+  if (_searchHighlightTimer) { clearTimeout(_searchHighlightTimer); _searchHighlightTimer = null; }
+  if (window.CSS && CSS.highlights) CSS.highlights.delete('kb-search');
+  const title = document.getElementById('field-title');
+  if (title) title.classList.remove('search-flash');
+}
+
+// Concatenated text of the WYSIWYG render + per-text-node offsets, so a
+// character range over the whole body can be mapped to a DOM Range. Block
+// elements contribute a '\n' separator to keep offsets aligned with how the
+// text reads (and how locateApprox tokenizes it).
+function collectEditorText(root) {
+  const map = [];
+  let text = '';
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  while ((n = walker.nextNode())) {
+    const s = n.textContent;
+    if (!s) continue;
+    if (text && !text.endsWith('\n')) {
+      // New block? ProseMirror renders paragraphs/headings as siblings; a
+      // newline between text nodes of DIFFERENT block parents keeps word
+      // boundaries honest for matching.
+      const prev = map[map.length - 1];
+      if (prev && prev.node.parentElement !== n.parentElement) text += '\n';
+    }
+    map.push({ node: n, start: text.length, end: text.length + s.length });
+    text += s;
+  }
+  return { text, map };
+}
+
+function rangeFromOffsets(map, start, end) {
+  let a = null;
+  let b = null;
+  for (const seg of map) {
+    if (a === null && start < seg.end) a = { node: seg.node, offset: Math.max(0, start - seg.start) };
+    if (end <= seg.end) { b = { node: seg.node, offset: Math.max(0, end - seg.start) }; break; }
+  }
+  if (!a) return null;
+  if (!b) { const last = map[map.length - 1]; b = { node: last.node, offset: last.node.textContent.length }; }
+  const range = document.createRange();
+  range.setStart(a.node, a.offset);
+  range.setEnd(b.node, b.offset);
+  return range;
+}
+
+function highlightCommittedMatch(row, query) {
+  clearSearchHighlight();
+  if (!row || row.matchType === 'none') return;
+
+  if (row.matchType === 'title') {
+    const title = document.getElementById('field-title');
+    if (title) {
+      title.classList.add('search-flash');
+      _searchHighlightTimer = setTimeout(clearSearchHighlight, 2200);
+    }
+    return;
+  }
+
+  // The WYSIWYG ProseMirror specifically — Toast UI also keeps a HIDDEN
+  // md-mode ProseMirror in the DOM (raw markdown, zero height); a bare
+  // `.ProseMirror` selector finds that one first and the highlight lands on
+  // invisible text.
+  const root = document.querySelector('#rich-editor .toastui-editor.ww-mode .ProseMirror');
+  if (!root) return;
+  const { text, map } = collectEditorText(root);
+  if (!text) return;
+
+  let loc = null;
+  if (row.matchType === 'word') {
+    const lib = window.LexicalSearch;
+    const terms = lib ? lib.tokenize(query) : [];
+    const hay = text.toLowerCase();
+    for (const t of terms) {
+      const i = hay.indexOf(t);
+      if (i !== -1) { loc = { start: i, end: i + t.length }; break; }
+    }
+  } else if (row.matchType === 'chunk' && window.KbSearch) {
+    loc = window.KbSearch.locateApprox(text, (row.snippet && row.snippet.text) || '');
+  }
+  if (!loc) return;
+
+  const range = rangeFromOffsets(map, loc.start, loc.end);
+  if (!range) return;
+  const anchorEl = range.startContainer.parentElement;
+  if (anchorEl) anchorEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
+    CSS.highlights.set('kb-search', new Highlight(range));
+    // Transient: guide the eye, then get out of the way.
+    _searchHighlightTimer = setTimeout(clearSearchHighlight, 3500);
   }
 }
 
@@ -3496,7 +3734,10 @@ function initSearchBar() {
         // Already walking → commit (open the node).
         commitSearchResult(_searchState.active);
       } else {
-        walkSearch(e.shiftKey ? -1 : +1); // first Enter: jump to first hit
+        // First Enter: jump to the first lexical hit instantly AND fire the
+        // server pipeline; the list re-sorts in place when it answers.
+        runServerSearch(input.value);
+        walkSearch(e.shiftKey ? -1 : +1);
       }
       return;
     }
