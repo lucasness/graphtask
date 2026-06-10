@@ -12,6 +12,7 @@ import graphPrefsRouter from './routes/graphPrefs.js';
 import selectionRouter from './routes/selection.js';
 import uploadsRouter from './routes/uploads.js';
 import searchRouter from './routes/search.js';
+import searchAllRouter from './routes/searchAll.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
@@ -94,6 +95,9 @@ app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
 // Search reads the graph's nodes and never mutates, so it's read-scoped even
 // though it's a POST (the query rides in the body). A viewer can search.
 app.use('/api/graphs/:gid/search', requireGraph('read'), searchRouter);
+// Cross-graph search has no :gid to guard — it derives its own scope (owned +
+// member graphs) from req.user inside the handler, and 401s anonymous callers.
+app.use('/api/search', searchAllRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
 app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);

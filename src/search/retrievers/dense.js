@@ -125,7 +125,9 @@ export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK,
   return {
     name: 'dense',
     async retrieve(query, ctx = {}) {
-      const eligible = ctx.gid && ctx.corpusFromStore === true;
+      // Scope: one graph (ctx.gid) or a set (ctx.gids — cross-graph search).
+      const scope = ctx.gids && ctx.gids.length ? ctx.gids : ctx.gid;
+      const eligible = scope && ctx.corpusFromStore === true;
       if (!eligible) return memory.retrieve(query, ctx);
       if (!availablePromise) availablePromise = chunkStoreAvailable(pool);
       if (!(await availablePromise)) return memory.retrieve(query, ctx);
@@ -135,7 +137,7 @@ export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK,
 
       const rows = await annSearchChunks(pool, {
         vector: qvec,
-        gid: ctx.gid,
+        gid: scope,
         modelId: provider.modelId,
         limit: ctx.denseTopK ?? chunkTopK,
       });

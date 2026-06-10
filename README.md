@@ -1391,9 +1391,18 @@ Completion checklist — the detailed entries below carry the full context.
     already have for free.
   - **UI.** Cmd/Ctrl+F is the front door (see *Find / search bar* above):
     the bar takes a query, **Enter runs this pipeline.**
-  - **Scope.** Per-graph search first (lives next to the existing
-    `/api/graphs/:gid/tasks` routes), cross-graph "search my graphs" as a
-    follow-up gated by the access model — never leak nodes across owners.
+  - **Scope.** Per-graph search (`POST /api/graphs/:gid/search`, read-gated)
+    plus cross-graph "search my graphs" (`POST /api/search`, ✅ shipped): one
+    pipeline run over every graph the signed-in user **owns or is a member
+    of** — the same set the sidebar lists. The ownership WHERE rides into
+    every leg (corpus load, ANN chunk scan via `graph_id = ANY` +
+    `hnsw.iterative_scan=strict_order`, edge expansion), so nodes never leak
+    across owners; anonymous callers get a 401. Results carry `graphId` +
+    `title` and a `graphs` name map. In the bar, the **"All graphs" scope
+    toggle** lights up when signed in; cross-graph hits wear a graph chip,
+    and committing one switches graphs in-app, focuses the node (the same
+    `?node=<id>` deep-link mechanism shareable URLs use), and applies the
+    match-type highlight.
   - **Indexing — both sides get embedded.** Cosine similarity needs vectors
     on the query *and* the content, so node **content is embedded at write
     time** (`tasks.content` → a `pgvector` column, on the `updated_at`

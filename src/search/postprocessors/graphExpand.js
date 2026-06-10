@@ -46,15 +46,18 @@ export function createGraphExpander({
   maxAdded = DEFAULT_MAX_ADDED,
   edgeTypes = null,
 } = {}) {
-  // Pull this graph's edge rows. Scoped to the graph either way — the SQL leg by
-  // WHERE graph_id, the in-memory leg because the caller only ever hands us the
-  // one graph's edges. Returns null when no edge source exists (→ no-op).
+  // Pull edge rows for the searched graph(s). Scoped either way — the SQL leg
+  // by WHERE graph_id (one id or, for cross-graph search, the accessible set;
+  // edges only ever connect same-graph nodes, so traversal can't hop between
+  // graphs), the in-memory leg because the caller only ever hands us the
+  // relevant edges. Returns null when no edge source exists (→ no-op).
   async function resolveEdges(ctx) {
     if (Array.isArray(ctx.edges)) return ctx.edges;
-    if (pool && ctx.gid) {
+    const scope = ctx.gids && ctx.gids.length ? ctx.gids : ctx.gid;
+    if (pool && scope) {
       const { rows } = await pool.query(
-        'SELECT source_id, target_id, type FROM edges WHERE graph_id = $1',
-        [ctx.gid],
+        'SELECT source_id, target_id, type FROM edges WHERE graph_id = ANY($1)',
+        [Array.isArray(scope) ? scope : [scope]],
       );
       return rows;
     }

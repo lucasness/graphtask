@@ -52,18 +52,27 @@ export function matchTypeFor(candidate) {
 /**
  * Server candidates → dropdown rows. `docs` is the client's per-graph doc
  * cache ({id,title,...}); dense/graph candidates don't carry a title, so the
- * row borrows it from there. Unknown ids (e.g. a node deleted since the cache
- * loaded) are dropped rather than painted as "Untitled" ghosts.
+ * row borrows it from there — or, for cross-graph results, from the
+ * candidate's own `title` (the /api/search route attaches it, since the
+ * client can't cache docs for other graphs). Candidates with NO title source
+ * (e.g. a node deleted since the cache loaded) are dropped rather than
+ * painted as "Untitled" ghosts.
+ *
+ * `opts.graphs` (id → name, from /api/search) attributes each row to its
+ * graph: rows carry `gid` and `graphName` so the dropdown can chip foreign
+ * hits and the commit step knows where to navigate.
  *
  * @param {Array<Object>} results POST /search `results`
  * @param {Array<{id:*,title:string}>} docs
- * @returns {Array<{id:*, doc:Object, field:string, snippet:?Object, matchType:string}>}
+ * @param {{graphs?:Object}} [opts]
+ * @returns {Array<{id:*, doc:Object, field:string, snippet:?Object, matchType:string, gid:?string, graphName:?string}>}
  */
-export function mapServerResults(results, docs) {
+export function mapServerResults(results, docs, opts = {}) {
   const byId = new Map((docs || []).map((d) => [String(d.id), d]));
+  const graphs = opts.graphs || null;
   const rows = [];
   for (const c of results || []) {
-    const doc = byId.get(String(c.taskId));
+    const doc = byId.get(String(c.taskId)) || (c.title != null ? { id: c.taskId, title: c.title } : null);
     if (!doc) continue;
     rows.push({
       id: c.taskId,
@@ -71,6 +80,8 @@ export function mapServerResults(results, docs) {
       field: tagFor(c),
       snippet: c.snippet && c.snippet.text ? c.snippet : null,
       matchType: matchTypeFor(c),
+      gid: c.graphId ?? null,
+      graphName: graphs && c.graphId != null ? graphs[c.graphId] ?? null : null,
     });
   }
   return rows;

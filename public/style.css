@@ -2856,6 +2856,26 @@ kbd {
   color: var(--color-steel);
 }
 
+/* The scope toggle's "soon" badge hides once cross-graph search is actually
+   available to this viewer (signed in). */
+.search-soon.hidden { display: none; }
+
+/* Cross-graph hit chip — names the OTHER graph a result lives in, so a
+   commit's graph-switch is never a surprise. */
+.search-result-graph {
+  flex: 0 0 auto;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-body);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--color-ember-orange);
+  background: color-mix(in srgb, var(--color-ember-orange) 14%, transparent);
+}
+
 /* "Nothing scored well" notice — the list still shows (recall-first), the
    row just resets expectations before the user walks garbage. */
 .search-weak-note {

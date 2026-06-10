@@ -107,14 +107,18 @@ export function assemblePipeline(config, deps = {}) {
  * reusing src/markdown.js so frontmatter parsing matches the rest of the app.
  */
 export async function loadCorpus(pool, gid) {
+  // One graph or a set of graphs (cross-graph search). Docs carry `gid` so
+  // multi-graph callers can attribute each hit back to its graph.
+  const gids = Array.isArray(gid) ? gid : [gid];
   const { rows } = await pool.query(
-    'SELECT id, content, created_at FROM tasks WHERE graph_id = $1',
-    [gid],
+    'SELECT id, graph_id, content, created_at FROM tasks WHERE graph_id = ANY($1)',
+    [gids],
   );
   return rows.map((row) => {
     const { meta, body } = parseMarkdown(row.content || '');
     return {
       id: row.id,
+      gid: row.graph_id,
       title: meta.title != null ? String(meta.title) : '',
       description: meta.description != null ? String(meta.description) : '',
       body: body || '',
@@ -153,10 +157,11 @@ export class SearchService {
     // live store rows.
     let corpusFromStore = false;
     if (!corpus) {
-      if (!this.pool || !ctx.gid) {
-        throw new Error('SearchService.search needs either ctx.corpus or (pool + ctx.gid)');
+      const scope = ctx.gids && ctx.gids.length ? ctx.gids : ctx.gid;
+      if (!this.pool || !scope) {
+        throw new Error('SearchService.search needs either ctx.corpus or (pool + ctx.gid/gids)');
       }
-      corpus = await loadCorpus(this.pool, ctx.gid);
+      corpus = await loadCorpus(this.pool, scope);
       corpusFromStore = true;
     }
     return this.pipeline.run(query, { ...ctx, corpus, corpusFromStore });

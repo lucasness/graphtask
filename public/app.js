@@ -2010,6 +2010,41 @@ async function fetchGraph() {
   // later search re-fetches. If the bar is open, refresh it in place.
   invalidateSearchDocs();
   refreshOpenSearch();
+  consumePendingNodeFocus();
+}
+
+// Deep-link node focus (?node=<id>, also set by cross-graph search commits):
+// once the graph has rendered, select + open the requested node, then strip
+// the param so refresh/share of the cleaned URL behaves normally.
+let _pendingNodeFocus = (() => {
+  try {
+    const id = new URLSearchParams(location.search).get('node');
+    return id ? { id } : null;
+  } catch { return null; }
+})();
+
+function consumePendingNodeFocus() {
+  if (!_pendingNodeFocus || !cy) return;
+  const pending = _pendingNodeFocus;
+  _pendingNodeFocus = null;
+  const node = cy.getElementById(String(pending.id));
+  if (node && !node.empty()) {
+    cy.nodes().not(node).removeClass('selected');
+    cy.edges().removeClass('selected');
+    node.addClass('selected');
+    if (typeof updateToolbar === 'function') updateToolbar();
+    // Search commits carry the matched row + query so the highlight-by-match
+    // survives the graph switch; plain ?node= links just open the panel.
+    if (pending.row && typeof highlightCommittedMatch === 'function') {
+      _searchEditorLoadedHook = () => highlightCommittedMatch(pending.row, pending.query || '');
+    }
+    showPanel(node, { programmatic: true });
+  }
+  if (location.search.includes('node=')) {
+    const url = new URL(location.href);
+    url.searchParams.delete('node');
+    history.replaceState({ graphId: activeGraphId }, '', url.pathname + url.search);
+  }
 }
 
 async function updateLeafHighlights() {
@@ -3303,6 +3338,7 @@ function openSearchBar() {
       results: [],
       active: -1,
       query: '',
+      scope: gtAuth.user ? _searchScopePref : 'graph',
       server: { query: null, pending: false },
       restore: {
         selectedIds: cy.nodes('.selected').map((n) => n.id()),
@@ -3310,6 +3346,7 @@ function openSearchBar() {
         panelWasOpen: !!panel && !panel.classList.contains('hidden'),
       },
     };
+    syncSearchScopeUI();
     bar.classList.remove('hidden');
     // Warm the doc cache; re-render once bodies land in case the user is
     // already typing.
@@ -3380,6 +3417,14 @@ function renderSearch(query) {
   _searchState.server = { query: null, pending: false };
   _searchState.weak = false;
   setSearchPending(false);
+  // "All graphs" has no instant local leg — the other graphs' docs aren't on
+  // the client. Empty list + an Enter hint until the server answers.
+  if (_searchState.scope === 'all') {
+    _searchState.results = [];
+    _searchState.active = -1;
+    paintSearchResults({ allGraphsHint: true });
+    return;
+  }
   const lib = window.LexicalSearch;
   const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
   const hits = (lib && query && query.trim() && docs.length)
@@ -3401,7 +3446,7 @@ function renderSearch(query) {
 
 // Paint the dropdown from _searchState.results. Pure render — selection and
 // camera moves happen on walk/commit only.
-function paintSearchResults({ indexing = false } = {}) {
+function paintSearchResults({ indexing = false, allGraphsHint = false } = {}) {
   if (!_searchState) return;
   const lib = window.LexicalSearch;
   const query = _searchState.query || '';
@@ -3419,9 +3464,12 @@ function paintSearchResults({ indexing = false } = {}) {
   if (results.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'search-empty';
-    empty.textContent = indexing ? 'Indexing…' : 'No matches in this graph.';
+    empty.textContent = allGraphsHint
+      ? 'Press Enter to search all your graphs.'
+      : indexing ? 'Indexing…'
+      : _searchState.scope === 'all' ? 'No matches in your graphs.' : 'No matches in this graph.';
     list.appendChild(empty);
-    if (count) count.textContent = '0';
+    if (count) count.textContent = allGraphsHint ? '' : '0';
     return;
   }
   if (count) count.textContent = String(results.length);
@@ -3453,6 +3501,14 @@ function paintSearchResults({ indexing = false } = {}) {
     fieldTag.className = 'search-result-field';
     fieldTag.textContent = r.field;
     titleLine.appendChild(titleText);
+    // Cross-graph hits carry a graph chip so "where is this?" is answered
+    // before the user commits a navigation.
+    if (r.gid && String(r.gid) !== String(activeGraphId)) {
+      const graphTag = document.createElement('span');
+      graphTag.className = 'search-result-graph';
+      graphTag.textContent = r.graphName || 'other graph';
+      titleLine.appendChild(graphTag);
+    }
     titleLine.appendChild(fieldTag);
     row.appendChild(titleLine);
 
@@ -3476,6 +3532,41 @@ function paintSearchResults({ indexing = false } = {}) {
 function setSearchPending(on) {
   const bar = searchBarEl();
   if (bar) bar.classList.toggle('search-pending', !!on);
+}
+
+// Scope ("This graph" / "All graphs") — cross-graph needs a signed-in user
+// (the server scopes to owned+member graphs; anonymous users own nothing).
+// Remembered across bar opens within the session.
+let _searchScopePref = 'graph';
+
+function syncSearchScopeUI() {
+  const btnGraph = document.getElementById('search-scope-graph');
+  const btnAll = document.getElementById('search-scope-all');
+  if (!btnGraph || !btnAll) return;
+  const signedIn = !!gtAuth.user;
+  btnAll.disabled = !signedIn;
+  btnAll.title = signedIn ? 'Search every graph you own or belong to' : 'Sign in to search all your graphs';
+  const soon = btnAll.querySelector('.search-soon');
+  if (soon) soon.classList.toggle('hidden', signedIn);
+  const scope = (_searchState && _searchState.scope) || 'graph';
+  btnGraph.classList.toggle('active', scope === 'graph');
+  btnGraph.setAttribute('aria-selected', String(scope === 'graph'));
+  btnAll.classList.toggle('active', scope === 'all');
+  btnAll.setAttribute('aria-selected', String(scope === 'all'));
+}
+
+function setSearchScope(scope) {
+  if (!_searchState) return;
+  if (scope === 'all' && !gtAuth.user) return;
+  if (_searchState.scope === scope) return;
+  _searchState.scope = scope;
+  _searchScopePref = scope;
+  syncSearchScopeUI();
+  // Scope change invalidates any server ranking; re-render the current query
+  // under the new scope (lexical preview for "this graph", hint for "all").
+  const input = document.getElementById('search-input');
+  renderSearch(input ? input.value : '');
+  if (input) input.focus();
 }
 
 // Refresh an open bar after the graph changed under it (fetchGraph tail —
@@ -3505,22 +3596,35 @@ async function runServerSearch(rawQuery) {
   if (!_searchState) return;
   const q = String(rawQuery || '').trim();
   if (!q || _searchState.server.query === q) return; // already ran / in flight
+  const scope = _searchState.scope || 'graph';
   _searchState.server = { query: q, pending: true };
   setSearchPending(true);
   try {
-    const res = await fetch(`${apiBase()}/search`, {
+    // Per-graph or cross-graph endpoint by scope; same body, same shape (the
+    // cross-graph response adds graphId per result + a graphs name map).
+    const url = scope === 'all' ? '/api/search' : `${apiBase()}/search`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: q }),
     });
     if (!res.ok) throw new Error(`search ${res.status}`);
     const data = await res.json();
-    // Stale guards: bar closed, graph switched, or the user kept typing.
+    // Stale guards: bar closed, graph switched, the user kept typing, or the
+    // scope flipped while we were in flight.
     const input = document.getElementById('search-input');
     if (!_searchState || !isSearchBarOpen() || !input || input.value.trim() !== q) return;
+    if ((_searchState.scope || 'graph') !== scope) return;
     const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
-    const rows = (window.KbSearch && window.KbSearch.mapServerResults(data.results, docs)) || [];
-    if (!rows.length) return;
+    const rows = (window.KbSearch && window.KbSearch.mapServerResults(data.results, docs, { graphs: data.graphs })) || [];
+    if (!rows.length) {
+      if (scope === 'all') {
+        _searchState.results = [];
+        _searchState.active = -1;
+        paintSearchResults(); // real "no matches anywhere" beats a stale hint
+      }
+      return;
+    }
     // Dense ranks EVERYTHING by similarity, so even gibberish comes back with
     // 20 confident-looking rows. When the reranker scored the list and found
     // no strong hit, say so — but keep the rows (measured: a hard score floor
@@ -3607,6 +3711,16 @@ function commitSearchResult(index) {
   const query = _searchState.query || '';
   if (_searchPanelTimer) { clearTimeout(_searchPanelTimer); _searchPanelTimer = null; }
   closeSearchBar({ restore: false });
+
+  // Cross-graph hit: switch graphs in-app, then let the pending-focus consumer
+  // (fetchGraph tail) select the node, open the panel, and apply the same
+  // match-type highlight once the new graph has rendered.
+  if (r.gid && String(r.gid) !== String(activeGraphId)) {
+    _pendingNodeFocus = { id: r.id, row: r, query };
+    switchActiveGraph(r.gid, { pushState: true });
+    return;
+  }
+
   const node = cy.getElementById(String(r.id));
   if (node && !node.empty() && typeof showPanel === 'function') {
     // showPanel re-fetches the task; the one-shot hook runs after that content
@@ -3729,6 +3843,10 @@ function walkSearch(delta) {
 function initSearchBar() {
   const input = document.getElementById('search-input');
   if (!input) return;
+  const scopeGraph = document.getElementById('search-scope-graph');
+  const scopeAll = document.getElementById('search-scope-all');
+  if (scopeGraph) scopeGraph.addEventListener('click', () => setSearchScope('graph'));
+  if (scopeAll) scopeAll.addEventListener('click', () => setSearchScope('all'));
   // Live preview while typing — instant, no camera move (spec: Enter runs).
   input.addEventListener('input', () => renderSearch(input.value));
   // The bar owns Enter / arrows / Esc; stop them reaching the global handler

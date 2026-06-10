@@ -99,8 +99,10 @@ describe('graphExpand postprocessor', () => {
     const ge = createGraphExpander({ pool, hops: 1 });
     const out = await ge.postprocess('q', [seeds[0]], { gid: 'g123' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/WHERE graph_id = \$1/);
-    expect(calls[0].params).toEqual(['g123']);
+    // ANY form: one id still scopes to one graph; cross-graph search passes
+    // the accessible set through the same parameter.
+    expect(calls[0].sql).toMatch(/WHERE graph_id = ANY\(\$1\)/);
+    expect(calls[0].params).toEqual([['g123']]);
     expect(out.map((c) => c.taskId)).toEqual([1, 2]);
   });
 });

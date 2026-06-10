@@ -57,6 +57,20 @@ describe('mapServerResults', () => {
     const rows = mapServerResults([cand({ taskId: 99 })], docs);
     expect(rows).toEqual([]);
   });
+  it('falls back to the candidate title for cross-graph hits and attributes the graph', () => {
+    const rows = mapServerResults(
+      [cand({ taskId: 99, title: 'Foreign note', graphId: 'g2' })],
+      docs,
+      { graphs: { g2: 'Other graph' } },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].doc.title).toBe('Foreign note');
+    expect(rows[0].gid).toBe('g2');
+    expect(rows[0].graphName).toBe('Other graph');
+  });
+  it('still drops candidates with neither a cached doc nor a title', () => {
+    expect(mapServerResults([cand({ taskId: 99, graphId: 'g2' })], docs, { graphs: { g2: 'x' } })).toEqual([]);
+  });
   it('treats empty snippets as absent', () => {
     const rows = mapServerResults([cand({ taskId: 1, snippet: { text: '', ranges: [] } })], docs);
     expect(rows[0].snippet).toBeNull();

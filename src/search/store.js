@@ -185,13 +185,17 @@ export async function syncAll(pool, provider, { log = () => {} } = {}) {
 let iterativeScanSupported = null;
 
 /**
- * ANN query: nearest chunks to `vector` within one graph and one model space.
+ * ANN query: nearest chunks to `vector` within one model space, scoped to one
+ * graph — or to a SET of graphs (`gid` as array) for the cross-graph "my
+ * graphs" search (#172/#173). The ANY filter + iterative_scan together are
+ * what keep the ownership WHERE from starving ANN results.
  * Returns rows ordered nearest-first: { task_id, chunk_text, distance }.
  *
  * @param {Object} pool
- * @param {{vector:number[], gid:string, modelId:string, limit?:number}} opts
+ * @param {{vector:number[], gid:string|string[], modelId:string, limit?:number}} opts
  */
 export async function annSearchChunks(pool, { vector, gid, modelId, limit = 50 }) {
+  const gids = Array.isArray(gid) ? gid : [gid];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -208,10 +212,10 @@ export async function annSearchChunks(pool, { vector, gid, modelId, limit = 50 }
     const { rows } = await client.query(
       `SELECT task_id, chunk_text, embedding <=> $1::halfvec AS distance
          FROM task_chunks
-        WHERE graph_id = $2 AND embedding_model = $3 AND embedding IS NOT NULL
+        WHERE graph_id = ANY($2) AND embedding_model = $3 AND embedding IS NOT NULL
         ORDER BY embedding <=> $1::halfvec
         LIMIT $4`,
-      [vectorLiteral(vector), gid, modelId, limit],
+      [vectorLiteral(vector), gids, modelId, limit],
     );
     await client.query('COMMIT');
     return rows;
