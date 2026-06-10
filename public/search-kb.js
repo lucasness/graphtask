@@ -124,4 +124,24 @@ export function locateApprox(haystack, needle, { anchor = 8, minAnchor = 3 } = {
   return null;
 }
 
-export default { resolveSource, tagFor, matchTypeFor, mapServerResults, tokensWithOffsets, locateApprox };
+/**
+ * True when a reranked result list has NO strong hit — the cue for the
+ * dropdown's "no strong matches" notice. Measured on the stock-graph eval
+ * (#198 follow-up): real queries' TOP rerank score ≈ 0.9 median, nonsense
+ * queries top out at 0.024 — but ~10% of RELEVANT docs also score ≈0, so a
+ * hard floor would cost recall. Hence: hint on the max, never filter the
+ * list. Returns false when rerank didn't run (no scores to judge by).
+ */
+export function isWeakResultSet(results, { threshold = 0.1 } = {}) {
+  let sawScore = false;
+  let max = -Infinity;
+  for (const c of results || []) {
+    const s = c && c.meta && c.meta.rerankScore;
+    if (typeof s !== 'number') continue;
+    sawScore = true;
+    if (s > max) max = s;
+  }
+  return sawScore && max < threshold;
+}
+
+export default { resolveSource, tagFor, matchTypeFor, mapServerResults, tokensWithOffsets, locateApprox, isWeakResultSet };

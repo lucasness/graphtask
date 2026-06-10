@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  resolveSource, tagFor, matchTypeFor, mapServerResults, locateApprox,
+  resolveSource, tagFor, matchTypeFor, mapServerResults, locateApprox, isWeakResultSet,
 } from '../public/search-kb.js';
 
 const cand = (over = {}) => ({ taskId: 1, score: 0.5, source: 'lexical', meta: {}, ...over });
@@ -60,6 +60,19 @@ describe('mapServerResults', () => {
   it('treats empty snippets as absent', () => {
     const rows = mapServerResults([cand({ taskId: 1, snippet: { text: '', ranges: [] } })], docs);
     expect(rows[0].snippet).toBeNull();
+  });
+});
+
+describe('isWeakResultSet', () => {
+  it('flags a list whose best rerank score is below the threshold', () => {
+    const weak = [cand({ meta: { rerankScore: 0.02 } }), cand({ meta: { rerankScore: 0.001 } })];
+    const strong = [cand({ meta: { rerankScore: 0.91 } }), cand({ meta: { rerankScore: 0.003 } })];
+    expect(isWeakResultSet(weak)).toBe(true);
+    expect(isWeakResultSet(strong)).toBe(false);
+  });
+  it('never flags when rerank did not run (no scores present)', () => {
+    expect(isWeakResultSet([cand(), cand()])).toBe(false);
+    expect(isWeakResultSet([])).toBe(false);
   });
 });
 

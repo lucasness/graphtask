@@ -3378,6 +3378,7 @@ function renderSearch(query) {
   if (!_searchState) return;
   _searchState.query = query;
   _searchState.server = { query: null, pending: false };
+  _searchState.weak = false;
   setSearchPending(false);
   const lib = window.LexicalSearch;
   const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
@@ -3424,6 +3425,13 @@ function paintSearchResults({ indexing = false } = {}) {
     return;
   }
   if (count) count.textContent = String(results.length);
+
+  if (_searchState.weak) {
+    const note = document.createElement('div');
+    note.className = 'search-weak-note';
+    note.textContent = 'No strong matches — showing the closest notes.';
+    list.appendChild(note);
+  }
 
   results.forEach((r, i) => {
     const row = document.createElement('button');
@@ -3513,6 +3521,11 @@ async function runServerSearch(rawQuery) {
     const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
     const rows = (window.KbSearch && window.KbSearch.mapServerResults(data.results, docs)) || [];
     if (!rows.length) return;
+    // Dense ranks EVERYTHING by similarity, so even gibberish comes back with
+    // 20 confident-looking rows. When the reranker scored the list and found
+    // no strong hit, say so — but keep the rows (measured: a hard score floor
+    // would also drop ~10% of genuinely relevant docs).
+    _searchState.weak = window.KbSearch && window.KbSearch.isWeakResultSet(data.results);
     // Re-paint in server order, keeping the user's place: if they were
     // already walking, stay on the same NODE at its new rank (or jump to the
     // new best hit if it dropped off). If nobody was walking — e.g. the

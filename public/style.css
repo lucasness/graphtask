@@ -2856,6 +2856,17 @@ kbd {
   color: var(--color-steel);
 }
 
+/* "Nothing scored well" notice — the list still shows (recall-first), the
+   row just resets expectations before the user walks garbage. */
+.search-weak-note {
+  padding: 8px 12px;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  font-style: italic;
+  color: var(--color-steel);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-steel) 18%, transparent);
+}
+
 /* Server ranking in flight (Enter pressed, hybrid+rerank answering): pulse
    the magnifier so the re-sort doesn't land unannounced. */
 .search-bar.search-pending .search-icon {
