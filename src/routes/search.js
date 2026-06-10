@@ -26,6 +26,17 @@ function getDefaultService() {
   return defaultService;
 }
 
+// Boot-time model warmup. The route's service loads its ONNX models lazily, so
+// without this the FIRST search after a deploy pays the load (~1.4s measured on
+// one core — #198 review) and blows the interactive latency budget. A throwaway
+// in-memory search exercises the exact production path (embed + rerank when
+// configured); with no model backends configured it's a no-op-cheap lexical run.
+export function warmupDefaultService() {
+  return getDefaultService().search('warmup', {
+    corpus: [{ id: 'warmup', title: 'warmup', description: '', body: 'warmup' }],
+  });
+}
+
 router.post('/', async (req, res, next) => {
   const { gid } = req.params;
   const { query, config } = req.body || {};

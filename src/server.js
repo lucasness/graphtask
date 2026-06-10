@@ -3,6 +3,7 @@ import pool, { applySchema } from './db.js';
 import { configFromEnv } from './search/config.js';
 import { createEmbeddingProvider } from './search/providers/embedding.js';
 import { createChunkIndexer } from './search/indexer.js';
+import { warmupDefaultService } from './routes/search.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -33,6 +34,14 @@ try {
 } catch (err) {
   console.error('[search-index] not started —', err.message);
 }
+
+// Warm the search models off the request path (not awaited — same rationale as
+// the indexer above: the server must serve immediately; lexical answers while
+// the dense/rerank weights load).
+const warmT0 = performance.now();
+warmupDefaultService()
+  .then(() => console.log(`[search-warmup] models warm in ${Math.round(performance.now() - warmT0)}ms`))
+  .catch((err) => console.error('[search-warmup] failed —', err.message));
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`graphtask running on 127.0.0.1:${PORT}`);
