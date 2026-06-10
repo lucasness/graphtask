@@ -1462,24 +1462,37 @@ Completion checklist — the detailed entries below carry the full context.
     That's the local default. MiniLM-L-2 is a slightly-stronger, ~4× slower
     fallback; the big `bge-reranker-v2-m3` is the GPU/Modal `http` track.
 
-    *Real pipeline (hybrid-at-50, `eval/hybrid-ab.js`):* on the **production**
-    config — lexical(top-50)+dense(top-50)→RRF — rerank is a big precision win.
-    With the default TinyBERT-L-2 @ 512 chars, top-20 (one core):
+    *Real pipeline (hybrid-at-50, `eval/hybrid-ab.js` — runs the shipped
+    defaults; override with the same `RERANK_*` env the app reads):* on the
+    **production** config — lexical(top-50)+dense(top-50)→RRF — rerank is a big
+    precision win, and reranking the **whole fused list** (`topM=50`, the code
+    default) beats top-20: same precision, more recall, ~same cost. End-to-end
+    per-query latency, one core:
 
-    | rerank | precision@1 | nDCG@10 | MRR | recall@10 | latency |
-    |---|---|---|---|---|---|
-    | off | 0.60 | 0.762 | 0.762 | 0.823 | **29 ms** |
-    | **TinyBERT-L-2, top-20** | **0.875** | 0.883 | 0.923 | 0.859 | **~62 ms** |
+    | config | precision@1 | nDCG@10 | MRR | recall@10 | recall@20 | latency p50 |
+    |---|---|---|---|---|---|---|
+    | rerank off | 0.60 | 0.762 | 0.762 | 0.823 | 0.871 | **25 ms** |
+    | TinyBERT-L-2, topM=20 | 0.875 | 0.883 | 0.923 | 0.859 | 0.871 | ~100 ms |
+    | **TinyBERT-L-2, topM=50** | **0.875** | 0.883 | 0.921 | **0.871** | **0.892** | **~90 ms** |
+    | **topM=50 + graphExpand** | **0.875** | **0.891** | 0.918 | **0.880** | **0.960** | ~185 ms |
 
-    Keep **`RERANK_TOPM=20`**: 15% of queries have the wanted doc in fused
-    positions 11–20 (so recall@10 holds 0.859 vs 0.823 at top-10), and at ~62 ms
-    top-20 is essentially free. Latency is compute-bound, so more vCPUs scale it
-    further (this number is from a 1-core box). Rerank stays **off by default**
-    (our flows are recall-first), but at ~62 ms it's cheap to flip on for the
-    **agent / best-single-answer** path. On our English notes the tiny local
-    model matched bge-reranker-v2-m3 on quality at a fraction of the cost; bge's
-    edge only shows on harder/multilingual corpora. Tables + method in graph
-    #198; earlier GPU A/B in #196.
+    Keep **`RERANK_TOPM=50`** (the default): top-20 can only reorder fused
+    positions 1–20, so it strands relevant docs in 21–50; top-50 lifts them
+    (recall@20 0.871→0.892) at no measurable extra cost on this corpus. And
+    **graphExpand is NOT a no-op with rerank on** — the earlier "expansion
+    changed nothing" result was an artifact of the top-20 rerank window
+    (expanded docs landed past position 20, where rerank couldn't lift them).
+    With topM=50 the pair is the best config measured: recall@20 0.960,
+    nDCG@10 0.891, ~185 ms p50 / ~250 ms p95 end-to-end on ONE core.
+    Latency is compute-bound, so more vCPUs scale it further. One real cost
+    remains: the **first search after boot** pays lazy ONNX model load
+    (~1.4 s) — the server now fires a warmup search at boot so users never
+    see it. Rerank stays **off by default** (our flows are recall-first), but
+    at ~90–185 ms it's cheap to flip on for the **agent / best-single-answer**
+    path. On our English notes the tiny local model matched bge-reranker-v2-m3
+    on quality at a fraction of the cost; bge's edge only shows on
+    harder/multilingual corpora. Tables + method in graph #198; earlier GPU
+    A/B in #196.
 
   **How the two deployments differ:**
   - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.

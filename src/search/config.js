@@ -152,8 +152,9 @@ export function assertConfig(input) {
  *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 cross-encoder; setting a
  *                       backend enables the rerank postprocessor
  *   RERANK_TIMEOUT_MS/RETRIES  transport knobs (cold/remote GPU reranker)
- *   RERANK_TOPM         how many fused hits to rerank (default 50; ~20 keeps
- *                       the local CPU cross-encoder under ~200ms — see #198)
+ *   RERANK_TOPM         how many fused hits to rerank (default 50 — measured
+ *                       better recall than 20 at ~same cost with the default
+ *                       TinyBERT @ 512 chars; see #198)
  *   RERANK_DTYPE        local-onnx weights variant: q8 (default) | fp32
  *   GRAPH_EXPAND        1/true (or any GRAPH_EXPAND_* knob) enables k-hop
  *                       graph expansion — the recall lever, no model (#197)

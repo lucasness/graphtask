@@ -37,9 +37,20 @@ async function main() {
   const { queries, qrels } = dataset;
   const qids = Object.keys(queries);
 
+  // Rerank knobs follow the SHIPPED defaults (#198 winner) so this script
+  // reproduces the README table out of the box; override via the same env the
+  // app reads (RERANK_MODEL / RERANK_DTYPE / RERANK_TOPM / RERANK_MAXCHARS).
+  const rerankCfg = {
+    backend: 'local-onnx',
+    model: process.env.RERANK_MODEL || 'Xenova/ms-marco-TinyBERT-L-2-v2',
+    dtype: process.env.RERANK_DTYPE || 'q8',
+    topM: Number(process.env.RERANK_TOPM || 20),
+    maxChars: Number(process.env.RERANK_MAXCHARS || 512),
+  };
+
   // Load each model ONCE; inject into every variant so we don't reload weights.
   const embeddingProvider = createEmbeddingProvider({ backend: 'local-onnx', model: 'Xenova/bge-small-en-v1.5', dim: 384 }, {});
-  const rerankProvider = createRerankProvider({ backend: 'local-onnx', model: 'Xenova/ms-marco-MiniLM-L-2-v2', dtype: 'q8' }, {});
+  const rerankProvider = createRerankProvider(rerankCfg, {});
   const deps = { pool, embeddingProvider, rerankProvider };
 
   const base = {
@@ -48,7 +59,7 @@ async function main() {
     topK: 100,
     providers: {
       embedding: { backend: 'local-onnx', model: 'Xenova/bge-small-en-v1.5', dim: 384 },
-      rerank: { backend: 'local-onnx', model: 'Xenova/ms-marco-MiniLM-L-2-v2', dtype: 'q8', topM: 20 },
+      rerank: rerankCfg,
     },
     graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
   };
@@ -73,7 +84,9 @@ async function main() {
       lat.push(performance.now() - t0);
       per.push(scoreQuery(candidates.map((c) => String(c.taskId)), qrels[qid] || {}, KS));
     }
-    results[label] = { mean: meanScores(per), p50: percentile(lat, 50), p95: percentile(lat, 95) };
+    // lat[0] on the first rerank variant includes the one-time model load —
+    // that's the real "first search after boot" cost, so report it.
+    results[label] = { mean: meanScores(per), p50: percentile(lat, 50), p95: percentile(lat, 95), first: lat[0] };
     process.stderr.write(`  ✓ ${label}\n`);
   }
 
@@ -81,7 +94,8 @@ async function main() {
   const metrics = ['recall@5', 'recall@10', 'recall@20', 'ndcg@10', 'precision@1', 'mrr'];
   const labels = variants.map((v) => v[0]);
   const baseM = results[labels[0]].mean;
-  console.log(`\nHybrid-at-${CAP} A/B — stock graph ${GID} · ${qids.length} queries · lexical(top-${CAP})+dense(top-${CAP})→RRF\n`);
+  console.log(`\nHybrid-at-${CAP} A/B — stock graph ${GID} · ${qids.length} queries · lexical(top-${CAP})+dense(top-${CAP})→RRF`);
+  console.log(`rerank: ${rerankCfg.model} ${rerankCfg.dtype} topM=${rerankCfg.topM} maxChars=${rerankCfg.maxChars}\n`);
   console.log(`  ${'metric'.padEnd(12)} ${labels.map((l) => l.padStart(22)).join('')}`);
   for (const m of metrics) {
     const cells = labels.map((l, i) => {
@@ -91,7 +105,8 @@ async function main() {
     console.log(`  ${m.padEnd(12)} ${cells.join('')}`);
   }
   console.log(`  ${'latency p50'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].p50)}ms`.padStart(22)).join('')}`);
-  console.log(`  ${'latency p95'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].p95)}ms`.padStart(22)).join('')}\n`);
+  console.log(`  ${'latency p95'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].p95)}ms`.padStart(22)).join('')}`);
+  console.log(`  ${'first query'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].first)}ms`.padStart(22)).join('')}\n`);
 
   await pool.end();
 }
