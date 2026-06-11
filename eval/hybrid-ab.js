@@ -24,7 +24,7 @@ import { scoreQuery, meanScores, percentile } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GID = process.env.STOCK_GID || 'fwmhe8ysfrnx9fw7';
-const KS = [1, 5, 10, 20];
+const KS = [1, 5, 10, 20, 25, 30];
 const CAP = 50; // production per-retriever candidate cap (#173 §10)
 
 const fmt = (n) => (Math.round(n * 1000) / 1000).toFixed(3);
@@ -96,7 +96,7 @@ async function main() {
   }
 
   // Table: every metric, every variant, Δ vs the hybrid baseline.
-  const metrics = ['recall@5', 'recall@10', 'recall@20', 'ndcg@10', 'precision@1', 'mrr'];
+  const metrics = ['recall@5', 'recall@10', 'recall@20', 'recall@25', 'recall@30', 'ndcg@10', 'precision@1', 'mrr'];
   const labels = variants.map((v) => v[0]);
   const baseM = results[labels[0]].mean;
   console.log(`\nHybrid-at-${CAP} A/B — stock graph ${GID} · ${qids.length} queries · lexical(top-${CAP})+dense(top-${CAP})→RRF`);
