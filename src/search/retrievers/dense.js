@@ -30,10 +30,13 @@ function dot(a, b) {
 
 /**
  * @param {{provider: import('../types.js').EmbeddingProvider, topK?:number,
- *          chunkOpts?:Object}} opts
+ *          chunkOpts?:Object, queryPrefix?:string}} opts
+ *   queryPrefix — instruction prepended to the QUERY before embedding, never to
+ *   chunks (bge-*-v1.5 was trained with a query-side instruction for short
+ *   query→passage retrieval; passages stay instruction-free). #224.
  * @returns {import('../types.js').Retriever}
  */
-export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts = {} } = {}) {
+export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts = {}, queryPrefix = '' } = {}) {
   if (!provider) throw new Error('createDenseRetriever needs an EmbeddingProvider');
 
   // Embedding the corpus is the expensive step; the eval runs many queries over
@@ -74,7 +77,7 @@ export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts 
       const { chunks, vectors } = await getIndex(corpus);
       if (chunks.length === 0) return [];
 
-      const [qvec] = await provider.embed([query]);
+      const [qvec] = await provider.embed([queryPrefix + query]);
       if (!qvec) return [];
 
       // Score every chunk, collapse to nodes by max-pool, keeping the winning
@@ -114,12 +117,14 @@ export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts 
  *     slower but correct beats silently empty.
  *
  * @param {{pool:Object, provider: import('../types.js').EmbeddingProvider,
- *          topK?:number, chunkTopK?:number, chunkOpts?:Object}} opts
+ *          topK?:number, chunkTopK?:number, chunkOpts?:Object, queryPrefix?:string}} opts
  * @returns {import('../types.js').Retriever}
  */
-export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK, chunkTopK = DEFAULT_TOPK, chunkOpts = {} } = {}) {
+export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK, chunkTopK = DEFAULT_TOPK, chunkOpts = {}, queryPrefix = '' } = {}) {
   if (!pool) throw new Error('createStoreDenseRetriever needs a pool');
-  const memory = createDenseRetriever({ provider, topK, chunkOpts });
+  // The in-memory fallback gets the same prefix; both paths receive the RAW
+  // query and prepend exactly once.
+  const memory = createDenseRetriever({ provider, topK, chunkOpts, queryPrefix });
   let availablePromise = null; // table existence can't change mid-process; check once
 
   return {
@@ -132,7 +137,7 @@ export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK,
       if (!availablePromise) availablePromise = chunkStoreAvailable(pool);
       if (!(await availablePromise)) return memory.retrieve(query, ctx);
 
-      const [qvec] = await provider.embed([query]);
+      const [qvec] = await provider.embed([queryPrefix + query]);
       if (!qvec) return [];
 
       const rows = await annSearchChunks(pool, {

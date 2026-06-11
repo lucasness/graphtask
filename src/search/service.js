@@ -34,11 +34,14 @@ const RETRIEVER_FACTORIES = {
   // form runs (ANN over task_chunks, embedded at write time by the indexer) and
   // itself falls back to the in-memory leg (chunk ctx.corpus → embed → cosine)
   // where ANN can't apply — caller-supplied corpus, no pgvector, empty store.
-  dense: (deps) => {
+  dense: (deps, config) => {
     if (!deps.embeddingProvider) return null;
+    // Query-side instruction prefix (#224) — applied to the query only, never
+    // to indexed chunks, so toggling it requires no reindex.
+    const queryPrefix = config?.providers?.embedding?.queryPrefix || '';
     return deps.pool
-      ? createStoreDenseRetriever({ pool: deps.pool, provider: deps.embeddingProvider })
-      : createDenseRetriever({ provider: deps.embeddingProvider });
+      ? createStoreDenseRetriever({ pool: deps.pool, provider: deps.embeddingProvider, queryPrefix })
+      : createDenseRetriever({ provider: deps.embeddingProvider, queryPrefix });
   },
 };
 

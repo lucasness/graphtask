@@ -67,6 +67,20 @@ describe('createDenseRetriever — ranking', () => {
     expect(provider.embed).toHaveBeenCalledTimes(3);
   });
 
+  it('prepends queryPrefix to the QUERY only, never to chunks (#224)', async () => {
+    const seen = [];
+    const provider = fakeProvider(
+      { cats: [1, 0], dogs: [0, 1], 'PREFIX: pets?': [1, 0] },
+      { onEmbed: (texts) => seen.push(...texts) },
+    );
+    const dense = createDenseRetriever({ provider, queryPrefix: 'PREFIX: ' });
+    const out = await dense.retrieve('pets?', { corpus: docs.slice(0, 2) });
+    expect(out[0].taskId).toBe(1); // ranked via the prefixed query vector
+    expect(seen).toContain('PREFIX: pets?');
+    // corpus chunks stay instruction-free
+    expect(seen.filter((t) => t.startsWith('PREFIX: '))).toEqual(['PREFIX: pets?']);
+  });
+
   it('returns [] for an empty corpus', async () => {
     const provider = fakeProvider({});
     const dense = createDenseRetriever({ provider });

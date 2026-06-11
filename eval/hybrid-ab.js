@@ -58,7 +58,12 @@ async function main() {
     fusion: { mode: 'rrf', k: 60 },
     topK: 100,
     providers: {
-      embedding: { backend: 'local-onnx', model: 'Xenova/bge-small-en-v1.5', dim: 384 },
+      // queryPrefix rides the same env the app reads (#224 A/B: run once with
+      // EMBEDDING_QUERY_PREFIX unset, once with the bge instruction).
+      embedding: {
+        backend: 'local-onnx', model: 'Xenova/bge-small-en-v1.5', dim: 384,
+        ...(process.env.EMBEDDING_QUERY_PREFIX ? { queryPrefix: process.env.EMBEDDING_QUERY_PREFIX } : {}),
+      },
       rerank: rerankCfg,
     },
     graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },

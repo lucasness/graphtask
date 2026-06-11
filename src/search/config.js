@@ -149,6 +149,11 @@ export function assertConfig(input) {
  *   EMBEDDING_TIMEOUT_MS  per-request timeout (default 10000; raise for cold/remote backends)
  *   EMBEDDING_RETRIES   bounded retries on timeout/5xx (default 2)
  *   EMBEDDING_BATCH     embed batch size (default 64; lower for long docs)
+ *   EMBEDDING_QUERY_PREFIX  instruction prepended to the QUERY before
+ *                       embedding (never to indexed chunks — no reindex
+ *                       needed). bge-*-v1.5 was trained with "Represent this
+ *                       sentence for searching relevant passages: " (#224).
+ *                       Default '' (off).
  *   RERANK_BACKEND/URL/MODEL  same shape, Tier-2 cross-encoder; setting a
  *                       backend enables the rerank postprocessor
  *   RERANK_TIMEOUT_MS/RETRIES  transport knobs (cold/remote GPU reranker)
@@ -193,6 +198,7 @@ export function configFromEnv(env = process.env) {
     ...(env.EMBEDDING_TIMEOUT_MS ? { timeoutMs: Number(env.EMBEDDING_TIMEOUT_MS) } : {}),
     ...(env.EMBEDDING_RETRIES ? { retries: Number(env.EMBEDDING_RETRIES) } : {}),
     ...(env.EMBEDDING_BATCH ? { batchSize: Number(env.EMBEDDING_BATCH) } : {}),
+    ...(env.EMBEDDING_QUERY_PREFIX ? { queryPrefix: env.EMBEDDING_QUERY_PREFIX } : {}),
     ...authFromEnv(env, 'EMBEDDING'),
   };
   if (embBackend !== 'none' && !cfg.retrievers.includes('dense')) {
