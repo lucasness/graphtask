@@ -67,6 +67,8 @@ async function main() {
       rerank: rerankCfg,
     },
     graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
+    // #226: ANN chunk-pool size (sweep via DENSE_CHUNK_TOPK; node top-K stays 50).
+    dense: { chunkTopK: Number(process.env.DENSE_CHUNK_TOPK || 50) },
   };
 
   const variants = [
@@ -81,17 +83,24 @@ async function main() {
     const pipeline = assemblePipeline({ ...base, postprocessors }, deps);
     const per = [];
     const lat = [];
+    const denseLat = [];
     for (const qid of qids) {
       const t0 = performance.now();
-      const { candidates } = await pipeline.run(queries[qid], {
-        gid: GID, corpus, corpusFromStore: true, lexicalTopK: CAP, denseTopK: CAP,
+      // No ctx.denseTopK override: the dense leg runs the CONFIGURED chunkTopK,
+      // exactly like the route (#226). lexical keeps its explicit production cap.
+      const { candidates, timings } = await pipeline.run(queries[qid], {
+        gid: GID, corpus, corpusFromStore: true, lexicalTopK: CAP,
       });
       lat.push(performance.now() - t0);
+      if (timings?.retrievers?.dense != null) denseLat.push(timings.retrievers.dense);
       per.push(scoreQuery(candidates.map((c) => String(c.taskId)), qrels[qid] || {}, KS));
     }
     // lat[0] on the first rerank variant includes the one-time model load —
     // that's the real "first search after boot" cost, so report it.
-    results[label] = { mean: meanScores(per), p50: percentile(lat, 50), p95: percentile(lat, 95), first: lat[0] };
+    results[label] = {
+      mean: meanScores(per), p50: percentile(lat, 50), p95: percentile(lat, 95), first: lat[0],
+      denseP50: denseLat.length ? percentile(denseLat, 50) : null,
+    };
     process.stderr.write(`  ✓ ${label}\n`);
   }
 
@@ -100,7 +109,7 @@ async function main() {
   const labels = variants.map((v) => v[0]);
   const baseM = results[labels[0]].mean;
   console.log(`\nHybrid-at-${CAP} A/B — stock graph ${GID} · ${qids.length} queries · lexical(top-${CAP})+dense(top-${CAP})→RRF`);
-  console.log(`rerank: ${rerankCfg.model} ${rerankCfg.dtype} topM=${rerankCfg.topM} maxChars=${rerankCfg.maxChars}\n`);
+  console.log(`rerank: ${rerankCfg.model} ${rerankCfg.dtype} topM=${rerankCfg.topM} maxChars=${rerankCfg.maxChars} · chunkTopK=${base.dense.chunkTopK}\n`);
   console.log(`  ${'metric'.padEnd(12)} ${labels.map((l) => l.padStart(22)).join('')}`);
   for (const m of metrics) {
     const cells = labels.map((l, i) => {
@@ -109,6 +118,7 @@ async function main() {
     });
     console.log(`  ${m.padEnd(12)} ${cells.join('')}`);
   }
+  console.log(`  ${'dense p50'.padEnd(12)} ${labels.map((l) => (results[l].denseP50 == null ? '—' : `${Math.round(results[l].denseP50)}ms`).padStart(22)).join('')}`);
   console.log(`  ${'latency p50'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].p50)}ms`.padStart(22)).join('')}`);
   console.log(`  ${'latency p95'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].p95)}ms`.padStart(22)).join('')}`);
   console.log(`  ${'first query'.padEnd(12)} ${labels.map((l) => `${Math.round(results[l].first)}ms`.padStart(22)).join('')}\n`);

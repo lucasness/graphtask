@@ -33,6 +33,11 @@ export function defaultConfig() {
     // these from config.graphExpand. hops=1 is the cheap, high-precision layer;
     // the caps bound fan-out so a hub node can't flood the list.
     graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
+    // Dense-leg knobs (#226). chunkTopK = how many CHUNKS the ANN query pulls
+    // before the max-pool collapse to nodes; counted in chunks, deliberately
+    // allowed to exceed the node top-K so one chunk-heavy node can't crowd
+    // distinct nodes out of the pool (#190 spec).
+    dense: { chunkTopK: 50 },
   };
 }
 
@@ -73,6 +78,7 @@ export function validateConfig(input = {}) {
       rerank: { ...base.providers.rerank, ...(isPlainObject(input.providers?.rerank) ? input.providers.rerank : {}) },
     },
     graphExpand: { ...base.graphExpand, ...(isPlainObject(input.graphExpand) ? input.graphExpand : {}) },
+    dense: { ...base.dense, ...(isPlainObject(input.dense) ? input.dense : {}) },
   };
 
   if (!Array.isArray(cfg.retrievers) || cfg.retrievers.length === 0) {
@@ -108,6 +114,10 @@ export function validateConfig(input = {}) {
     const v = cfg.graphExpand[key];
     if (!Number.isInteger(v) || v < 1) errors.push(`graphExpand.${key} must be a positive integer`);
   }
+  if (!Number.isInteger(cfg.dense.chunkTopK) || cfg.dense.chunkTopK < 1) {
+    errors.push('dense.chunkTopK must be a positive integer');
+  }
+
   if (cfg.graphExpand.edgeTypes !== undefined) {
     if (!Array.isArray(cfg.graphExpand.edgeTypes)) {
       errors.push('graphExpand.edgeTypes must be an array');
@@ -165,6 +175,9 @@ export function assertConfig(input) {
  *                       graph expansion — the recall lever, no model (#197)
  *   GRAPH_EXPAND_HOPS / _MAX_PER_SEED / _MAX  BFS depth + fan-out caps
  *   GRAPH_EXPAND_EDGE_TYPES  comma list to restrict traversal (default: all)
+ *   DENSE_CHUNK_TOPK    ANN chunk pool size before the node collapse (default
+ *                       50; raise so chunk-heavy nodes can't crowd the pool,
+ *                       #226 — node top-K stays 50 regardless)
  *   SEARCH_TOPK         final top-K (default 10)
  */
 // Auth credentials for a provider, read with a per-provider prefix so embedding
@@ -239,6 +252,8 @@ export function configFromEnv(env = process.env) {
   if (rrBackend !== 'none' && !cfg.postprocessors.includes('rerank')) {
     cfg.postprocessors.push('rerank');
   }
+
+  if (env.DENSE_CHUNK_TOPK) cfg.dense.chunkTopK = Number(env.DENSE_CHUNK_TOPK);
 
   if (env.SEARCH_TOPK) cfg.topK = Number(env.SEARCH_TOPK);
 

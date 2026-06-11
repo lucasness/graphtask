@@ -40,7 +40,13 @@ const RETRIEVER_FACTORIES = {
     // to indexed chunks, so toggling it requires no reindex.
     const queryPrefix = config?.providers?.embedding?.queryPrefix || '';
     return deps.pool
-      ? createStoreDenseRetriever({ pool: deps.pool, provider: deps.embeddingProvider, queryPrefix })
+      ? createStoreDenseRetriever({
+          pool: deps.pool,
+          provider: deps.embeddingProvider,
+          queryPrefix,
+          // #226: ANN chunk-pool size, decoupled from the node top-K.
+          ...(config?.dense?.chunkTopK ? { chunkTopK: config.dense.chunkTopK } : {}),
+        })
       : createDenseRetriever({ provider: deps.embeddingProvider, queryPrefix });
   },
 };
