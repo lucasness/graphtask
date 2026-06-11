@@ -2826,14 +2826,6 @@ kbd {
   font-size: var(--text-body);
   line-height: 1.3;
 }
-.search-result-field {
-  flex: 0 0 auto;
-  font-family: ui-monospace, 'SF Mono', monospace;
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--color-steel);
-}
 .search-result-snippet {
   margin-top: 2px;
   font-family: var(--font-body);

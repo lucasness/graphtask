@@ -3497,19 +3497,18 @@ function paintSearchResults({ indexing = false, allGraphsHint = false } = {}) {
     } else {
       titleText.textContent = r.doc.title || 'Untitled';
     }
-    const fieldTag = document.createElement('span');
-    fieldTag.className = 'search-result-field';
-    fieldTag.textContent = r.field;
     titleLine.appendChild(titleText);
-    // Cross-graph hits carry a graph chip so "where is this?" is answered
-    // before the user commits a navigation.
+    // The only row badge is the graph chip on cross-graph hits — "where is
+    // this?" matters before committing a navigation. How a hit was matched
+    // (title/body/semantic/related — r.field) deliberately does NOT paint:
+    // it's machine detail, still in the API response for agents, and the
+    // commit-time highlight already SHOWS the match instead of labeling it.
     if (r.gid && String(r.gid) !== String(activeGraphId)) {
       const graphTag = document.createElement('span');
       graphTag.className = 'search-result-graph';
       graphTag.textContent = r.graphName || 'other graph';
       titleLine.appendChild(graphTag);
     }
-    titleLine.appendChild(fieldTag);
     row.appendChild(titleLine);
 
     if (r.snippet && r.snippet.text) {
