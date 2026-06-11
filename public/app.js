@@ -3846,6 +3846,17 @@ function initSearchBar() {
   const scopeAll = document.getElementById('search-scope-all');
   if (scopeGraph) scopeGraph.addEventListener('click', () => setSearchScope('graph'));
   if (scopeAll) scopeAll.addEventListener('click', () => setSearchScope('all'));
+  // Clerk hydrates the session ASYNCHRONOUSLY after page load, so the bar can
+  // open (or even render its signed-out state) before gtAuth.user exists.
+  // Re-sync the scope toggle on every auth change — and if the user signed
+  // OUT mid-search while scoped to "all", fall back to "this graph".
+  window.addEventListener('gtuserchange', () => {
+    if (!gtAuth.user && _searchState && _searchState.scope === 'all') {
+      setSearchScope('graph');
+    } else {
+      syncSearchScopeUI();
+    }
+  });
   // Live preview while typing — instant, no camera move (spec: Enter runs).
   input.addEventListener('input', () => renderSearch(input.value));
   // The bar owns Enter / arrows / Esc; stop them reaching the global handler
