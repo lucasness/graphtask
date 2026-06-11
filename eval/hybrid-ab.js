@@ -23,7 +23,11 @@ import { createRerankProvider } from '../src/search/providers/rerank.js';
 import { scoreQuery, meanScores, percentile } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const GID = process.env.STOCK_GID || 'fwmhe8ysfrnx9fw7';
+// EVAL_DATASET picks the frozen query set (default: the stock graph's). The
+// corpus graph comes from the dataset's own `gid` field; STOCK_GID overrides.
+const DATASET_PATH = process.env.EVAL_DATASET
+  ? path.resolve(process.cwd(), process.env.EVAL_DATASET)
+  : path.join(__dirname, 'dataset-stocks.json');
 const KS = [1, 5, 10, 20, 25, 30];
 const CAP = 50; // production per-retriever candidate cap (#173 §10)
 
@@ -32,8 +36,9 @@ const d = (n) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : ' 0.
 
 async function main() {
   const pool = createPool(resolveConnectionString());
+  const dataset = JSON.parse(fs.readFileSync(DATASET_PATH, 'utf-8'));
+  const GID = process.env.STOCK_GID || dataset.gid || 'fwmhe8ysfrnx9fw7';
   const corpus = await loadCorpus(pool, GID);
-  const dataset = JSON.parse(fs.readFileSync(path.join(__dirname, 'dataset-stocks.json'), 'utf-8'));
   const { queries, qrels } = dataset;
   const qids = Object.keys(queries);
 
