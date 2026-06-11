@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  lexicalSearch, fieldMatch, matchRanges, buildSnippet, tokenize,
+  lexicalSearch, bm25Search, fieldMatch, matchRanges, buildSnippet, tokenize,
 } from '../public/search-lexical.js';
 
 describe('tokenize', () => {
@@ -95,5 +95,53 @@ describe('matchRanges / buildSnippet', () => {
     for (const [a, b] of s.ranges) {
       expect(s.text.slice(a, b).toLowerCase()).toBe('target');
     }
+  });
+});
+
+describe('bm25Search (#228)', () => {
+  const docs = [
+    { id: 1, title: 'Fuel supply', body: 'uranium enrichment and mining. uranium is common here.' },
+    { id: 2, title: 'Grid notes', body: 'transformers and the grid. uranium gets one mention.' },
+    { id: 3, title: 'Cooling', body: 'liquid cooling for racks. nothing nuclear at all in this one, which also happens to be a much longer document than the others to exercise length normalization a little bit.' },
+  ];
+
+  it('OR semantics: a doc matching only one of two terms is still returned', () => {
+    const out = bm25Search('uranium transformers', docs);
+    const ids = out.map((h) => h.id);
+    expect(ids).toContain(1); // has uranium only — old AND ranker would drop it
+    expect(ids).toContain(2); // has both terms → ranks first
+    expect(ids[0]).toBe(2);
+    expect(ids).not.toContain(3);
+  });
+
+  it('IDF: a rarer term outweighs a common one', () => {
+    const corpus = [
+      { id: 1, title: '', body: 'alpha alpha alpha common' },
+      { id: 2, title: '', body: 'rareterm common' },
+      { id: 3, title: '', body: 'common common' },
+    ];
+    const out = bm25Search('rareterm common', corpus);
+    expect(out[0].id).toBe(2); // rareterm (df=1) dominates common (df=3)
+  });
+
+  it('weights title matches above body matches', () => {
+    const corpus = [
+      { id: 1, title: 'kubernetes', body: 'other words' },
+      { id: 2, title: 'other', body: 'kubernetes kubernetes' },
+    ];
+    const out = bm25Search('kubernetes', corpus);
+    expect(out[0].id).toBe(1);
+  });
+
+  it('keeps the lexicalSearch return contract (field/tier/snippet)', () => {
+    const [hit] = bm25Search('uranium', docs.slice(0, 1));
+    expect(hit.field).toBeDefined();
+    expect(hit.tier).toBeGreaterThanOrEqual(0);
+    expect(hit.snippet && typeof hit.snippet.text).toBe('string');
+  });
+
+  it('returns [] for an empty query and for vocab-less terms', () => {
+    expect(bm25Search('', docs)).toEqual([]);
+    expect(bm25Search('zzzznotpresent', docs)).toEqual([]);
   });
 });

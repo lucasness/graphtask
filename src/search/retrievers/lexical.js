@@ -8,23 +8,27 @@
 // what lets the eval run this leg in-memory against a frozen fixture while the
 // route runs it against PG-loaded rows: same code, same numbers (#173 §11).
 
-import { lexicalSearch } from '../../../public/search-lexical.js';
+import { lexicalSearch, bm25Search } from '../../../public/search-lexical.js';
 import { makeCandidate } from '../types.js';
 
 const DEFAULT_TOPK = 50; // #173 §10: lexical top-k 50
 
 /**
- * @param {{topK?:number}} [opts]
+ * @param {{topK?:number, ranker?:'tiered'|'bm25'}} [opts]
+ *   ranker (#228) — 'tiered' (default): the original field-tiered substring-AND
+ *   ranker, shared with the instant typing preview. 'bm25': BM25F scoring
+ *   (IDF + length norm + OR-with-saturation) from the same module.
  * @returns {import('../types.js').Retriever}
  */
 export function createLexicalRetriever(opts = {}) {
   const baseTopK = opts.topK ?? DEFAULT_TOPK;
+  const rank = opts.ranker === 'bm25' ? bm25Search : lexicalSearch;
   return {
     name: 'lexical',
     retrieve(query, ctx = {}) {
       const docs = ctx.corpus || [];
       const limit = ctx.lexicalTopK ?? baseTopK;
-      const hits = lexicalSearch(query, docs, { limit });
+      const hits = rank(query, docs, { limit });
       // Preserve the ranker's order (fusion reads POSITION, not score). `score`
       // is informational; carry freq so a single-retriever debug view is
       // still legible, and pass the snippet + field/tier through as meta.

@@ -28,7 +28,7 @@ import { parseMarkdown } from '../markdown.js';
 // Returning null means "not available / not configured" — the assembler drops
 // it and the pipeline degrades to the remaining stages (lexical always answers).
 const RETRIEVER_FACTORIES = {
-  lexical: () => createLexicalRetriever(),
+  lexical: (deps, config) => createLexicalRetriever({ ranker: config?.lexical?.ranker }),
   // Dense needs an EmbeddingProvider; with backend `none` (or unconfigured) the
   // provider is null → dense drops → lexical-only. With a pool the store-backed
   // form runs (ANN over task_chunks, embedded at write time by the indexer) and
@@ -95,7 +95,7 @@ export function assemblePipeline(config, deps = {}) {
     .filter(Boolean);
   if (retrievers.length === 0) {
     // Never leave the pipeline legless: lexical is the always-on floor.
-    retrievers.push(createLexicalRetriever());
+    retrievers.push(createLexicalRetriever({ ranker: config?.lexical?.ranker }));
   }
 
   const postprocessors = config.postprocessors

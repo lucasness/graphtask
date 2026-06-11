@@ -84,10 +84,10 @@ async function loadLiveCorpus(gid) {
 // top-K (recall@K needs a deep list); setting EMBEDDING_BACKEND (e.g.
 // `local-onnx`) flips on the dense leg via configFromEnv, and this harness A/Bs
 // each backend on the same frozen set. Corpus rides in ctx — no DB.
-const ENV_BACKEND = process.env.EMBEDDING_BACKEND;
-const EVAL_CONFIG = ENV_BACKEND && ENV_BACKEND !== 'none'
-  ? { ...configFromEnv(process.env), topK: 100 }
-  : { ...defaultConfig(), topK: 100 };
+// configFromEnv with an empty env reduces to the lexical-only default, so we
+// always read the env — that's what lets LEXICAL_RANKER/EMBEDDING_* (etc.)
+// A/Bs run through this harness without code edits (#228).
+const EVAL_CONFIG = { ...configFromEnv(process.env), topK: 100 };
 
 // Build a pipeline from EVAL_CONFIG, optionally appending graphExpand so the
 // A/B compares the SAME retrieval tier with vs without the recall lever (#197).

@@ -75,6 +75,8 @@ async function main() {
     graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
     // #226: ANN chunk-pool size (sweep via DENSE_CHUNK_TOPK; node top-K stays 50).
     dense: { chunkTopK: Number(process.env.DENSE_CHUNK_TOPK || 50) },
+    // #228: Tier-0 ranker for the lexical leg (tiered | bm25).
+    lexical: { ranker: process.env.LEXICAL_RANKER || 'tiered' },
   };
 
   const variants = [
@@ -118,7 +120,7 @@ async function main() {
   const labels = variants.map((v) => v[0]);
   const baseM = results[labels[0]].mean;
   console.log(`\nHybrid-at-${CAP} A/B — stock graph ${GID} · ${qids.length} queries · lexical(top-${CAP})+dense(top-${CAP})→RRF`);
-  console.log(`rerank: ${rerankCfg.model} ${rerankCfg.dtype} topM=${rerankCfg.topM} maxChars=${rerankCfg.maxChars} input=${rerankCfg.input || 'head'} · chunkTopK=${base.dense.chunkTopK}\n`);
+  console.log(`rerank: ${rerankCfg.model} ${rerankCfg.dtype} topM=${rerankCfg.topM} maxChars=${rerankCfg.maxChars} input=${rerankCfg.input || 'head'} · chunkTopK=${base.dense.chunkTopK} · lexical=${base.lexical.ranker}\n`);
   console.log(`  ${'metric'.padEnd(12)} ${labels.map((l) => l.padStart(22)).join('')}`);
   for (const m of metrics) {
     const cells = labels.map((l, i) => {

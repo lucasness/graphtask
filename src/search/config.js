@@ -38,6 +38,9 @@ export function defaultConfig() {
     // allowed to exceed the node top-K so one chunk-heavy node can't crowd
     // distinct nodes out of the pool (#190 spec).
     dense: { chunkTopK: 50 },
+    // Lexical-leg ranker (#228): 'tiered' (field-tiered substring AND — the
+    // instant-preview algorithm) or 'bm25' (IDF + length norm + OR semantics).
+    lexical: { ranker: 'tiered' },
   };
 }
 
@@ -79,6 +82,7 @@ export function validateConfig(input = {}) {
     },
     graphExpand: { ...base.graphExpand, ...(isPlainObject(input.graphExpand) ? input.graphExpand : {}) },
     dense: { ...base.dense, ...(isPlainObject(input.dense) ? input.dense : {}) },
+    lexical: { ...base.lexical, ...(isPlainObject(input.lexical) ? input.lexical : {}) },
   };
 
   if (!Array.isArray(cfg.retrievers) || cfg.retrievers.length === 0) {
@@ -116,6 +120,10 @@ export function validateConfig(input = {}) {
   }
   if (!Number.isInteger(cfg.dense.chunkTopK) || cfg.dense.chunkTopK < 1) {
     errors.push('dense.chunkTopK must be a positive integer');
+  }
+
+  if (!['tiered', 'bm25'].includes(cfg.lexical.ranker)) {
+    errors.push('lexical.ranker must be one of tiered, bm25');
   }
 
   if (cfg.graphExpand.edgeTypes !== undefined) {
@@ -179,6 +187,8 @@ export function assertConfig(input) {
  *                       graph expansion — the recall lever, no model (#197)
  *   GRAPH_EXPAND_HOPS / _MAX_PER_SEED / _MAX  BFS depth + fan-out caps
  *   GRAPH_EXPAND_EDGE_TYPES  comma list to restrict traversal (default: all)
+ *   LEXICAL_RANKER      tiered (default) | bm25 — Tier-0 scoring algorithm
+ *                       (#228); the instant typing preview always uses tiered
  *   DENSE_CHUNK_TOPK    ANN chunk pool size before the node collapse (default
  *                       50; raise so chunk-heavy nodes can't crowd the pool,
  *                       #226 — node top-K stays 50 regardless)
@@ -259,6 +269,8 @@ export function configFromEnv(env = process.env) {
   }
 
   if (env.DENSE_CHUNK_TOPK) cfg.dense.chunkTopK = Number(env.DENSE_CHUNK_TOPK);
+
+  if (env.LEXICAL_RANKER) cfg.lexical.ranker = env.LEXICAL_RANKER;
 
   if (env.SEARCH_TOPK) cfg.topK = Number(env.SEARCH_TOPK);
 

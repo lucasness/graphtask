@@ -168,4 +168,113 @@ export function lexicalSearch(query, docs, opts = {}) {
   return Number.isFinite(limit) ? hits.slice(0, limit) : hits;
 }
 
-export default { lexicalSearch, fieldMatch, matchRanges, buildSnippet, tokenize, FIELD_ORDER };
+// ───────────────────────────── BM25 (Tier 0b, #228) ─────────────────────────
+// Real BM25 scoring as an ALTERNATIVE ranker behind the same contract:
+// IDF + per-field length normalization + OR-with-saturation semantics,
+// combined BM25F-style with field weights (title > description > body).
+// No stemming, no typo tolerance (separate experiment arms). The tiered
+// substring ranker above stays the default for the instant typing preview;
+// the pipeline picks a ranker via config (LEXICAL_RANKER env).
+
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+const BM25_FIELD_WEIGHTS = { title: 4, description: 2, body: 1 };
+
+/** Word tokens (alphanumeric runs) — BM25 scores token equality, unlike the
+ *  substring matcher above. */
+export function wordTokens(text) {
+  return String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+// Per-corpus index cache: tokenizing every doc per keystroke/query would be
+// wasteful, and the eval/route reuse one corpus array across many queries.
+const bm25IndexCache = new WeakMap();
+
+function buildBm25Index(docs) {
+  const fields = FIELD_ORDER;
+  const perDoc = []; // [{ tf: {field: Map(term->count)}, len: {field: n} }]
+  const df = new Map(); // term -> docs containing it (any field)
+  const totalLen = { title: 0, description: 0, body: 0 };
+  for (const doc of docs || []) {
+    const entry = { doc, tf: {}, len: {} };
+    const seen = new Set();
+    for (const f of fields) {
+      const toks = wordTokens(doc[f]);
+      const tf = new Map();
+      for (const t of toks) tf.set(t, (tf.get(t) || 0) + 1);
+      entry.tf[f] = tf;
+      entry.len[f] = toks.length;
+      totalLen[f] += toks.length;
+      for (const t of tf.keys()) seen.add(t);
+    }
+    for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
+    perDoc.push(entry);
+  }
+  const n = perDoc.length || 1;
+  const avgLen = {};
+  for (const f of fields) avgLen[f] = totalLen[f] / n || 1;
+  return { perDoc, df, avgLen, n };
+}
+
+function getBm25Index(docs) {
+  let idx = bm25IndexCache.get(docs);
+  if (!idx) {
+    idx = buildBm25Index(docs);
+    bm25IndexCache.set(docs, idx);
+  }
+  return idx;
+}
+
+/**
+ * Rank `docs` against `query` with BM25F-style scoring. Same return shape as
+ * lexicalSearch so the retriever/UI can swap rankers: strongest contributing
+ * field reported as `field`/`tier`, snippet anchored on the matched terms.
+ * OR semantics: any term may be absent; docs matching more/rarer terms score
+ * higher via IDF, with k1 saturation replacing the old hard AND.
+ */
+export function bm25Search(query, docs, opts = {}) {
+  const terms = tokenize(query);
+  if (terms.length === 0) return [];
+  const limit = opts.limit ?? Infinity;
+  const snippetMax = opts.snippetMax ?? 140;
+  const { perDoc, df, avgLen, n } = getBm25Index(docs || []);
+
+  const hits = [];
+  for (const entry of perDoc) {
+    let score = 0;
+    const fieldScore = { title: 0, description: 0, body: 0 };
+    for (const term of terms) {
+      const d = df.get(term) || 0;
+      if (d === 0) continue;
+      const idf = Math.log(1 + (n - d + 0.5) / (d + 0.5));
+      for (const f of FIELD_ORDER) {
+        const tf = entry.tf[f].get(term) || 0;
+        if (tf === 0) continue;
+        const norm = 1 - BM25_B + BM25_B * (entry.len[f] / avgLen[f]);
+        const s = BM25_FIELD_WEIGHTS[f] * idf * ((tf * (BM25_K1 + 1)) / (tf + BM25_K1 * norm));
+        fieldScore[f] += s;
+        score += s;
+      }
+    }
+    if (score <= 0) continue;
+    let bestField = FIELD_ORDER[0];
+    for (const f of FIELD_ORDER) if (fieldScore[f] > fieldScore[bestField]) bestField = f;
+    const snippetField = bestField === 'title'
+      ? (entry.doc.description || entry.doc.body || entry.doc.title)
+      : entry.doc[bestField];
+    hits.push({
+      id: entry.doc.id,
+      doc: entry.doc,
+      field: bestField,
+      tier: FIELD_ORDER.indexOf(bestField),
+      freq: score, // carried in the freq slot so consumers stay agnostic
+      score,
+      snippet: buildSnippet(snippetField, terms, snippetMax),
+    });
+  }
+
+  hits.sort((a, b) => (b.score !== a.score ? b.score - a.score : newerFirst(a.doc, b.doc)));
+  return Number.isFinite(limit) ? hits.slice(0, limit) : hits;
+}
+
+export default { lexicalSearch, bm25Search, fieldMatch, matchRanges, buildSnippet, tokenize, wordTokens, FIELD_ORDER };
