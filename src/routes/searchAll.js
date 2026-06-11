@@ -12,18 +12,11 @@
 
 import { Router } from 'express';
 import pool from '../db.js';
-import { SearchService } from '../search/service.js';
-import { configFromEnv } from '../search/config.js';
+// The per-graph route's process-wide service — sharing it means the boot
+// warmup covers cross-graph too, and the ONNX models exist exactly once.
+import { getDefaultService } from './search.js';
 
 const router = Router();
-
-// Same one-service-per-process reuse as the per-graph route: the env config
-// is fixed for the process lifetime and model providers are heavy to build.
-let defaultService = null;
-function getDefaultService() {
-  if (!defaultService) defaultService = new SearchService({ config: configFromEnv(), pool });
-  return defaultService;
-}
 
 router.post('/', async (req, res, next) => {
   if (!req.user) {

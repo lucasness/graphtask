@@ -20,8 +20,12 @@ const router = Router({ mergeParams: true });
 // One service per process for the default (env-derived) config — assembly is
 // cheap but pointless to repeat per request. A request that overrides the
 // config builds an ad-hoc service (validation may reject it → 400).
+// Shared with the cross-graph route (searchAll.js): ONE service per process
+// means ONE copy of the ONNX models — a second instance would double model
+// memory AND make the first cross-graph search pay its own multi-second lazy
+// load that the boot warmup below already paid for this one.
 let defaultService = null;
-function getDefaultService() {
+export function getDefaultService() {
   if (!defaultService) defaultService = new SearchService({ config: configFromEnv(), pool });
   return defaultService;
 }
