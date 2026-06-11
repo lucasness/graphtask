@@ -77,7 +77,11 @@ async function main() {
     try {
       provider = createRerankProvider({ backend: 'local-onnx', model, ...(dtype ? { dtype } : {}) }, {});
       const q = queries[qids[0]];
-      const docs20 = corpus.slice(0, 20).map((d) => [d.title, d.description, d.body].filter(Boolean).join('\n'));
+      // Truncate probe docs the way the rerank stage does (RERANK_MAXCHARS,
+      // default 512) — untruncated 10KB notes through a long-window model
+      // OOM the box and measure an input shape production never sends.
+      const maxChars = Number(process.env.RERANK_MAXCHARS || 512);
+      const docs20 = corpus.slice(0, 20).map((d) => [d.title, d.description, d.body].filter(Boolean).join('\n').slice(0, maxChars));
       await provider.rerank(q, docs20); // warm (loads weights)
       const t20 = []; for (let i = 0; i < 3; i++) { const t = performance.now(); await provider.rerank(q, docs20); t20.push(performance.now() - t); }
       const t10 = []; const docs10 = docs20.slice(0, 10); for (let i = 0; i < 3; i++) { const t = performance.now(); await provider.rerank(q, docs10); t10.push(performance.now() - t); }
@@ -95,7 +99,18 @@ async function main() {
     fusion: { mode: 'rrf', k: 60 },
     postprocessors: model === 'none' ? [] : ['rerank'],
     topK: 100,
-    providers: { embedding: { backend: 'none' }, rerank: { backend: model === 'none' ? 'none' : 'local-onnx', topM: TOP_M } },
+    // BM25 candidates (#228): the tiered AND ranker returns near-empty lists
+    // for the E1 paraphrase/conceptual queries, which starves the reranker and
+    // hides model differences. Round-2 cells all rerank a real top-M list.
+    lexical: { ranker: process.env.LEXICAL_RANKER || 'bm25' },
+    providers: {
+      embedding: { backend: 'none' },
+      rerank: {
+        backend: model === 'none' ? 'none' : 'local-onnx',
+        topM: TOP_M,
+        ...(process.env.RERANK_INPUT ? { input: process.env.RERANK_INPUT } : {}),
+      },
+    },
   };
   const pipeline = assemblePipeline(cfg, provider ? { rerankProvider: provider } : {});
 
