@@ -72,7 +72,12 @@ async function main() {
       },
       rerank: rerankCfg,
     },
-    graphExpand: { hops: 1, maxAddedPerSeed: 5, maxAdded: 50 },
+    // #231: expansion knobs ride the same env the app reads for cap/hop cells.
+    graphExpand: {
+      hops: Number(process.env.GRAPH_EXPAND_HOPS || 1),
+      maxAddedPerSeed: Number(process.env.GRAPH_EXPAND_MAX_PER_SEED || 5),
+      maxAdded: Number(process.env.GRAPH_EXPAND_MAX || 50),
+    },
     // #226: ANN chunk-pool size (sweep via DENSE_CHUNK_TOPK; node top-K stays 50).
     dense: { chunkTopK: Number(process.env.DENSE_CHUNK_TOPK || 50) },
     // #228: Tier-0 ranker for the lexical leg (tiered | bm25).
