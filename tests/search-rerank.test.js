@@ -64,6 +64,33 @@ describe('rerank postprocessor', () => {
     expect(await rr.postprocess('q', [], { corpus })).toEqual([]);
   });
 
+  it('input=chunk reranks the matched passage headed by the title (#227)', async () => {
+    const seen = [];
+    const provider = { modelId: 'fake', async rerank(q, docs) { seen.push(...docs); return docs.map(() => 0.5); } };
+    const rr = createReranker({ provider, input: 'chunk' });
+    const withSnippet = [{ taskId: 1, score: 0.9, source: 'dense', snippet: { text: 'the winning passage' } }];
+    await rr.postprocess('q', withSnippet, { corpus });
+    expect(seen).toEqual(['Alpha\nthe winning passage']); // not the body head
+  });
+
+  it('input=auto uses the head for docs that fit maxChars, the chunk for longer ones', async () => {
+    const seen = [];
+    const provider = { modelId: 'fake', async rerank(q, docs) { seen.push(...docs); return docs.map(() => 0.5); } };
+    const longBody = 'x'.repeat(600);
+    const autoCorpus = [
+      { id: 1, title: 'Short', body: 'fits fine' },
+      { id: 2, title: 'Long', body: longBody },
+    ];
+    const rr = createReranker({ provider, input: 'auto', maxChars: 512 });
+    const cs = [
+      { taskId: 1, score: 0.9, source: 'dense', snippet: { text: 'snip one' } },
+      { taskId: 2, score: 0.8, source: 'dense', snippet: { text: 'snip two' } },
+    ];
+    await rr.postprocess('q', cs, { corpus: autoCorpus });
+    expect(seen[0]).toBe('Short\nfits fine'); // whole doc fits → head
+    expect(seen[1]).toBe('Long\nsnip two'); // would truncate → chunk
+  });
+
   it('truncates doc text to maxChars before sending to the provider (#198 latency lever)', async () => {
     let sentLen = -1;
     const capture = { modelId: 'cap', async rerank(query, docs) { sentLen = docs[0].length; return docs.map(() => 0.5); } };

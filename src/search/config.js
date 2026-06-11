@@ -171,6 +171,10 @@ export function assertConfig(input) {
  *                       better recall than 20 at ~same cost with the default
  *                       TinyBERT @ 512 chars; see #198)
  *   RERANK_DTYPE        local-onnx weights variant: q8 (default) | fp32
+ *   RERANK_INPUT        head (default) | chunk | chunkdesc | auto — what the
+ *                       cross-encoder reads: the doc head, the candidate's
+ *                       matched passage headed by the title, or auto (head
+ *                       for docs that fit maxChars, chunk for longer) (#227)
  *   GRAPH_EXPAND        1/true (or any GRAPH_EXPAND_* knob) enables k-hop
  *                       graph expansion — the recall lever, no model (#197)
  *   GRAPH_EXPAND_HOPS / _MAX_PER_SEED / _MAX  BFS depth + fan-out caps
@@ -241,6 +245,7 @@ export function configFromEnv(env = process.env) {
     ...(env.RERANK_URL ? { url: env.RERANK_URL } : {}),
     ...(env.RERANK_MODEL ? { model: env.RERANK_MODEL } : {}),
     ...(env.RERANK_DTYPE ? { dtype: env.RERANK_DTYPE } : {}),
+    ...(env.RERANK_INPUT ? { input: env.RERANK_INPUT } : {}),
     ...(env.RERANK_TIMEOUT_MS ? { timeoutMs: Number(env.RERANK_TIMEOUT_MS) } : {}),
     ...(env.RERANK_RETRIES ? { retries: Number(env.RERANK_RETRIES) } : {}),
     ...(env.RERANK_TOPM ? { topM: Number(env.RERANK_TOPM) } : {}),

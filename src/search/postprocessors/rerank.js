@@ -19,26 +19,54 @@ const DEFAULT_TOP_M = 50; // rerank this many fused hits; the tail passes throug
 const DEFAULT_MAX_CHARS = 512;
 
 /**
- * @param {{provider:import('../types.js').RerankProvider, topM?:number, maxChars?:number}} opts
+ * @param {{provider:import('../types.js').RerankProvider, topM?:number, maxChars?:number,
+ *          input?:'head'|'chunk'|'chunkdesc'}} opts
+ *   input (#227) — what the cross-encoder reads per candidate:
+ *     head      (default) title+description+body, truncated at maxChars — the
+ *               doc HEAD; a match deep in a long node may be judged on text
+ *               that lacks the evidence.
+ *     chunk     title + the candidate's winning passage (dense max-pool chunk
+ *               or lexical match window); falls back to description/body head
+ *               when a candidate carries no snippet (e.g. graph-expanded).
+ *     chunkdesc chunk mode with the description always included.
+ *     auto      head when the whole doc fits within maxChars (truncation
+ *               loses nothing), chunk when it would be cut — so short notes
+ *               keep full context and long notes keep their evidence.
  * @returns {import('../types.js').Postprocessor}
  */
-export function createReranker({ provider, topM = DEFAULT_TOP_M, maxChars = DEFAULT_MAX_CHARS } = {}) {
+export function createReranker({ provider, topM = DEFAULT_TOP_M, maxChars = DEFAULT_MAX_CHARS, input = 'head' } = {}) {
   if (!provider) throw new Error('createReranker needs a RerankProvider');
+  const mode = ['chunk', 'chunkdesc', 'auto'].includes(input) ? input : 'head';
 
   return {
     name: 'rerank',
     async postprocess(query, candidates, ctx = {}) {
       if (!Array.isArray(candidates) || candidates.length === 0) return candidates;
 
-      // taskId → document text, from the shared corpus. Fall back to the
-      // candidate's lexical snippet, then empty, so a missing doc never throws.
-      const textById = new Map();
-      for (const doc of ctx.corpus || []) {
-        const parts = [doc.title, doc.description, doc.body].filter(Boolean).join('\n');
-        textById.set(String(doc.id), parts);
-      }
+      // taskId → document, from the shared corpus. Fall back to the
+      // candidate's snippet, then empty, so a missing doc never throws.
+      const docById = new Map();
+      for (const doc of ctx.corpus || []) docById.set(String(doc.id), doc);
       const docTextFor = (c) => {
-        const t = textById.get(String(c.taskId)) ?? (c.snippet && c.snippet.text) ?? '';
+        const doc = docById.get(String(c.taskId));
+        let t;
+        if (!doc) {
+          t = (c.snippet && c.snippet.text) || '';
+        } else {
+          const headText = [doc.title, doc.description, doc.body].filter(Boolean).join('\n');
+          const useChunk = mode === 'chunk' || mode === 'chunkdesc'
+            || (mode === 'auto' && headText.length > maxChars);
+          if (useChunk) {
+            // The evidence the retriever actually matched, headed by the title
+            // so the cross-encoder keeps the topical anchor (#227).
+            const snippet = c.snippet && c.snippet.text;
+            const evidence = snippet || doc.description || doc.body || '';
+            const desc = mode === 'chunkdesc' && doc.description !== evidence ? doc.description : null;
+            t = [doc.title, desc, evidence].filter(Boolean).join('\n');
+          } else {
+            t = headText;
+          }
+        }
         return t.length > maxChars ? t.slice(0, maxChars) : t;
       };
 

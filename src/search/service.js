@@ -66,6 +66,7 @@ const POSTPROCESSOR_FACTORIES = {
       provider: deps.rerankProvider,
       topM: config.providers?.rerank?.topM,
       maxChars: config.providers?.rerank?.maxChars,
+      input: config.providers?.rerank?.input,
     });
   },
 };
