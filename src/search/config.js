@@ -126,6 +126,9 @@ export function validateConfig(input = {}) {
     errors.push('lexical.ranker must be one of tiered, bm25');
   }
 
+  if (cfg.graphExpand.mode !== undefined && !['append', 'fusion'].includes(cfg.graphExpand.mode)) {
+    errors.push('graphExpand.mode must be one of append, fusion');
+  }
   if (cfg.graphExpand.edgeTypes !== undefined) {
     if (!Array.isArray(cfg.graphExpand.edgeTypes)) {
       errors.push('graphExpand.edgeTypes must be an array');
@@ -187,6 +190,9 @@ export function assertConfig(input) {
  *                       graph expansion — the recall lever, no model (#197)
  *   GRAPH_EXPAND_HOPS / _MAX_PER_SEED / _MAX  BFS depth + fan-out caps
  *   GRAPH_EXPAND_EDGE_TYPES  comma list to restrict traversal (default: all)
+ *   GRAPH_EXPAND_MODE   append (default) | fusion — append = below the fused
+ *                       floor (#197 guard); fusion = RRF-merge neighbours by
+ *                       seed mass so they compete for positions (#231/E10)
  *   LEXICAL_RANKER      tiered (default) | bm25 — Tier-0 scoring algorithm
  *                       (#228); the instant typing preview always uses tiered
  *   DENSE_CHUNK_TOPK    ANN chunk pool size before the node collapse (default
@@ -246,6 +252,7 @@ export function configFromEnv(env = process.env) {
     if (env.GRAPH_EXPAND_EDGE_TYPES) {
       cfg.graphExpand.edgeTypes = env.GRAPH_EXPAND_EDGE_TYPES.split(',').map((s) => s.trim()).filter(Boolean);
     }
+    if (env.GRAPH_EXPAND_MODE) cfg.graphExpand.mode = env.GRAPH_EXPAND_MODE;
     if (!cfg.postprocessors.includes('graphExpand')) cfg.postprocessors.push('graphExpand');
   }
 

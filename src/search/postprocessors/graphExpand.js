@@ -35,7 +35,23 @@ const DEFAULT_MAX_ADDED = 50;      // overall cap on appended nodes
  *   hops?: number,            // BFS depth from each seed (default 1)
  *   maxAddedPerSeed?: number, // per-seed fan-out cap (default 5)
  *   maxAdded?: number,        // total appended-node cap (default 50)
- *   edgeTypes?: string[]|null // restrict to these edge types; null = all (dependency + related)
+ *   edgeTypes?: string[]|null,// restrict to these edge types; null = all (dependency + related)
+ *   mode?: 'append'|'fusion'  // #231/E10: how expanded nodes enter the list.
+ *     append (default) — strictly below the fused floor (#197's precision
+ *       guard). PROVEN structurally invisible on large graphs: with the bm25
+ *       leg the fused list runs 45-80 deep, so appended nodes sit past both
+ *       topK and the reranker's topM window.
+ *     fusion — expansion becomes a third leg: each neighbour is scored by its
+ *       SEED MASS (Σ 1/(60+seedRank) over adjacent seeds — seed strength ×
+ *       edge multiplicity, the #231 minimal-PPR idea), then RRF-merged with
+ *       the fused order so neighbours COMPETE for positions instead of
+ *       queueing behind them. The precision guard becomes statistical (RRF
+ *       discounts deep ranks) instead of absolute.
+ *       MEASURED (E10, 2026-06-12): fusion LOST on all three labeled real
+ *       graphs (stock r@20 −0.070, iOS −0.129, TIL −0.022 vs no expansion) —
+ *       edge-neighbours of retrieved nodes are mostly topical, not
+ *       query-relevant, and equal-citizen RRF promotes them over real hits.
+ *       Kept behind the flag as the experiment's paper trail; do not enable.
  * }} opts
  * @returns {import('../types.js').Postprocessor}
  */
@@ -45,6 +61,7 @@ export function createGraphExpander({
   maxAddedPerSeed = DEFAULT_MAX_PER_SEED,
   maxAdded = DEFAULT_MAX_ADDED,
   edgeTypes = null,
+  mode = 'append',
 } = {}) {
   // Pull edge rows for the searched graph(s). Scoped either way — the SQL leg
   // by WHERE graph_id (one id or, for cross-graph search, the accessible set;
@@ -129,6 +146,44 @@ export function createGraphExpander({
       }
 
       if (added.length === 0) return candidates;
+
+      if (mode === 'fusion') {
+        const K = 60; // same constant as the retriever-leg RRF
+        const seedRank = new Map(seedIds.map((id, i) => [id, i]));
+        // Seed mass: every fused seed directly adjacent to the neighbour
+        // contributes 1/(K + its rank + 1) — strong seeds and multi-edged
+        // neighbours both raise it. A multi-hop discovery with no direct seed
+        // edge falls back to its discovery seed's term, discounted by hop.
+        const massOf = (a) => {
+          let mass = 0;
+          for (const s of adj.get(String(a.id)) || []) {
+            const r = seedRank.get(s);
+            if (r !== undefined) mass += 1 / (K + r + 1);
+          }
+          if (mass === 0) mass = 1 / ((K + (seedRank.get(String(a.via)) ?? seedIds.length) + 1) * a.hop);
+          return mass;
+        };
+        const expLeg = added
+          .map((a) => ({ a, mass: massOf(a) }))
+          .sort((x, y) => y.mass - x.mass);
+        // RRF over the two lists (disjoint by construction — BFS never adds a
+        // node already in the fused list). Fused candidates keep their objects
+        // (snippets, meta); expanded ones enter as graph-sourced candidates.
+        // Ties break to the fused side so an equal-rank neighbour never
+        // displaces a real hit.
+        return [
+          ...candidates.map((c, i) => ({ cand: c, score: 1 / (K + i + 1), fused: true })),
+          ...expLeg.map((e, j) => ({
+            cand: makeCandidate(e.a.id, 0, 'graph', {
+              meta: { expandHop: e.a.hop, via: e.a.via, expansionMass: e.mass, mode: 'fusion' },
+            }),
+            score: 1 / (K + j + 1),
+            fused: false,
+          })),
+        ]
+          .sort((x, y) => y.score - x.score || (x.fused === y.fused ? 0 : x.fused ? -1 : 1))
+          .map((m) => ({ ...m.cand, score: m.score }));
+      }
 
       // Score the appended nodes strictly below the fused tail and descending by
       // insertion order, so any consumer that sorts by score keeps them under
