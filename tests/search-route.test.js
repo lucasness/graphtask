@@ -76,4 +76,62 @@ describe('POST /api/graphs/:gid/search', () => {
     const res = await request(app).post('/api/graphs/doesnotexist/search').send({ query: 'token' });
     expect(res.status).toBe(404);
   });
+
+  // OOM guard (#436): ad-hoc configs must never load a second ONNX model copy
+  // in the serving process. The test env's deployed backends are 'none', so any
+  // local-onnx override has no pooled instance to reuse → 400, not a model load.
+  it('400s an ad-hoc local-onnx override that does not match the deployed model', async () => {
+    await seed();
+    for (const kind of ['rerank', 'embedding']) {
+      const res = await request(app)
+        .post(searchUrl())
+        .send({ query: 'token', config: { providers: { [kind]: { backend: 'local-onnx' } } } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/pooled|deployed model/);
+    }
+  });
+});
+
+describe('pooledAdHocDeps (OOM guard unit)', () => {
+  const FAKE_EMB = { modelId: 'deployed-emb', embed: async () => [] };
+  const fakeDefault = {
+    config: { providers: { embedding: { backend: 'local-onnx' }, rerank: { backend: 'none' } } },
+    providers: { embedding: FAKE_EMB, rerank: null },
+  };
+  let pooledAdHocDeps;
+  beforeAll(async () => {
+    ({ pooledAdHocDeps } = await import('../src/routes/search.js'));
+  });
+
+  it('reuses the deployed provider instance when the identity matches', () => {
+    const deps = pooledAdHocDeps(
+      { providers: { embedding: { backend: 'local-onnx' } } },
+      fakeDefault,
+    );
+    expect(deps.embeddingProvider).toBe(FAKE_EMB);
+  });
+
+  it('throws 400 when the override names a different model or dtype', () => {
+    for (const override of [{ model: 'some-other-model' }, { dtype: 'fp32' }]) {
+      expect(() => pooledAdHocDeps(
+        { providers: { embedding: { backend: 'local-onnx', ...override } } },
+        fakeDefault,
+      )).toThrow(/deployed model/);
+    }
+  });
+
+  it('throws 400 for local-onnx kinds the deployment does not run at all', () => {
+    expect(() => pooledAdHocDeps(
+      { providers: { rerank: { backend: 'local-onnx' } } },
+      fakeDefault,
+    )).toThrow(/deployed model/);
+  });
+
+  it('passes non-onnx overrides through untouched (no pooling, no rejection)', () => {
+    const deps = pooledAdHocDeps(
+      { providers: { rerank: { backend: 'http', url: 'http://x' } }, topK: 5 },
+      fakeDefault,
+    );
+    expect(deps).toEqual({});
+  });
 });

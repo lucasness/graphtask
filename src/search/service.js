@@ -151,7 +151,20 @@ export class SearchService {
     }
     this.config = validated;
     this.pool = pool;
-    this.pipeline = assemblePipeline(validated, { pool, ...deps });
+    // Providers are created here (not buried in assemblePipeline) and exposed
+    // so the route can POOL them into ad-hoc per-request services — a local-onnx
+    // provider holds an ONNX model in process memory, and a second copy OOMs
+    // the box (#436 incident). Callers may still pre-supply either via deps.
+    this.providers = {
+      embedding: deps.embeddingProvider ?? createEmbeddingProvider(validated.providers?.embedding || {}, deps),
+      rerank: deps.rerankProvider ?? createRerankProvider(validated.providers?.rerank || {}, deps),
+    };
+    this.pipeline = assemblePipeline(validated, {
+      pool,
+      ...deps,
+      embeddingProvider: this.providers.embedding,
+      rerankProvider: this.providers.rerank,
+    });
   }
 
   /**

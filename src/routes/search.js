@@ -41,6 +41,39 @@ export function warmupDefaultService() {
   });
 }
 
+// OOM guard (#436 incident, 2026-06-12): a per-request `config` naming a
+// local-onnx backend used to make the ad-hoc SearchService load a SECOND copy
+// of the ONNX models inside the serving process — on the 2.9GB box that
+// OOM-killed the app mid-request. This process pools exactly one in-memory
+// copy per provider (the default service's). An ad-hoc config asking for
+// local-onnx gets that pooled instance when it matches the deployed identity
+// (model + dtype), and a 400 when it doesn't — a different model can't be
+// served from this process; use an http backend for that experiment.
+export function pooledAdHocDeps(config, def = getDefaultService()) {
+  const deps = {};
+  const kinds = [['embedding', 'embeddingProvider'], ['rerank', 'rerankProvider']];
+  for (const [kind, depKey] of kinds) {
+    const requested = config?.providers?.[kind];
+    if (!requested || requested.backend !== 'local-onnx') continue;
+    const deployed = def.config.providers?.[kind] || {};
+    const samePooledModel = deployed.backend === 'local-onnx'
+      && (requested.model ?? null) === (deployed.model ?? null)
+      && (requested.dtype ?? null) === (deployed.dtype ?? null);
+    if (!samePooledModel) {
+      const err = new Error(
+        `providers.${kind}: ad-hoc local-onnx configs can only reuse the deployed model `
+        + '(one pooled in-process copy; loading another risks OOM) — '
+        + 'omit the override or use an http backend',
+      );
+      err.status = 400;
+      err.errors = [err.message];
+      throw err;
+    }
+    deps[depKey] = def.providers[kind];
+  }
+  return deps;
+}
+
 router.post('/', async (req, res, next) => {
   const { gid } = req.params;
   const { query, config } = req.body || {};
@@ -50,7 +83,7 @@ router.post('/', async (req, res, next) => {
 
   let service;
   try {
-    service = config ? new SearchService({ config, pool }) : getDefaultService();
+    service = config ? new SearchService({ config, pool, deps: pooledAdHocDeps(config) }) : getDefaultService();
   } catch (err) {
     if (err.status === 400) return res.status(400).json({ error: err.message, errors: err.errors });
     return next(err);
