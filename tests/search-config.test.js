@@ -54,6 +54,11 @@ describe('validateConfig', () => {
   it('requires a non-empty retrievers array', () => {
     expect(validateConfig({ retrievers: [] }).errors.join()).toMatch(/non-empty/);
   });
+
+  it('defaults dense.chunkTopK to 50 and rejects non-positive values (#226)', () => {
+    expect(validateConfig({}).config.dense.chunkTopK).toBe(50);
+    expect(validateConfig({ dense: { chunkTopK: 0 } }).errors.join()).toMatch(/chunkTopK/);
+  });
 });
 
 describe('assertConfig', () => {
@@ -83,5 +88,9 @@ describe('configFromEnv', () => {
 
   it('respects SEARCH_TOPK', () => {
     expect(configFromEnv({ SEARCH_TOPK: '20' }).topK).toBe(20);
+  });
+
+  it('respects DENSE_CHUNK_TOPK (#226)', () => {
+    expect(configFromEnv({ DENSE_CHUNK_TOPK: '150' }).dense.chunkTopK).toBe(150);
   });
 });
