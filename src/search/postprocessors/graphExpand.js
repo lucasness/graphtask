@@ -14,6 +14,19 @@
 // lexical/dense hit. Per-seed and total fan-out caps keep the tail from flooding
 // the list. Both knobs are config.
 //
+// ── Why is this stage still here? (decision record, 2026-06-12) ──────────────
+// The round-2/E10 campaign (#231, #436) measured expansion on three real graphs
+// (stock-73, TIL-195, iOS-62), both hop depths, both modes, and found ZERO
+// end-to-end value in production regimes: with the bm25 lexical leg the fused
+// list runs 45-80 deep, so append-mode neighbours land past topK=20 and the
+// rerank window (0 of 767 added nodes reached top-20 on TIL) — structurally
+// invisible, not just statistically flat. Fusion mode (below) measured WORSE
+// than off. Kevin's call: keep the stage enabled anyway — it costs ~2-5ms,
+// can't bury good hits by construction, and may still recover misses on
+// tiny/sparse graphs where the fused list runs short. Don't expect production
+// lift from it, and don't re-run the kill investigation; the data lives on
+// graph nodes #231 and #436 (graph safqkahqnftyef4j).
+//
 // Edge source is dual, mirroring the dense retriever's store/in-memory split:
 //   • route   — query the `edges` table via deps.pool, scoped WHERE graph_id =
 //               ctx.gid (single-graph search; the scope is the access control —
