@@ -10,11 +10,10 @@
 import { RETRIEVERS, POSTPROCESSORS, FUSION_MODES, PROVIDER_BACKENDS, EDGE_TYPES } from './types.js';
 
 /**
- * The boring default: Tier-0 lexical only, RRF joiner, top-K 10, no model
- * providers. Runs anywhere. graphExpand + rerank are Phase-3 postprocessors —
- * the registry/ports accept them now (so config can name them), but the
- * default leaves them off until they're implemented, which keeps the P2.0
- * pipeline's lexical ranking byte-identical to raw lexicalSearch.
+ * The boring default: Tier-0 lexical only (BM25), RRF joiner, top-K 10, no
+ * model providers. Runs anywhere. graphExpand + rerank are Phase-3
+ * postprocessors — the registry/ports accept them now (so config can name
+ * them), but the default leaves them off until they're implemented.
  *
  * @returns {Object} a fresh, mutable default config
  */
@@ -38,9 +37,11 @@ export function defaultConfig() {
     // allowed to exceed the node top-K so one chunk-heavy node can't crowd
     // distinct nodes out of the pool (#190 spec).
     dense: { chunkTopK: 50 },
-    // Lexical-leg ranker (#228): 'tiered' (field-tiered substring AND — the
-    // instant-preview algorithm) or 'bm25' (IDF + length norm + OR semantics).
-    lexical: { ranker: 'tiered' },
+    // Lexical-leg ranker (#228): 'bm25' (IDF + length norm + OR semantics — the
+    // default since #228/E6 measured it Tier-0 MAP 0.31→0.68 on real notes and
+    // the fused list became the strongest ranker we have) or 'tiered'
+    // (field-tiered substring AND — the original, kept for substring-exact UX).
+    lexical: { ranker: 'bm25' },
   };
 }
 

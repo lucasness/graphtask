@@ -9,6 +9,7 @@ describe('defaultConfig', () => {
     expect(c.postprocessors).toEqual([]);
     expect(c.topK).toBe(10);
     expect(c.providers.embedding.backend).toBe('none');
+    expect(c.lexical.ranker).toBe('bm25'); // #228: bm25 is the default Tier-0 ranker
   });
 
   it('returns a fresh object each call (no shared mutation)', () => {

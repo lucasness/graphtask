@@ -3,7 +3,7 @@ import { SearchPipeline } from '../src/search/pipeline.js';
 import { assemblePipeline } from '../src/search/service.js';
 import { createLexicalRetriever } from '../src/search/retrievers/lexical.js';
 import { defaultConfig } from '../src/search/config.js';
-import { lexicalSearch } from '../public/search-lexical.js';
+import { lexicalSearch, bm25Search } from '../public/search-lexical.js';
 
 const CORPUS = [
   { id: 1, title: 'auth tokens', description: 'x', body: 'y', createdAt: '2026-01-01' },
@@ -38,9 +38,17 @@ describe('LexicalRetriever wraps the shared ranker', () => {
   });
 });
 
-describe('SearchPipeline — lexical-only ranks identically to raw lexicalSearch (P2.0 gate)', () => {
-  it('matches raw order through the full pipeline', async () => {
+describe('SearchPipeline — lexical-only ranks identically to its raw ranker (P2.0 gate)', () => {
+  it('matches raw bm25Search order through the full pipeline (the default ranker)', async () => {
     const pipeline = assemblePipeline({ ...defaultConfig(), topK: 100 }, {});
+    const { candidates } = await pipeline.run('token', { corpus: CORPUS, lexicalTopK: 100 });
+    const expected = bm25Search('token', CORPUS, { limit: 100 }).map((h) => h.id);
+    expect(candidates.map((c) => c.taskId)).toEqual(expected);
+  });
+
+  it('matches raw lexicalSearch order when ranker:tiered is configured', async () => {
+    const cfg = { ...defaultConfig(), topK: 100, lexical: { ranker: 'tiered' } };
+    const pipeline = assemblePipeline(cfg, {});
     const { candidates } = await pipeline.run('token', { corpus: CORPUS, lexicalTopK: 100 });
     const expected = lexicalSearch('token', CORPUS, { limit: 100 }).map((h) => h.id);
     expect(candidates.map((c) => c.taskId)).toEqual(expected);

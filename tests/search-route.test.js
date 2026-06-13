@@ -36,7 +36,10 @@ async function seed() {
 describe('POST /api/graphs/:gid/search', () => {
   it('ranks live PG nodes by the tiered lexical contract (title > desc > body)', async () => {
     await seed();
-    const res = await request(app).post(searchUrl()).send({ query: 'token' });
+    // The default ranker is now bm25 (word-equality, so "token" wouldn't match
+    // the "tokens" title); request the tiered substring ranker explicitly to
+    // exercise its title>desc>body contract through the route.
+    const res = await request(app).post(searchUrl()).send({ query: 'token', config: { lexical: { ranker: 'tiered' } } });
     expect(res.status).toBe(200);
     expect(res.body.query).toBe('token');
     const titles = res.body.results.map((r) => r.meta.field);
@@ -45,6 +48,14 @@ describe('POST /api/graphs/:gid/search', () => {
     expect(res.body.results[0]).toHaveProperty('snippet');
     expect(res.body.timings).toHaveProperty('total');
     expect(res.body.timings.retrievers).toHaveProperty('lexical');
+  });
+
+  it('uses bm25 (word-equality) by default — "token" matches desc/body, not the "tokens" title', async () => {
+    await seed();
+    const res = await request(app).post(searchUrl()).send({ query: 'token' });
+    expect(res.status).toBe(200);
+    const fields = res.body.results.map((r) => r.meta.field);
+    expect(fields).toEqual(['description', 'body']);
   });
 
   it('returns 400 on a missing/empty query', async () => {

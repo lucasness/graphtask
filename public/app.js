@@ -3427,8 +3427,12 @@ function renderSearch(query) {
   }
   const lib = window.LexicalSearch;
   const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
+  // BM25 for the typing preview too (#228): matches the server's Tier-0 ranker
+  // so the instant list agrees with what Enter returns, instead of the old
+  // substring-AND preview that under-matched natural-language queries. The
+  // per-corpus index is WeakMap-cached, so only the first keystroke builds it.
   const hits = (lib && query && query.trim() && docs.length)
-    ? lib.lexicalSearch(query, docs, { limit: 50 })
+    ? lib.bm25Search(query, docs, { limit: 50 })
     : [];
   // Same row shape KbSearch.mapServerResults produces, so one painter serves
   // both layers. Lexical matchType mirrors the server mapping: title flashes,
