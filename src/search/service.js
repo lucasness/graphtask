@@ -21,6 +21,7 @@ import { createDenseRetriever, createStoreDenseRetriever } from './retrievers/de
 import { createEmbeddingProvider } from './providers/embedding.js';
 import { createRerankProvider } from './providers/rerank.js';
 import { createReranker } from './postprocessors/rerank.js';
+import { createQueryRewriter } from './queryRewrite.js';
 import { createGraphExpander } from './postprocessors/graphExpand.js';
 import { parseMarkdown } from '../markdown.js';
 
@@ -159,6 +160,9 @@ export class SearchService {
       embedding: deps.embeddingProvider ?? createEmbeddingProvider(validated.providers?.embedding || {}, deps),
       rerank: deps.rerankProvider ?? createRerankProvider(validated.providers?.rerank || {}, deps),
     };
+    // Optional pre-retrieval query rewriter (#436/E11). null unless configured.
+    // Tests/eval inject deps.queryRewriter; production builds it from config.
+    this.queryRewriter = deps.queryRewriter ?? createQueryRewriter(validated.queryRewrite || {}, deps);
     this.pipeline = assemblePipeline(validated, {
       pool,
       ...deps,
@@ -173,6 +177,15 @@ export class SearchService {
    * { candidates, timings } unchanged so both callers see per-stage latency.
    */
   async search(query, ctx = {}) {
+    // Pre-retrieval rewrite (#436/E11): the rewritten query drives the lexical +
+    // dense legs; the ORIGINAL is kept on ctx.rawQuery so any caller that wants
+    // to highlight against what the user typed still can. Rewriting never throws
+    // (it falls back to the raw query), so this is safe to always await.
+    const rawQuery = query;
+    if (this.queryRewriter && typeof query === 'string' && query.trim()) {
+      query = await this.queryRewriter.rewrite(query);
+    }
+    ctx = { ...ctx, rawQuery: ctx.rawQuery ?? rawQuery };
     let corpus = ctx.corpus;
     // corpusFromStore tells the dense retriever whether ANN over task_chunks
     // ranks the SAME documents the caller is searching. A caller-supplied

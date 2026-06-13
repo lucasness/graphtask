@@ -42,6 +42,10 @@ export function defaultConfig() {
     // the fused list became the strongest ranker we have) or 'tiered'
     // (field-tiered substring AND — the original, kept for substring-exact UX).
     lexical: { ranker: 'bm25' },
+    // Pre-retrieval query rewriter (#436/E11): 'none' (default) runs no rewrite;
+    // 'llm' rewrites the query via an Anthropic call before the legs run;
+    // 'fixture' uses a precomputed map (eval/tests). See queryRewrite.js.
+    queryRewrite: { backend: 'none' },
   };
 }
 
@@ -84,6 +88,7 @@ export function validateConfig(input = {}) {
     graphExpand: { ...base.graphExpand, ...(isPlainObject(input.graphExpand) ? input.graphExpand : {}) },
     dense: { ...base.dense, ...(isPlainObject(input.dense) ? input.dense : {}) },
     lexical: { ...base.lexical, ...(isPlainObject(input.lexical) ? input.lexical : {}) },
+    queryRewrite: { ...base.queryRewrite, ...(isPlainObject(input.queryRewrite) ? input.queryRewrite : {}) },
   };
 
   if (!Array.isArray(cfg.retrievers) || cfg.retrievers.length === 0) {
@@ -125,6 +130,10 @@ export function validateConfig(input = {}) {
 
   if (!['tiered', 'bm25'].includes(cfg.lexical.ranker)) {
     errors.push('lexical.ranker must be one of tiered, bm25');
+  }
+
+  if (!['none', 'llm', 'fixture'].includes(cfg.queryRewrite.backend)) {
+    errors.push('queryRewrite.backend must be one of none, llm, fixture');
   }
 
   if (cfg.graphExpand.mode !== undefined && !['append', 'fusion'].includes(cfg.graphExpand.mode)) {
@@ -279,6 +288,16 @@ export function configFromEnv(env = process.env) {
   if (env.DENSE_CHUNK_TOPK) cfg.dense.chunkTopK = Number(env.DENSE_CHUNK_TOPK);
 
   if (env.LEXICAL_RANKER) cfg.lexical.ranker = env.LEXICAL_RANKER;
+
+  // Pre-retrieval query rewrite (#436/E11): QUERY_REWRITE=llm turns it on; the
+  // llm backend reads ANTHROPIC_API_KEY at call time and falls back to the raw
+  // query if it's missing, so enabling without a key is a safe no-op.
+  if (env.QUERY_REWRITE) {
+    cfg.queryRewrite = {
+      backend: env.QUERY_REWRITE,
+      ...(env.QUERY_REWRITE_MODEL ? { model: env.QUERY_REWRITE_MODEL } : {}),
+    };
+  }
 
   if (env.SEARCH_TOPK) cfg.topK = Number(env.SEARCH_TOPK);
 
