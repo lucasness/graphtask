@@ -2879,16 +2879,27 @@ kbd {
   border-bottom: 1px solid color-mix(in srgb, var(--color-steel) 18%, transparent);
 }
 
-/* Server ranking in flight (Enter pressed, hybrid+rerank answering): pulse
-   the magnifier so the re-sort doesn't land unannounced. */
+/* Hybrid refine in flight (the dense leg is running, after a typing pause or
+   Enter): a spinning ring tells the user the search has started and to wait
+   for the re-sort, rather than typing on and queuing another embed. The
+   magnifier also shifts to ember as a second, quieter cue. */
 .search-bar.search-pending .search-icon {
   color: var(--color-ember-orange);
-  animation: search-pulse 0.9s ease-in-out infinite;
 }
-@keyframes search-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+.search-spinner {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--color-ember-orange) 22%, transparent);
+  border-top-color: var(--color-ember-orange);
+  display: none;
 }
+.search-bar.search-pending .search-spinner {
+  display: inline-block;
+  animation: search-spin 0.6s linear infinite;
+}
+@keyframes search-spin { to { transform: rotate(360deg); } }
 
 /* Commit-time match highlight in the panel body (CSS Custom Highlight API —
    no DOM mutation inside the editor). Same ember wash as result <mark>s so

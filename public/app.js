@@ -3364,6 +3364,7 @@ function closeSearchBar({ restore = true } = {}) {
   const state = _searchState;
   bar.classList.add('hidden');
   setSearchPending(false);
+  cancelServerSearch();
   if (_searchPanelTimer) { clearTimeout(_searchPanelTimer); _searchPanelTimer = null; }
   const input = document.getElementById('search-input');
   if (input) input.value = '';
@@ -3411,15 +3412,43 @@ function appendHighlighted(parent, text, ranges) {
 // Live lexical preview for `query` — instant, client-side, no camera move
 // (spec: Enter runs). Typing also invalidates any server ranking for the
 // previous query; the next Enter re-runs the pipeline.
+// Debounced hybrid-while-typing (#172 progressive rendering). The dense/vector
+// leg lives only on the server (it needs the embedding model + pgvector), so it
+// can't run per keystroke; instead, once the user pauses we fire the full
+// pipeline ONCE and merge its semantic hits into the instant keyword list.
+// Because it's a debounce (not a per-keystroke fire), continued typing just
+// resets the timer — no embedding run is spent until the user actually stops.
+let _searchServerTimer = null;
+const SERVER_SEARCH_DEBOUNCE_MS = 250;
+
+function cancelServerSearch() {
+  if (_searchServerTimer) { clearTimeout(_searchServerTimer); _searchServerTimer = null; }
+}
+
+function scheduleServerSearch(rawQuery) {
+  cancelServerSearch();
+  const q = String(rawQuery || '').trim();
+  if (!q) return;
+  _searchServerTimer = setTimeout(() => {
+    _searchServerTimer = null;
+    const input = document.getElementById('search-input');
+    // Only fire if the bar's still open on this exact query (the user may have
+    // typed on, closed it, or switched graphs during the wait).
+    if (!isSearchBarOpen() || !input || input.value.trim() !== q) return;
+    runServerSearch(q);
+  }, SERVER_SEARCH_DEBOUNCE_MS);
+}
+
 function renderSearch(query) {
   if (!_searchState) return;
   _searchState.query = query;
   _searchState.server = { query: null, pending: false };
   _searchState.weak = false;
-  setSearchPending(false);
   // "All graphs" has no instant local leg — the other graphs' docs aren't on
-  // the client. Empty list + an Enter hint until the server answers.
+  // the client, and cross-graph is heavier, so it stays Enter-triggered.
   if (_searchState.scope === 'all') {
+    cancelServerSearch();
+    setSearchPending(false);
     _searchState.results = [];
     _searchState.active = -1;
     paintSearchResults({ allGraphsHint: true });
@@ -3428,9 +3457,8 @@ function renderSearch(query) {
   const lib = window.LexicalSearch;
   const docs = (_searchDocsCache.gid === activeGraphId && _searchDocsCache.docs) || [];
   // BM25 for the typing preview too (#228): matches the server's Tier-0 ranker
-  // so the instant list agrees with what Enter returns, instead of the old
-  // substring-AND preview that under-matched natural-language queries. The
-  // per-corpus index is WeakMap-cached, so only the first keystroke builds it.
+  // so the instant list agrees with what the hybrid returns. The per-corpus
+  // index is WeakMap-cached, so only the first keystroke builds it.
   const hits = (lib && query && query.trim() && docs.length)
     ? lib.bm25Search(query, docs, { limit: 50 })
     : [];
@@ -3445,6 +3473,14 @@ function renderSearch(query) {
     matchType: r.field === 'title' ? 'title' : r.field === 'body' ? 'word' : 'none',
   }));
   _searchState.active = -1;
+  // Kick off the debounced hybrid refine and raise the spinner until it lands,
+  // so the user knows to wait rather than type on (every extra pause spends
+  // another embed). The spinner also drives the empty-state cue ("Searching…")
+  // so a partial word the keyword leg can't match doesn't flash "No matches"
+  // before the dense leg fills it in.
+  const willRefine = !!query.trim();
+  setSearchPending(willRefine);
+  if (willRefine) scheduleServerSearch(query); else cancelServerSearch();
   paintSearchResults({ indexing: !docs.length });
 }
 
@@ -3466,14 +3502,19 @@ function paintSearchResults({ indexing = false, allGraphsHint = false } = {}) {
     return;
   }
   if (results.length === 0) {
+    // The hybrid refine is in flight (or about to be): show "Searching…" instead
+    // of a premature "No matches" — the dense leg may still surface hits the
+    // keyword leg couldn't (e.g. a partial or paraphrased word).
+    const searching = !!(searchBarEl() && searchBarEl().classList.contains('search-pending'));
     const empty = document.createElement('div');
     empty.className = 'search-empty';
     empty.textContent = allGraphsHint
       ? 'Press Enter to search all your graphs.'
       : indexing ? 'Indexing…'
+      : searching ? 'Searching…'
       : _searchState.scope === 'all' ? 'No matches in your graphs.' : 'No matches in this graph.';
     list.appendChild(empty);
-    if (count) count.textContent = allGraphsHint ? '' : '0';
+    if (count) count.textContent = (allGraphsHint || searching) ? '' : '0';
     return;
   }
   if (count) count.textContent = String(results.length);
@@ -3880,7 +3921,9 @@ function initSearchBar() {
         commitSearchResult(_searchState.active);
       } else {
         // First Enter: jump to the first lexical hit instantly AND fire the
-        // server pipeline; the list re-sorts in place when it answers.
+        // server pipeline now; the list re-sorts in place when it answers.
+        // Cancel any pending debounce so we don't fire the same query twice.
+        cancelServerSearch();
         runServerSearch(input.value);
         walkSearch(e.shiftKey ? -1 : +1);
       }
