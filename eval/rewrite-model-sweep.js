@@ -64,14 +64,21 @@ const DATASETS = (process.env.SWEEP_DATASETS
 const fmt = (n) => (Math.round(n * 1000) / 1000).toFixed(3);
 const d = (n) => (n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : ' 0.000');
 
+// SWEEP_RERANK turns the Tier-2 cross-encoder on for the experiment ("does
+// rerank convert the rewrite's recall gain into precision?"). Both arms (raw +
+// rewrite) get reranked, so the Δ stays a clean isolation of the rewrite even
+// though the local TinyBERT model is known to drag absolute scores down on this
+// corpus. Default off = same pipeline as the deployed app.
+const RERANK_BACKEND = process.env.SWEEP_RERANK || 'none';
 const PIPELINE = {
   retrievers: ['lexical', 'dense'],
   lexical: { ranker: 'bm25' },
   providers: {
     embedding: { backend: 'local-onnx', model: 'Xenova/bge-small-en-v1.5', dim: 384 },
-    rerank: { backend: 'none' },
+    rerank: { backend: RERANK_BACKEND },
   },
-  postprocessors: ['graphExpand'],
+  // Canonical order: rerank the fused top-M, then graph-expand.
+  postprocessors: RERANK_BACKEND !== 'none' ? ['rerank', 'graphExpand'] : ['graphExpand'],
   fusion: { mode: 'rrf', k: 60 },
   topK: 20,
 };
@@ -140,7 +147,7 @@ async function main() {
 
     // ---- accuracy table ------------------------------------------------------
     console.log(`\n══ ${path.basename(datasetPath)} · graph ${GID} · ${qids.length} queries · provider ${PROVIDER}${REPEATS > 1 ? ` · ${REPEATS}× repeats (means)` : ''}`);
-    console.log(`   pipeline: bm25+dense→RRF→graphExpand, rerank off · rewrites generated LIVE per model\n`);
+    console.log(`   pipeline: bm25+dense→RRF→${RERANK_BACKEND !== 'none' ? `rerank(${RERANK_BACKEND})→` : ''}graphExpand · rewrites generated LIVE per model\n`);
     const head = `  ${'model'.padEnd(34)}` + METRICS.map((m) => m.padStart(11)).join('');
     console.log(head);
     console.log(`  ${'raw query (baseline)'.padEnd(34)}` + METRICS.map((m) => fmt(mBase[m] || 0).padStart(11)).join(''));
