@@ -34,6 +34,16 @@ import { scoreQuery, meanScores, percentile } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const KS = [1, 5, 10, 20];
+// SWEEP_REPEATS>1 runs the whole query set N times per model and reports the
+// mean plus the min…max spread across runs — LLM rewrites are non-deterministic,
+// so this is how you tell a real lift from a lucky draw on a small query set.
+const REPEATS = Math.max(1, Number(process.env.SWEEP_REPEATS || 1));
+// SWEEP_DELAY_MS throttles between live rewrite calls to stay under the
+// provider's tokens-per-minute bucket. Without it, a big query set bursts past
+// the free-tier TPM limit and the 429s fast-fail into "kept" — silently
+// poisoning the numbers. Groq free tier: 8b ~6k TPM, 70b ~12k TPM.
+const DELAY_MS = Math.max(0, Number(process.env.SWEEP_DELAY_MS || 0));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PROVIDER = process.env.QUERY_REWRITE_PROVIDER || 'groq';
 const DEFAULT_MODELS = [
@@ -91,30 +101,45 @@ async function main() {
     for (const qid of qids) baseScores.push(scoreQuery(await rankedIds(queries[qid]), qrels[qid] || {}, KS));
     const mBase = meanScores(baseScores);
 
-    const rows = [];      // one per model: { model, mean, latencies, kept, rewrites }
+    const rows = [];      // one per model: { model, mean, spread, latencies, kept, rewrites }
     for (const model of MODELS) {
       const rewriter = createQueryRewriter(
         { backend: 'llm', provider: PROVIDER, model, timeoutMs: 15000, retries: 1 },
         {},
       );
-      const scores = [];
+      const runMeans = [];  // per-repeat metric means
       const latencies = [];
-      const rewrites = [];
       let kept = 0;
-      for (const qid of qids) {
-        const raw = queries[qid];
-        const t0 = Date.now();
-        const rw = await rewriter.rewrite(raw);
-        latencies.push(Date.now() - t0);
-        if (String(rw).trim() === String(raw).trim()) kept++;
-        rewrites.push({ qid, raw, rw });
-        scores.push(scoreQuery(await rankedIds(rw), qrels[qid] || {}, KS));
+      let rewrites = [];
+      for (let r = 0; r < REPEATS; r++) {
+        const scores = [];
+        const runRewrites = [];
+        for (const qid of qids) {
+          const raw = queries[qid];
+          if (DELAY_MS) await sleep(DELAY_MS);
+          const t0 = Date.now();
+          const rw = await rewriter.rewrite(raw);
+          latencies.push(Date.now() - t0);
+          if (String(rw).trim() === String(raw).trim()) kept++;
+          runRewrites.push({ qid, raw, rw });
+          scores.push(scoreQuery(await rankedIds(rw), qrels[qid] || {}, KS));
+        }
+        runMeans.push(meanScores(scores));
+        rewrites = runRewrites; // keep the last run's rewrites for display
       }
-      rows.push({ model, mean: meanScores(scores), latencies, kept, rewrites });
+      // Mean + min…max spread of each metric across the repeats.
+      const mean = {};
+      const spread = {};
+      for (const m of METRICS) {
+        const vals = runMeans.map((rm) => rm[m] || 0);
+        mean[m] = vals.reduce((a, b) => a + b, 0) / vals.length;
+        spread[m] = [Math.min(...vals), Math.max(...vals)];
+      }
+      rows.push({ model, mean, spread, latencies, kept, rewrites });
     }
 
     // ---- accuracy table ------------------------------------------------------
-    console.log(`\n══ ${path.basename(datasetPath)} · graph ${GID} · ${qids.length} queries · provider ${PROVIDER}`);
+    console.log(`\n══ ${path.basename(datasetPath)} · graph ${GID} · ${qids.length} queries · provider ${PROVIDER}${REPEATS > 1 ? ` · ${REPEATS}× repeats (means)` : ''}`);
     console.log(`   pipeline: bm25+dense→RRF→graphExpand, rerank off · rewrites generated LIVE per model\n`);
     const head = `  ${'model'.padEnd(34)}` + METRICS.map((m) => m.padStart(11)).join('');
     console.log(head);
@@ -125,6 +150,15 @@ async function main() {
     console.log(`  ${''.padEnd(34)}` + METRICS.map((m) => '———'.padStart(11)).join(''));
     for (const r of rows) {
       console.log(`  Δ ${r.model.padEnd(32)}` + METRICS.map((m) => d((r.mean[m] || 0) - (mBase[m] || 0)).padStart(11)).join(''));
+    }
+
+    // ---- variance across repeats --------------------------------------------
+    if (REPEATS > 1) {
+      console.log(`\n  spread across ${REPEATS} runs (min … max) — narrow = trustworthy`);
+      for (const r of rows) {
+        const sp = (m) => `${fmt(r.spread[m][0])}…${fmt(r.spread[m][1])}`;
+        console.log(`    ${r.model.padEnd(30)} p@1 ${sp('precision@1').padEnd(15)} ndcg@10 ${sp('ndcg@10').padEnd(15)} recall@20 ${sp('recall@20').padEnd(15)} map ${sp('map')}`);
+      }
     }
 
     // ---- latency table -------------------------------------------------------
@@ -138,7 +172,7 @@ async function main() {
         + `${String(percentile(r.latencies, 95)).padStart(8)}`
         + `${String(Math.max(0, ...r.latencies)).padStart(8)}`
         + `${String(Math.round(mean)).padStart(8)}`
-        + `${`${r.kept}/${qids.length}`.padStart(8)}`,
+        + `${`${r.kept}/${qids.length * REPEATS}`.padStart(8)}`,
       );
     }
 
