@@ -46,6 +46,32 @@ describe('llm rewriter', () => {
     expect(fetchImpl.calls[0].body.messages[0].content).toBe('who keeps the servers powered up');
   });
 
+  it('sends an OpenAI-compatible request to Groq and parses choices[].message.content', async () => {
+    const fetchImpl = fakeFetch(() => ({ json: { choices: [{ message: { role: 'assistant', content: 'data center energy companies' } }] } }));
+    const rw = createQueryRewriter({ backend: 'llm', provider: 'groq', token: 'gsk-test' }, { fetchImpl });
+    expect(await rw.rewrite('who keeps the servers powered up')).toBe('data center energy companies');
+    const call = fetchImpl.calls[0];
+    expect(call.url).toContain('api.groq.com');
+    expect(call.init.headers.Authorization).toBe('Bearer gsk-test');
+    expect(call.init.headers['x-api-key']).toBeUndefined(); // not the Anthropic shape
+    // OpenAI shape: system in the message list, cap is max_completion_tokens.
+    expect(call.body.messages[0].role).toBe('system');
+    expect(call.body.messages[1].content).toBe('who keeps the servers powered up');
+    expect(call.body.max_completion_tokens).toBeGreaterThan(0);
+    expect(call.body.max_tokens).toBeUndefined();
+  });
+
+  it('respects a baseUrl override (other OpenAI-compatible hosts)', async () => {
+    const fetchImpl = fakeFetch(() => ({ json: { choices: [{ message: { content: 'x' } }] } }));
+    const rw = createQueryRewriter({ backend: 'llm', provider: 'groq', token: 't', baseUrl: 'https://example.test/v1/chat/completions' }, { fetchImpl });
+    await rw.rewrite('q');
+    expect(fetchImpl.calls[0].url).toBe('https://example.test/v1/chat/completions');
+  });
+
+  it('throws on an unknown provider', () => {
+    expect(() => createQueryRewriter({ backend: 'llm', provider: 'banana', token: 't' })).toThrow(/unknown query-rewrite provider/);
+  });
+
   it('falls back to the raw query when no API key is configured (safe no-op)', async () => {
     const fetchImpl = fakeFetch(() => ({ json: {} }));
     const rw = createQueryRewriter({ backend: 'llm', token: '' }, { fetchImpl });
@@ -78,6 +104,15 @@ describe('config wiring', () => {
   it('maps QUERY_REWRITE / QUERY_REWRITE_MODEL from env', () => {
     const c = configFromEnv({ QUERY_REWRITE: 'llm', QUERY_REWRITE_MODEL: 'claude-haiku-4-5' });
     expect(c.queryRewrite).toEqual({ backend: 'llm', model: 'claude-haiku-4-5' });
+  });
+
+  it('maps QUERY_REWRITE_PROVIDER / QUERY_REWRITE_BASE_URL from env', () => {
+    const c = configFromEnv({ QUERY_REWRITE: 'llm', QUERY_REWRITE_PROVIDER: 'groq', QUERY_REWRITE_MODEL: 'llama-3.1-8b-instant' });
+    expect(c.queryRewrite).toEqual({ backend: 'llm', provider: 'groq', model: 'llama-3.1-8b-instant' });
+  });
+
+  it('rejects an unknown queryRewrite provider', () => {
+    expect(validateConfig({ queryRewrite: { backend: 'llm', provider: 'nope' } }).errors.join()).toMatch(/queryRewrite.provider/);
   });
 });
 

@@ -135,6 +135,9 @@ export function validateConfig(input = {}) {
   if (!['none', 'llm', 'fixture'].includes(cfg.queryRewrite.backend)) {
     errors.push('queryRewrite.backend must be one of none, llm, fixture');
   }
+  if (cfg.queryRewrite.provider !== undefined && !['anthropic', 'groq'].includes(cfg.queryRewrite.provider)) {
+    errors.push('queryRewrite.provider must be one of anthropic, groq');
+  }
 
   if (cfg.graphExpand.mode !== undefined && !['append', 'fusion'].includes(cfg.graphExpand.mode)) {
     errors.push('graphExpand.mode must be one of append, fusion');
@@ -289,13 +292,17 @@ export function configFromEnv(env = process.env) {
 
   if (env.LEXICAL_RANKER) cfg.lexical.ranker = env.LEXICAL_RANKER;
 
-  // Pre-retrieval query rewrite (#436/E11): QUERY_REWRITE=llm turns it on; the
-  // llm backend reads ANTHROPIC_API_KEY at call time and falls back to the raw
-  // query if it's missing, so enabling without a key is a safe no-op.
+  // Pre-retrieval query rewrite (#436/E11): QUERY_REWRITE=llm turns it on.
+  // QUERY_REWRITE_PROVIDER picks the wire format (anthropic|groq, default
+  // anthropic); the llm backend reads that provider's key (ANTHROPIC_API_KEY /
+  // GROQ_API_KEY) at call time and falls back to the raw query if it's missing,
+  // so enabling without a key is a safe no-op.
   if (env.QUERY_REWRITE) {
     cfg.queryRewrite = {
       backend: env.QUERY_REWRITE,
+      ...(env.QUERY_REWRITE_PROVIDER ? { provider: env.QUERY_REWRITE_PROVIDER } : {}),
       ...(env.QUERY_REWRITE_MODEL ? { model: env.QUERY_REWRITE_MODEL } : {}),
+      ...(env.QUERY_REWRITE_BASE_URL ? { baseUrl: env.QUERY_REWRITE_BASE_URL } : {}),
     };
   }
 

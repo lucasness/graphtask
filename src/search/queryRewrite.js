@@ -16,9 +16,15 @@
 //   • fixture — a precomputed {query -> rewrite} map. No network. This is what
 //               the eval harness and tests use, so the retrieval LIFT can be
 //               measured deterministically without a live key.
-//   • llm     — Anthropic Messages API (raw fetch, matching the project's other
-//               HTTP providers — no SDK dep). Needs ANTHROPIC_API_KEY. Defaults
-//               to a fast model (haiku) because this runs inline before every
+//   • llm     — a hosted chat API (raw fetch, matching the project's other HTTP
+//               providers — no SDK dep). Two wire formats are supported, picked
+//               by `provider`:
+//                 - anthropic (default) — Messages API; needs ANTHROPIC_API_KEY.
+//                 - groq      — OpenAI-compatible chat/completions; needs
+//                               GROQ_API_KEY. Same body shape as any OpenAI-style
+//                               endpoint, so this also covers other compatible
+//                               hosts by overriding QUERY_REWRITE_BASE_URL.
+//               Defaults to a fast model because this runs inline before every
 //               search; a slow model would blow the interactive latency budget.
 //
 // Contract: rewrite(query) -> Promise<string>. On ANY failure (no key, timeout,
@@ -27,11 +33,58 @@
 
 import { postJson } from './providers/http.js';
 
-const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-// Inline latency budget: this blocks retrieval, so default to the fast model.
-// Override per deployment with QUERY_REWRITE_MODEL.
-const DEFAULT_LLM_MODEL = 'claude-haiku-4-5';
 const DEFAULT_MAX_TOKENS = 120;
+
+// Wire-format adapters. The rewrite request is identical in spirit across hosts
+// (a system prompt + the user query, capped short); they differ only in URL,
+// auth header, where the system prompt goes, the token-cap field name, and how
+// the reply text is dug out. Keeping each provider as a tiny shape keeps
+// "switch provider = env change" true (mirrors providers/http.js §10).
+const PROVIDERS = {
+  anthropic: {
+    url: 'https://api.anthropic.com/v1/messages',
+    // Inline latency budget: default to the fast model. Override per deployment
+    // with QUERY_REWRITE_MODEL.
+    defaultModel: 'claude-haiku-4-5',
+    tokenEnv: 'ANTHROPIC_API_KEY',
+    headers: (token) => ({
+      'Content-Type': 'application/json',
+      'x-api-key': token,
+      'anthropic-version': '2023-06-01',
+    }),
+    payload: (model, maxTokens, q) => ({
+      model,
+      max_tokens: maxTokens,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: q }],
+    }),
+    // Messages API: content is a block array; pull the first text block.
+    parse: (data) => (Array.isArray(data?.content)
+      ? data.content.find((b) => b && b.type === 'text')?.text
+      : null),
+  },
+  groq: {
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    // 8b-instant is the fastest/cheapest Groq model and plenty for rewriting.
+    defaultModel: 'llama-3.1-8b-instant',
+    tokenEnv: 'GROQ_API_KEY',
+    headers: (token) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    }),
+    // OpenAI-compatible: system goes in the message list, and the cap is
+    // max_completion_tokens (max_tokens is deprecated on Groq).
+    payload: (model, maxTokens, q) => ({
+      model,
+      max_completion_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: q },
+      ],
+    }),
+    parse: (data) => data?.choices?.[0]?.message?.content ?? null,
+  },
+};
 
 // The rewrite prompt. Kept terse and example-led: expand the INTENT into the
 // search terms a keyword+vector index would match, and — critically — return
@@ -74,8 +127,12 @@ function createFixtureRewriter(cfg) {
 
 function createLlmRewriter(cfg, { fetchImpl } = {}) {
   const fetchFn = fetchImpl || globalThis.fetch;
-  const model = cfg.model || DEFAULT_LLM_MODEL;
-  const token = cfg.token || process.env.ANTHROPIC_API_KEY;
+  const providerName = cfg.provider || 'anthropic';
+  const provider = PROVIDERS[providerName];
+  if (!provider) throw new Error(`unknown query-rewrite provider "${providerName}"`);
+  const url = cfg.baseUrl || provider.url;
+  const model = cfg.model || provider.defaultModel;
+  const token = cfg.token || process.env[provider.tokenEnv];
   const maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
   const opts = { timeoutMs: cfg.timeoutMs ?? 4000, retries: cfg.retries ?? 1 };
 
@@ -85,25 +142,10 @@ function createLlmRewriter(cfg, { fetchImpl } = {}) {
       if (!q) return query;
       if (!token) return query; // unconfigured → no-op, never throw the search
       try {
-        // Anthropic auth + version headers; thinking off and a tight token cap
-        // keep this fast (it's inline before retrieval).
-        const headers = {
-          'Content-Type': 'application/json',
-          'x-api-key': token,
-          'anthropic-version': '2023-06-01',
-        };
-        const payload = {
-          model,
-          max_tokens: maxTokens,
-          system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: q }],
-        };
-        const data = await postJson(fetchFn, ANTHROPIC_URL, payload, headers, opts);
-        // Messages API: content is a block array; pull the first text block.
-        const text = Array.isArray(data?.content)
-          ? data.content.find((b) => b && b.type === 'text')?.text
-          : null;
-        const rewritten = (text || '').trim();
+        const headers = provider.headers(token);
+        const payload = provider.payload(model, maxTokens, q);
+        const data = await postJson(fetchFn, url, payload, headers, opts);
+        const rewritten = (provider.parse(data) || '').trim();
         return rewritten || q;
       } catch {
         return q; // any failure → fall back to the raw query
