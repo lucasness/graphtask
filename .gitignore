@@ -10,3 +10,4 @@ build
 __pycache__/
 *.pyc
 eval/.doc-expansions-*.json
+eval/.doc2query-*.json
