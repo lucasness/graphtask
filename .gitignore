@@ -9,3 +9,4 @@ build
 # Python bytecode (Modal app)
 __pycache__/
 *.pyc
+eval/.doc-expansions-*.json
