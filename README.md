@@ -620,6 +620,8 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
+| POST | `/api/graphs/:gid/search` | Hybrid keyword+vector search over the graph's nodes. Body: `{query, config?}`. Returns `{query, results, timings}` where `results` is the ranked candidate list (`{taskId, score, source, snippet, meta}`). |
+| POST | `/api/search` | Cross-graph search over the graphs the caller can read |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`image/png\|jpeg\|gif\|webp\|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}` — reference the URL from a task's `background-image` frontmatter to render the image inside the node frame. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes, served with stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
@@ -656,6 +658,21 @@ should follow.
   and fails atomically with a `failedAt` index, so you never end up with
   a half-built dependency graph.
 - If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
+
+**Search & reranking**
+
+For "find / what does the graph say about X" questions, an agent should
+call `POST /api/graphs/:gid/search`, take the top ~50 hybrid results, and
+rerank / synthesize from them in its answer — rather than grepping node
+bodies or guessing. The retriever is tuned for **recall** (the relevant
+node is almost always in the top ~50), and the agent — already an LLM
+reading the candidates against the actual query — is itself the most
+capable reranker, at no extra cost. A dedicated server-side LLM rerank is
+only worth it to sharpen the **browser UI's** top-10, where no LLM is in
+the loop; the agent path doesn't need it. The `eval/` harnesses
+(`run-eval.js`, `rewrite-ab.js`, `rerank-llm.js`, `doc2query.js`, …) score
+retrieval/rerank strategies against frozen query sets if you're tuning
+this.
 
 **Live updates**
 
