@@ -1,7 +1,7 @@
 ---
 name: graphtask
 description: Build any structured artifact as a live graph of markdown nodes connected by typed edges — execution plans, research and concept maps, relationship networks, decision trees, personal planning (medical treatment, physical therapy, training regimens, career paths), or whatever shape the user invents next. Nodes hold markdown bodies with status (todo → in_progress → review → done); edges are dependency (DAG, cycle-checked) or related (free-form). The browser canvas updates live so the user watches the work form. Includes status-aware traversal (ready/blockers/unblocks), transactional bulk edges, presence + selection so humans see your focus, and OCC merges that protect UI-managed fields.
-when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked". Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
+when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked", "what does my graph say about X", "how are X and Y connected". Once a graph exists it also doubles as a queryable knowledge base — answer those by searching it and traversing its links (section 5), not by guessing. Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
 allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *)
 ---
 
@@ -428,7 +428,7 @@ This protection only covers that fixed list. Custom frontmatter keys you drop fr
 
 ## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
-These queries are most natural on plan-shaped graphs where ordering matters, but the **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done."
+These queries are most natural on plan-shaped graphs where ordering matters. The **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs that use `dependency` edges — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done." **All of these follow `dependency` edges only — none traverse `related` links.** To navigate a knowledge-base graph wired with `related` edges (search → follow links), see *Search + traversal: the graph as a knowledge base* at the end of section 5.
 
 The server does the recursion — never compute readiness yourself. All four status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
 
@@ -498,6 +498,37 @@ done
 **Cross-graph.** `POST /api/search` (no `:gid`) runs the same pipeline over every graph the signed-in user owns or is a member of; each result adds `graphId` + `title`, and a `graphs` map (id → name) labels them. Requires a real user — anonymous callers get 401. Reach for it on "search all my graphs for X".
 
 **Errors.** Empty / missing `query` → 400 `{error}`; an invalid `config` → 400 `{error, errors}`.
+
+### Search + traversal: the graph as a knowledge base
+
+Search and traversal are **two complementary ways to pull context out of a graph — reach for both.** Search jumps to the most relevant nodes *by content* (the RAG-style move above); traversal follows the *edges* out of a node to gather what's connected to it. When the graph is itself a knowledge base — nodes are concept / topic pages and `related` edges are the cross-references between them, the way a wiki links articles — the strongest pattern is the one Karpathy calls an **"LLM wiki"**: rather than re-running vector retrieval on every question, **load the index, jump to an entry page, and follow its links.** Here that's: **search to find the entry node(s), then traverse `related` links to read the connected neighborhood, and synthesize from both.**
+
+The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status` — **no body**) plus every edge (`source`, `target`, `type` ∈ `dependency | related`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
+
+```bash
+# 1. INDEX — the whole map once (structure only, no bodies).
+MAP=$(curl -sS "$GT_BASE/api/graphs/$GID/graph" "${READ_HEADERS[@]}")
+
+# 2. ENTRY — search finds the most relevant node by content (this section, above).
+SEED=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" -H 'Content-Type: application/json' \
+  "${READ_HEADERS[@]}" -d '{"query":"how does X relate to Y"}' | jq -r '.results[0].taskId')
+
+# 3. TRAVERSE — follow SEED's related links to its neighbors, then read their bodies.
+NEIGHBORS=$(echo "$MAP" | jq --argjson s "$SEED" \
+  '[.links[] | select(.type=="related") | select(.source==$s or .target==$s)
+    | if .source==$s then .target else .source end] | unique')
+for id in $(echo "$NEIGHBORS" | jq -r '.[]'); do
+  curl -sS "$GT_BASE/api/graphs/$GID/tasks/$id" "${READ_HEADERS[@]}" | jq '{id, title:.meta.title, content}'
+done
+```
+
+**Which mode for which question:**
+- *"What does the graph say about X?"* → **search**, then rerank the pool (above).
+- *"What's connected / related to node N?"* → **traverse** N's `related` links from the `/graph` map (above).
+- *"How are A and B connected?"* → `GET /graph/shortest-path?from=A&to=B` for a **dependency** chain; for a `related`-link path, walk the `/graph` links yourself.
+- *Deep / multi-hop knowledge-base answer* → search for entry points, traverse `related` links a hop or two out, read those bodies, then synthesize — index-then-links, not one-shot retrieval.
+
+**Heads-up:** every section-4 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
 
 ## 6. Update edge type or endpoints
 

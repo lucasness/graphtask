@@ -674,6 +674,23 @@ the loop; the agent path doesn't need it. The `eval/` harnesses
 retrieval/rerank strategies against frozen query sets if you're tuning
 this.
 
+**Search + traversal (the graph as a knowledge base)**
+
+Search and traversal are complementary, and an agent should use both —
+especially when the graph *is* a knowledge base (nodes are concept pages,
+`related` edges are wiki-style cross-references). Search jumps to the most
+relevant nodes by content; traversal follows a node's edges to gather what
+is connected to it. The pattern mirrors Karpathy's "LLM wiki" — load an
+index, jump to an entry page, follow its links — rather than re-running
+vector RAG per question: **search for the entry node(s), then walk
+`related` links to read the connected neighborhood.** The index is
+`GET /api/graphs/:gid/graph` → `{nodes, links}` (every node minus its body,
+plus every edge with its `type`); fetch the bodies you need with
+`GET /tasks/:id`. Note the structural traversal endpoints (`/subtasks`,
+`/ancestors`, `/blockers`, `/unblocks`, `/ready`, `/leaves`) and
+`/graph/shortest-path` follow **`dependency` edges only** — a
+`related`-linked knowledge base is navigated through the `/graph` map.
+
 **Live updates**
 
 The browser canvas re-renders within ~150 ms of any task/edge mutation
