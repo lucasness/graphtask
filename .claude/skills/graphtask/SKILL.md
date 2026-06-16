@@ -469,7 +469,40 @@ for id in $REVIEW_IDS; do
 done
 ```
 
-## 5. Update edge type or endpoints
+## 5. Search the graph (find / "what does the graph say about X")
+
+When the user asks a **content** question about the graph — "find the node about X", "what does the graph say about Y", "which task covers Z" — don't grep node bodies or answer from memory. Call the search endpoint, then rerank and synthesize from the candidates yourself. `POST /api/graphs/:gid/search` runs the exact hybrid pipeline the browser search box uses (BM25 lexical + dense vectors → RRF, plus 1-hop graph expansion) and returns a ranked candidate list.
+
+```bash
+# Ask the retriever. Read-gated, so READ_HEADERS is only needed on a private
+# graph; a JSON body means you still send Content-Type.
+RESULTS=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" \
+  -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+  -d '{"query":"how does presence cleanup work"}')
+
+# Ranked taskIds, best-first. results = [{taskId, score, source, snippet, meta}].
+IDS=$(echo "$RESULTS" | jq -r '.results[].taskId')
+
+# The results carry an optional lexical `snippet` but NOT the full body — pull
+# the candidate pool so you can rerank it against the actual question.
+for id in $IDS; do
+  curl -sS "$GT_BASE/api/graphs/$GID/tasks/$id" "${READ_HEADERS[@]}" \
+    | jq '{id, title: .meta.title, content}'
+done
+```
+
+**You are the reranker.** The retriever is tuned for **recall**, not for getting rank-1 right: on the eval graph the relevant node lands in the top ~50 about 77% of the time and in the top ~100 ~99% (recall@50 0.77, recall@100 0.99) — but it's often buried below less-relevant hits. Reordering that pool against the *real* question is the job, and you — already an LLM reading the bodies against the query — are a stronger reranker than any model the server could call, at no extra cost. So: take the candidate pool, read the bodies, pick the node(s) that actually answer the question, and synthesize from those. This is the whole reason to prefer search over grep — the investigation that motivated this section found that **only reading candidates and reranking against the real query fixes complex / indirect queries**; query rewrite and index-time expansion don't.
+
+**Pool depth — read this before reaching for `config`.** The endpoint returns the deployment's configured top-K (the `SEARCH_TOPK` knob; ~20 by default). On a small graph that's already most of the nodes — just use the default. On a large graph the answer can sit deeper than the default cap, so you want a deeper pool — but **a per-request `config` is normalized over the lexical-only defaults**, so a bare `config:{"topK":50}` silently drops the dense + graph-expansion legs and hands you *lexical-only* results (worse retrieval, not a deeper hybrid pool). Two safe ways to widen:
+
+- **Preferred:** raise `SEARCH_TOPK` at the deployment (one env var, affects the UI too) and keep calling with no `config`.
+- **Per request:** if you must do it inline, pass the *whole* hybrid stack, not just `topK`, e.g. `config:{"topK":50,"retrievers":["lexical","dense"],"postprocessors":["graphExpand"],"providers":{"embedding":{"backend":"local-onnx"}}}` — and only when you know it mirrors the deployed retriever (a config naming a different embedding model than the one deployed returns 400).
+
+**Cross-graph.** `POST /api/search` (no `:gid`) runs the same pipeline over every graph the signed-in user owns or is a member of; each result adds `graphId` + `title`, and a `graphs` map (id → name) labels them. Requires a real user — anonymous callers get 401. Reach for it on "search all my graphs for X".
+
+**Errors.** Empty / missing `query` → 400 `{error}`; an invalid `config` → 400 `{error, errors}`.
+
+## 6. Update edge type or endpoints
 
 Switch a `related` edge to `dependency` (or vice versa), or repoint an edge to a different source/target. Cycle detection re-runs if you set `type: 'dependency'`.
 
@@ -490,7 +523,7 @@ curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
 
 (Edges use `base_row` instead of `base_content` because they have structured fields, not a content blob.)
 
-## 6. Error handling
+## 7. Error handling
 
 The API uses HTTP status codes meaningfully — handle them, don't paper over them:
 
@@ -498,19 +531,19 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
 - **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤100), `description` length (≤200), or `status` value.
 - **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
-- **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 8 for valid `settings` shape.
+- **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 9 for valid `settings` shape.
 - **403 on any graph route** — access denied for this caller. See the "Why am I getting 401 / 403?" table near the top to triage by route + verb.
 - **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
 - **409 on a write** — three-way merge fell through (rare; server handles most conflicts silently). Retry once with the `current` row from the 409 body as your new base.
 - **410 on a `PATCH /tasks/:id`** — the task was deleted between your read and write. Refetch `GET /graph` and decide whether to recreate or skip.
 
-## 7. What you must not touch
+## 8. What you must not touch
 
 - `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
 - `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See "Images and agent discretion" above for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
-- The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 8 if so.
+- The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
 
 ## Presence lifecycle
 
@@ -521,7 +554,7 @@ Your writes drop `🤖 <operator>'s Claude` into the canvas avatar bar (the oper
 
 You don't manage the hooks yourself. The thing you DO need to do — keep doing — is appending touched gids to `.graphtask/agent-session-graphs` after every write so the hook (if present) knows which graphs to depart from.
 
-## 8. Per-graph appearance settings (do not touch unless asked)
+## 9. Per-graph appearance settings (do not touch unless asked)
 
 Each graph carries a `settings` JSONB object with optional keys:
 
@@ -557,7 +590,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs` | Lists graphs the viewer owns + is a member of (auth on); all graphs (auth off) |
 | POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `anon_role='viewer'` and `settings={}` |
 | GET | `/api/graphs/:id` | One graph; also returns `viewer_can_edit` / `viewer_can_manage` based on the caller's role |
-| PATCH | `/api/graphs/:id` | `{name?, description?, anon_role?, settings?}` — `anon_role` ∈ `none | viewer | editor`; see section 8 for `settings` |
+| PATCH | `/api/graphs/:id` | `{name?, description?, anon_role?, settings?}` — `anon_role` ∈ `none | viewer | editor`; see section 9 for `settings` |
 | DELETE | `/api/graphs/:id` | Cascades to tasks + edges |
 | POST | `/api/graphs/:id/rotate-id` | Issues a new id; old URL stops resolving |
 | GET | `/api/graphs/:gid/members` | `{members, pending}` — manage-gated read |
@@ -584,6 +617,8 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
+| POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. For content questions, prefer this over grep — see section 5. |
+| POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Same body/response, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`Content-Type: image/png|jpeg|gif|webp|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}`; reference the URL from a task's `background-image` frontmatter to make it render on the canvas. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes; served with the stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
