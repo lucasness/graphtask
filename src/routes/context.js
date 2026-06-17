@@ -25,9 +25,13 @@ import { SearchService } from '../search/service.js';
 
 const router = Router({ mergeParams: true });
 
-// Defaults + ranges (spec #458). Defaults are the eval starting point (#463);
-// ranges are guardrails so a request can't ask the box to dump the world.
-const DEFAULTS = { hops: 2, maxNodes: 25, maxBodyChars: 1500, seedTopK: 3, alpha: 0.5 };
+// Defaults + ranges (spec #458, tuned in #463). The #463 sweep on the stock
+// graph chose hops=2, maxNodes=30, alpha=0.5: that operating point clears the
+// multi-hop bar (gap-closure 0.625 >= 0.60) with no direct regression, and
+// alpha=0.5 (proximity-leaning) beat relevance-leaning since the bridge nodes
+// are structurally close but not lexically relevant. Ranges are guardrails so a
+// request can't ask the box to dump the world.
+const DEFAULTS = { hops: 2, maxNodes: 30, maxBodyChars: 1500, seedTopK: 3, alpha: 0.5 };
 const RANGES = {
   hops: [1, 3],
   maxNodes: [1, 100],

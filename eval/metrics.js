@@ -111,6 +111,37 @@ export function meanScores(perQuery) {
   return mean;
 }
 
+// ── Context-pack (E13 / #460) set-based metrics ──────────────────────────────
+// The pack is a SET of nodes (the subgraph handed to an agent), not a ranked
+// list, so coverage/precision are set operations against the binary gold set.
+
+/** Deterministic, model-free token proxy: ceil(chars/4) over the given text.
+ *  Applied identically to every strategy so token budgets compare fairly. */
+export function countTokens(text) {
+  return Math.ceil((text || '').length / 4);
+}
+
+/** COVERAGE@budget = |pack ∩ gold| / |gold|. Fraction of the needed node set
+ *  the pack contains. gold may be an array or a Set of ids (compared as Strings). */
+export function coverage(packIds, gold) {
+  const goldSet = gold instanceof Set ? gold : new Set([...gold].map(String));
+  if (goldSet.size === 0) return 0;
+  const pack = new Set(packIds.map(String));
+  let hit = 0;
+  for (const g of goldSet) if (pack.has(g)) hit++;
+  return hit / goldSet.size;
+}
+
+/** PRECISION/density = |pack ∩ gold| / |pack| — is the pack bloated? */
+export function setPrecision(packIds, gold) {
+  const goldSet = gold instanceof Set ? gold : new Set([...gold].map(String));
+  const pack = [...new Set(packIds.map(String))];
+  if (pack.length === 0) return 0;
+  let hit = 0;
+  for (const id of pack) if (goldSet.has(id)) hit++;
+  return hit / pack.length;
+}
+
 /** Percentile (0..100) of a numeric array via nearest-rank. */
 export function percentile(values, p) {
   if (!values.length) return 0;
