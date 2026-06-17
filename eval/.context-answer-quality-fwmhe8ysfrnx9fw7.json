@@ -1,0 +1,6 @@
+{
+  "_comment": "E13.7 (#464) frozen blind answer-quality result, 2026-06-17. 84 blind runs (12 multihop x{A,C}x3 + 6 direct x{A,C}x1), fresh answer agents + independent judges (workflow context-pack-answer-quality). A=search-only pack, C=context-pack (hops2/n30/alpha0.5), both at matched token budget on stock graph fwmhe8ysfrnx9fw7. Verdict: answer quality TIES (C does NOT beat A); coverage win (#463) did not translate to an answer-quality win at this budget. Direct ties at 1.0 (no regression).",
+  "multihop": { "A": { "acc_strict": 0.944, "perpass": [1, 0.917, 0.917], "std": 0.039 }, "C": { "acc_strict": 0.917, "perpass": [0.917, 1, 0.833], "std": 0.068 } },
+  "direct": { "A": { "acc_strict": 1.0 }, "C": { "acc_strict": 1.0 } },
+  "runs": 84, "agents": 169, "tokens": 4014282
+}
