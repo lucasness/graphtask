@@ -16,7 +16,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
 const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
 const HJSON = { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) };
-const BODY = 1500, SEEDTOPK = 3, HOPS = 2, MAXN = 30, ALPHA = 0.5;
+const BODY = 1500, SEEDTOPK = 3, HOPS = 2, ALPHA = 0.5;
+// Node budget is configurable so the answer-quality benchmark can test both the
+// tuned default (30) and a TIGHT regime (~10) that simulates a small pack over a
+// large KB — the realistic context-pack use case (#464 tight-budget E2E).
+const MAXN = Number(process.env.BENCH_MAXNODES || 30);
 // Direct sample for the regression tie-check (keep the blind run bounded).
 const DIRECT_SAMPLE = ['dir-q1', 'dir-q9', 'dir-q10', 'dir-q26', 'dir-q35', 'dir-q39'];
 

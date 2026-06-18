@@ -1,6 +1,11 @@
 {
-  "_comment": "E13.7 (#464) frozen blind answer-quality result, 2026-06-17. 84 blind runs (12 multihop x{A,C}x3 + 6 direct x{A,C}x1), fresh answer agents + independent judges (workflow context-pack-answer-quality). A=search-only pack, C=context-pack (hops2/n30/alpha0.5), both at matched token budget on stock graph fwmhe8ysfrnx9fw7. Verdict: answer quality TIES (C does NOT beat A); coverage win (#463) did not translate to an answer-quality win at this budget. Direct ties at 1.0 (no regression).",
-  "multihop": { "A": { "acc_strict": 0.944, "perpass": [1, 0.917, 0.917], "std": 0.039 }, "C": { "acc_strict": 0.917, "perpass": [0.917, 1, 0.833], "std": 0.068 } },
-  "direct": { "A": { "acc_strict": 1.0 }, "C": { "acc_strict": 1.0 } },
-  "runs": 84, "agents": 169, "tokens": 4014282
+  "_comment": "E13.7 (#464) frozen blind answer-quality results, 2026-06-17/18. Two regimes on stock graph fwmhe8ysfrnx9fw7. 84 blind runs each (12 multihop x{A,C}x3 + 6 direct x{A,C}x1), fresh answer agents + independent judges (workflow context-pack-answer-quality). A=search-only pack, C=context-pack (hops2/alpha0.5), both at matched token budget. VERDICT: answer quality TIES at BOTH budgets (C does NOT beat A); the #463 coverage win does not translate into an answer-quality win. No regression (direct + multihop tie). Bar #3 (C>A on answers) NOT met.",
+  "generous_budget_maxNodes30": {
+    "multihop": { "A": { "acc_strict": 0.944, "perpass": [1, 0.917, 0.917], "std": 0.039 }, "C": { "acc_strict": 0.917, "perpass": [0.917, 1, 0.833], "std": 0.068 } },
+    "direct": { "A": 1.0, "C": 1.0 }
+  },
+  "tight_budget_maxNodes10": {
+    "multihop": { "A": { "acc_strict": 0.556, "acc_lenient": 0.75, "perpass": [0.5, 0.583, 0.583], "std": 0.039 }, "C": { "acc_strict": 0.571, "acc_lenient": 0.80, "perpass": [0.583, 0.455, 0.667], "std": 0.087, "n": 35 } },
+    "direct": { "A": 0.833, "C": 0.833 }
+  }
 }
