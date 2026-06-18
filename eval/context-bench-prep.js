@@ -72,7 +72,18 @@ for (const c of coverageDs.cases.filter((x) => DIRECT_SAMPLE.includes(x.id))) {
     gold: { canonical: `The direct answer names: ${c.gold_nodes.map((g) => cache.get(g)?.title).filter(Boolean).join('; ')}.`, must_mention: c.gold_nodes.map((g) => cache.get(g)?.title).filter(Boolean) },
   });
 }
-process.stdout.write(JSON.stringify({
-  meta: { gid: GID, base: BASE, hops: HOPS, maxNodes: MAXN, alpha: ALPHA, bodyChars: BODY, as_of: '2026-06-17' },
-  questions: out,
-}));
+// Write per-pack files (answer agents read their OWN pack — no gold leakage) +
+// a slim manifest (question + gold key, for the judge only). The blind-benchmark
+// workflow reads ${PACK_DIR}/<id>-<A|C>.txt and ${PACK_DIR}/manifest.json.
+const PACK_DIR = process.env.BENCH_PACK_DIR || '/tmp/e13-packs';
+fs.mkdirSync(PACK_DIR, { recursive: true });
+for (const q of out) {
+  fs.writeFileSync(path.join(PACK_DIR, `${q.id}-A.txt`), q.packA);
+  fs.writeFileSync(path.join(PACK_DIR, `${q.id}-C.txt`), q.packC);
+}
+const manifest = {
+  meta: { gid: GID, base: BASE, hops: HOPS, maxNodes: MAXN, alpha: ALPHA, bodyChars: BODY, packDir: PACK_DIR },
+  questions: out.map((q) => ({ id: q.id, kind: q.kind, question: q.question, gold: q.gold })),
+};
+fs.writeFileSync(path.join(PACK_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2));
+console.log(`wrote ${out.length * 2} pack files + manifest.json to ${PACK_DIR} (maxNodes=${MAXN}, ${out.filter((q) => q.kind === 'multihop').length} multihop + ${out.filter((q) => q.kind === 'direct').length} direct)`);
