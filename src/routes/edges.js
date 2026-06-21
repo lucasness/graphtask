@@ -10,7 +10,7 @@ const VALID_TYPES = ['dependency', 'related'];
 // Shape edges use for OCC merge: top-level scalar fields + meta keys
 // flattened to `meta.<key>` so concurrent edits to different meta keys
 // (e.g. one writer touches color, the other touches curve) merge cleanly.
-function flattenEdge(row) {
+export function flattenEdge(row) {
   return flattenJsonb(
     {
       source_id: row.source_id,
@@ -21,7 +21,7 @@ function flattenEdge(row) {
     'meta',
   );
 }
-function unflattenEdge(flat) {
+export function unflattenEdge(flat) {
   const out = unflattenJsonb(flat, 'meta');
   return {
     source_id: out.source_id,
@@ -49,7 +49,7 @@ class CrossGraphError extends Error {
   }
 }
 
-function normalizeMeta(raw = {}) {
+export function normalizeMeta(raw = {}) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     return { error: 'meta must be an object' };
   }

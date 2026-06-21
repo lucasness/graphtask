@@ -422,6 +422,25 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS last_modified_by_user UUID
   REFERENCES users(id) ON DELETE SET NULL;
 
+-- E14.1: batch-upsert idempotency key + workflow-run attribution. Both columns
+-- are nullable and additive — the existing single-write paths never set them,
+-- so legacy rows and the canvas are unaffected. `external_id` is a client
+-- supplied stable key so re-running a dynamic-workflow round UPSERTs the same
+-- node instead of duplicating; the partial-unique index enforces that per
+-- graph while allowing unlimited NULLs (ad-hoc creates without a key). `run_id`
+-- records the run that CREATED the row: it's set on INSERT and preserved across
+-- idempotent re-runs (re-upserts don't overwrite it), so a run's additions can
+-- be inspected or undone in one query — `DELETE ... WHERE run_id = :id` removes
+-- exactly what that run introduced (POST /api/graphs/:gid/batch — src/routes/batch.js).
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_id TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_id TEXT;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS external_id TEXT;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS run_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS tasks_graph_external_id_uniq
+  ON tasks(graph_id, external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS tasks_run_id_idx ON tasks(run_id) WHERE run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS edges_run_id_idx ON edges(run_id) WHERE run_id IS NOT NULL;
+
 -- Graph-scoped uploaded image bytes. Referenced by `background-image` in a
 -- task's frontmatter as `/api/graphs/<gid>/uploads/<id>`. The bytes live in
 -- Postgres so a self-hosted instance needs nothing beyond the existing DB.

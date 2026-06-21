@@ -4,6 +4,7 @@ import path from 'path';
 import graphsRouter from './routes/graphs.js';
 import tasksRouter from './routes/tasks.js';
 import edgesRouter from './routes/edges.js';
+import batchRouter from './routes/batch.js';
 import graphViewRouter from './routes/graphView.js';
 import presenceRouter from './routes/presence.js';
 import membersRouter from './routes/members.js';
@@ -92,6 +93,9 @@ app.get('/api/graphs/:gid/events', requireGraph('read'), (req, res) => {
 app.use('/api/graphs', graphsRouter);
 app.use('/api/graphs/:gid/tasks', requireGraphForMethod, tasksRouter);
 app.use('/api/graphs/:gid/edges', requireGraphForMethod, edgesRouter);
+// Batch upsert (E14.1): nodes + edges in one transactional, idempotent call for
+// dynamic-workflow write-back. A write surface, so method-pick guard (edit).
+app.use('/api/graphs/:gid/batch', requireGraphForMethod, batchRouter);
 app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
 // Search reads the graph's nodes and never mutates, so it's read-scoped even
 // though it's a POST (the query rides in the body). A viewer can search.
