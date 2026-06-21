@@ -12,6 +12,7 @@ import {
   chunkStoreAvailable,
   ensureStoreVersion,
   syncTask,
+  syncTasks,
   syncAll,
   annSearchChunks,
 } from '../src/search/store.js';
@@ -300,6 +301,104 @@ describe('SearchService — store-backed end to end', () => {
     expect(candidates[0].taskId).toBe(task.id);
     expect(Object.keys(timings.retrievers)).toContain('dense');
     expect(timings.errors).toHaveLength(0);
+  });
+});
+
+describe('syncTasks — batched (tasks-per-pass) embedding (E14.3)', () => {
+  let gid;
+  let provider;
+  beforeEach(async () => {
+    gid = await makeGraph();
+    provider = fakeProvider();
+    await ensureStoreVersion(pool, provider);
+  });
+
+  it('embeds many tasks in ONE provider.embed() call', async () => {
+    const a = await makeTask(gid, 'Alpha', 'alpha');
+    const b = await makeTask(gid, 'Beta', 'beta');
+    const c = await makeTask(gid, 'Gamma', 'gamma');
+
+    const res = await syncTasks(pool, provider, [a.id, b.id, c.id]);
+    expect(res.map((r) => r.status)).toEqual(['indexed', 'indexed', 'indexed']);
+    // The whole point: a single embed call carrying all three tasks' chunks.
+    expect(provider.embed.mock.calls.length).toBe(1);
+    expect(provider.embed.mock.calls[0][0]).toHaveLength(3);
+    for (const t of [a, b, c]) expect((await chunkRows(t.id)).length).toBeGreaterThan(0);
+  });
+
+  it('SHA-skips already-current tasks and embeds only the rest, still in one call', async () => {
+    const fresh = await makeTask(gid, 'Fresh', 'alpha');
+    const stale1 = await makeTask(gid, 'S1', 'beta');
+    const stale2 = await makeTask(gid, 'S2', 'gamma');
+    await syncTask(pool, provider, fresh.id); // make `fresh` current
+    const before = provider.embed.mock.calls.length;
+
+    const res = await syncTasks(pool, provider, [fresh.id, stale1.id, stale2.id]);
+    const byId = Object.fromEntries(res.map((r) => [r.id, r.status]));
+    expect(byId[fresh.id]).toBe('skipped');
+    expect(byId[stale1.id]).toBe('indexed');
+    expect(byId[stale2.id]).toBe('indexed');
+    // Exactly one new embed call, carrying only the two tasks that needed it.
+    expect(provider.embed.mock.calls.length).toBe(before + 1);
+    expect(provider.embed.mock.calls[before][0]).toHaveLength(2);
+  });
+
+  it('reports gone for a deleted task without failing its batch-mates', async () => {
+    const live = await makeTask(gid, 'Live', 'alpha');
+    const dead = await makeTask(gid, 'Dead', 'beta');
+    await pool.query('DELETE FROM tasks WHERE id = $1', [dead.id]);
+
+    const res = await syncTasks(pool, provider, [live.id, dead.id]);
+    const byId = Object.fromEntries(res.map((r) => [r.id, r.status]));
+    expect(byId[dead.id]).toBe('gone');
+    expect(byId[live.id]).toBe('indexed');
+    expect((await chunkRows(live.id)).length).toBeGreaterThan(0);
+  });
+
+  it('falls back to per-task embedding when the shared batch embed throws (one poison task cannot sink the batch)', async () => {
+    // Provider that refuses a batched call (>1 text) but succeeds one-at-a-time.
+    const flaky = {
+      modelId: 'fake-kw',
+      dim: 4,
+      embed: vi.fn(async (texts) => {
+        if (texts.length > 1) throw new Error('no batching on this backend');
+        return texts.map(keywordVector);
+      }),
+    };
+    await ensureStoreVersion(pool, flaky);
+    const a = await makeTask(gid, 'A', 'alpha');
+    const b = await makeTask(gid, 'B', 'beta');
+    const c = await makeTask(gid, 'C', 'gamma');
+
+    const res = await syncTasks(pool, flaky, [a.id, b.id, c.id]);
+    expect(res.map((r) => r.status)).toEqual(['indexed', 'indexed', 'indexed']);
+    // One failed batch attempt (3 texts) + three per-task retries (1 text each).
+    expect(flaky.embed.mock.calls.length).toBe(4);
+    for (const t of [a, b, c]) expect((await chunkRows(t.id)).length).toBeGreaterThan(0);
+  });
+
+  it('delegates a single id straight to syncTask (default tasks-per-pass=1 path)', async () => {
+    const only = await makeTask(gid, 'Only', 'alpha');
+    const res = await syncTasks(pool, provider, [only.id]);
+    expect(res).toEqual([{ id: only.id, status: 'indexed', chunks: expect.any(Number) }]);
+    expect(provider.embed.mock.calls.length).toBe(1);
+  });
+});
+
+describe('createChunkIndexer — tasks-per-pass (E14.3)', () => {
+  it('indexes every enqueued task when tasksPerPass > 1', async () => {
+    const provider = fakeProvider();
+    const gid = await makeGraph();
+    const tasks = [];
+    for (const w of ['alpha', 'beta', 'gamma', 'delta']) {
+      tasks.push(await makeTask(gid, w, w));
+    }
+    const indexer = createChunkIndexer({ pool, provider, tasksPerPass: 5, log: () => {} });
+    await indexer.start({ listen: false, backfill: false });
+    for (const t of tasks) indexer.enqueue(t.id);
+    await indexer.idle();
+    for (const t of tasks) expect((await chunkRows(t.id)).length).toBeGreaterThan(0);
+    await indexer.stop();
   });
 });
 

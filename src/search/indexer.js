@@ -17,7 +17,7 @@
 
 import pg from 'pg';
 import { resolveConnectionString } from '../db.js';
-import { chunkStoreAvailable, ensureStoreVersion, syncTask, syncAll } from './store.js';
+import { chunkStoreAvailable, ensureStoreVersion, syncTasks, syncAll } from './store.js';
 
 const RECONNECT_DELAY_MS = 2000;
 
@@ -25,10 +25,15 @@ const RECONNECT_DELAY_MS = 2000;
  * @param {{pool:Object, provider:import('./types.js').EmbeddingProvider,
  *          connectionString?:string, log?:Function}} opts
  */
-export function createChunkIndexer({ pool, provider, connectionString, log } = {}) {
+export function createChunkIndexer({ pool, provider, connectionString, log, tasksPerPass } = {}) {
   if (!pool) throw new Error('createChunkIndexer needs a pool');
   if (!provider) throw new Error('createChunkIndexer needs an EmbeddingProvider');
   const say = log || ((msg) => console.log(`[search-index] ${msg}`));
+  // How many queued tasks to embed in ONE provider.embed() call (E14.3).
+  // Default 1 = one task per call (the original behavior). Operators on
+  // parallel/remote embedding backends raise EMBED_TASKS_PER_PASS for
+  // throughput; on an in-process CPU backend it makes no difference.
+  const perPass = Math.max(1, Number(tasksPerPass) || 1);
 
   const queue = new Set(); // task ids pending (re)index — Set dedupes bursts
   let draining = null; // in-flight drain promise (also the tests' settle hook)
@@ -39,14 +44,24 @@ export function createChunkIndexer({ pool, provider, connectionString, log } = {
     if (draining) return draining;
     draining = (async () => {
       while (queue.size > 0 && !stopped) {
-        const [taskId] = queue;
-        queue.delete(taskId);
+        // Pull up to perPass ids for one (possibly batched) embed pass.
+        const batch = [];
+        for (const id of queue) {
+          batch.push(id);
+          if (batch.length >= perPass) break;
+        }
+        for (const id of batch) queue.delete(id);
         try {
-          await syncTask(pool, provider, taskId);
+          // syncTasks is failure-isolated: it never throws for a single poison
+          // task (falls back to per-task), so one bad task can't wedge the
+          // queue. We log any per-task failures it reports.
+          const results = await syncTasks(pool, provider, batch);
+          for (const r of results) {
+            if (r.status === 'failed') say(`reindex of task ${r.id} failed — ${r.error}`);
+          }
         } catch (err) {
-          // Log and move on: a poison task must not wedge the queue. The next
-          // write to it (or the next boot backfill) retries naturally.
-          say(`reindex of task ${taskId} failed — ${err.message}`);
+          // Defensive: should not happen, but a surprise must not wedge the queue.
+          say(`reindex batch [${batch.join(',')}] failed — ${err.message}`);
         }
       }
       draining = null;

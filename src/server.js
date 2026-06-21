@@ -26,7 +26,12 @@ try {
 try {
   const provider = createEmbeddingProvider(configFromEnv().providers.embedding);
   if (provider) {
-    const indexer = createChunkIndexer({ pool, provider });
+    // EMBED_TASKS_PER_PASS (default 1): how many queued tasks to embed in one
+    // provider.embed() call. Raise it on parallel/remote embedding backends
+    // (GPU, Modal/TEI) for throughput; default 1 is the original behavior and a
+    // no-op on the in-process CPU backend. (E14.3)
+    const tasksPerPass = Number(process.env.EMBED_TASKS_PER_PASS) || 1;
+    const indexer = createChunkIndexer({ pool, provider, tasksPerPass });
     indexer.start().catch((err) => {
       console.error('[search-index] failed to start —', err.message);
     });

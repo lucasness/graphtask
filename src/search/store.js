@@ -87,16 +87,16 @@ export async function ensureStoreVersion(pool, provider) {
 }
 
 /**
- * (Re-)index one task: SHA-skip → chunk → embed → delete+reinsert (#190 write
- * path: "delete+reinsert beats per-chunk diffing at our scale"). Embedding runs
- * OUTSIDE the transaction (it's the slow, IO/CPU step); the swap is atomic.
+ * Read a task and decide what (re)indexing it needs: 'gone' (deleted),
+ * 'skipped' (content_sha + model already current), or 'needs-embed' with the
+ * graph id, sha, and freshly split chunks ready to embed. The SHA-skip read
+ * that makes redundant wakeups cheap lives here so both the single and batched
+ * write paths share it.
  *
- * @returns {Promise<{status:'skipped'|'indexed'|'gone', chunks?:number}>}
+ * @returns {Promise<{status:'gone'|'skipped'} | {status:'needs-embed', graphId:string, sha:string, chunks:Array}>}
  */
-export async function syncTask(pool, provider, taskId) {
-  const taskRes = await pool.query('SELECT id, graph_id, content FROM tasks WHERE id = $1', [
-    taskId,
-  ]);
+async function prepareTask(pool, provider, taskId) {
+  const taskRes = await pool.query('SELECT id, graph_id, content FROM tasks WHERE id = $1', [taskId]);
   // Deleted between event and processing — the FK CASCADE already cleaned its
   // chunks; nothing to do.
   if (taskRes.rows.length === 0) return { status: 'gone' };
@@ -116,11 +116,17 @@ export async function syncTask(pool, provider, taskId) {
   }
 
   const { chunks } = splitMarkdown(content || '');
-  const vectors = await provider.embed(chunks.map((c) => c.embedText));
-  if (vectors.length !== chunks.length) {
-    throw new Error(`embed returned ${vectors.length} vectors for ${chunks.length} chunks`);
-  }
+  return { status: 'needs-embed', graphId, sha, chunks };
+}
 
+/**
+ * Atomically replace one task's chunk rows with freshly embedded ones (#190
+ * write path: "delete+reinsert beats per-chunk diffing at our scale"). The
+ * embedding is computed by the caller (outside this txn — it's the slow step);
+ * the swap is atomic. Isolated per task so a batched pass can't let one task's
+ * write failure roll back its siblings.
+ */
+async function writeChunks(pool, taskId, graphId, sha, modelId, chunks, vectors) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -130,7 +136,7 @@ export async function syncTask(pool, provider, taskId) {
         `INSERT INTO task_chunks
            (task_id, graph_id, chunk_index, chunk_text, content_sha, embedding_model, embedding)
          VALUES ($1, $2, $3, $4, $5, $6, $7::halfvec)`,
-        [taskId, graphId, chunks[i].index, chunks[i].text, sha, provider.modelId, vectorLiteral(vectors[i])],
+        [taskId, graphId, chunks[i].index, chunks[i].text, sha, modelId, vectorLiteral(vectors[i])],
       );
     }
     await client.query('COMMIT');
@@ -140,7 +146,106 @@ export async function syncTask(pool, provider, taskId) {
   } finally {
     client.release();
   }
-  return { status: 'indexed', chunks: chunks.length };
+}
+
+/**
+ * (Re-)index one task: SHA-skip → chunk → embed → delete+reinsert. Embedding
+ * runs OUTSIDE the transaction (it's the slow, IO/CPU step); the swap is atomic.
+ *
+ * @returns {Promise<{status:'skipped'|'indexed'|'gone', chunks?:number}>}
+ */
+export async function syncTask(pool, provider, taskId) {
+  const prep = await prepareTask(pool, provider, taskId);
+  if (prep.status !== 'needs-embed') return { status: prep.status };
+
+  const vectors = await provider.embed(prep.chunks.map((c) => c.embedText));
+  if (vectors.length !== prep.chunks.length) {
+    throw new Error(`embed returned ${vectors.length} vectors for ${prep.chunks.length} chunks`);
+  }
+  await writeChunks(pool, taskId, prep.graphId, prep.sha, provider.modelId, prep.chunks, vectors);
+  return { status: 'indexed', chunks: prep.chunks.length };
+}
+
+/**
+ * Batched (re)index: embed the chunks of MANY tasks in ONE provider.embed()
+ * call, then write each task's chunks in its own transaction. This is the
+ * throughput lever for parallel / remote embedding backends (E14.3) — the
+ * indexer uses it when EMBED_TASKS_PER_PASS > 1. On in-process CPU backends it
+ * makes no difference (embed() already slices internally at EMBEDDING_BATCH);
+ * the memory ceiling is unchanged either way.
+ *
+ * Failure-isolated to preserve the single-task guarantees: if the shared embed
+ * throws (one poison text), it falls back to per-task syncTask so one bad task
+ * can't sink the batch; a write that fails affects only its own task.
+ *
+ * @returns {Promise<Array<{id:number, status:'indexed'|'skipped'|'gone'|'failed', chunks?:number, error?:string}>>}
+ */
+export async function syncTasks(pool, provider, taskIds) {
+  const ids = [...new Set((taskIds || []).map(Number).filter(Number.isInteger))];
+  if (ids.length === 0) return [];
+  // One task is just syncTask — no benefit to batching, and it keeps the
+  // default (EMBED_TASKS_PER_PASS=1) path byte-identical to before.
+  if (ids.length === 1) {
+    try {
+      return [{ id: ids[0], ...(await syncTask(pool, provider, ids[0])) }];
+    } catch (err) {
+      return [{ id: ids[0], status: 'failed', error: err.message }];
+    }
+  }
+
+  // Prepare every task (fetch + SHA-skip + split); collect those needing embed.
+  const results = [];
+  const pending = []; // { taskId, graphId, sha, chunks }
+  for (const id of ids) {
+    let prep;
+    try {
+      prep = await prepareTask(pool, provider, id);
+    } catch (err) {
+      results.push({ id, status: 'failed', error: err.message });
+      continue;
+    }
+    if (prep.status !== 'needs-embed') {
+      results.push({ id, status: prep.status });
+      continue;
+    }
+    pending.push({ taskId: id, graphId: prep.graphId, sha: prep.sha, chunks: prep.chunks });
+  }
+  if (pending.length === 0) return results;
+
+  // ONE embed across every pending task's chunks; provenance is the flat order.
+  const flatTexts = pending.flatMap((p) => p.chunks.map((c) => c.embedText));
+  let flatVectors;
+  try {
+    flatVectors = await provider.embed(flatTexts);
+    if (flatVectors.length !== flatTexts.length) {
+      throw new Error(`embed returned ${flatVectors.length} vectors for ${flatTexts.length} chunks`);
+    }
+  } catch (err) {
+    // Shared embed failed — fall back to per-task so one poison text doesn't
+    // sink the whole batch (restores single-task isolation).
+    for (const p of pending) {
+      try {
+        results.push({ id: p.taskId, ...(await syncTask(pool, provider, p.taskId)) });
+      } catch (e) {
+        results.push({ id: p.taskId, status: 'failed', error: e.message });
+      }
+    }
+    return results;
+  }
+
+  // Scatter vectors back to each task and write (per-task txn = isolated).
+  let cursor = 0;
+  for (const p of pending) {
+    const vectors = flatVectors.slice(cursor, cursor + p.chunks.length);
+    cursor += p.chunks.length;
+    try {
+      await writeChunks(pool, p.taskId, p.graphId, p.sha, provider.modelId, p.chunks, vectors);
+      results.push({ id: p.taskId, status: 'indexed', chunks: p.chunks.length });
+    } catch (err) {
+      results.push({ id: p.taskId, status: 'failed', error: err.message });
+    }
+  }
+  return results;
 }
 
 /**
@@ -231,6 +336,7 @@ export default {
   chunkStoreAvailable,
   ensureStoreVersion,
   syncTask,
+  syncTasks,
   syncAll,
   annSearchChunks,
   vectorLiteral,
