@@ -2,7 +2,7 @@
 name: graphtask
 description: Build any structured artifact as a live graph of markdown nodes connected by typed edges — execution plans, research and concept maps, relationship networks, decision trees, personal planning (medical treatment, physical therapy, training regimens, career paths), or whatever shape the user invents next. Nodes hold markdown bodies with status (todo → in_progress → review → done); edges are dependency (DAG, cycle-checked) or related (free-form). The browser canvas updates live so the user watches the work form. Includes status-aware traversal (ready/blockers/unblocks), transactional bulk edges, presence + selection so humans see your focus, and OCC merges that protect UI-managed fields.
 when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked", "what does my graph say about X", "how are X and Y connected". Once a graph exists it also doubles as a queryable knowledge base — answer those by searching it and traversing its links (section 5), not by guessing. Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
-allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *)
+allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *) Workflow Agent
 ---
 
 # graphtask
@@ -542,6 +542,61 @@ done
 
 **Heads-up:** every section-4 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
 
+## Using graphtask with dynamic workflows
+
+This section applies only when the harness running this skill ALSO exposes a dynamic-workflow / multi-agent orchestration tool (e.g. Claude Code's `Workflow`, plus `Agent` for a single subagent). With one, the graph stops being merely where you *record* work and becomes the durable home for work a workflow *does*: the workflow is the engine that executes one node's fan-out; the graph keeps the plan, the dependencies, and the result.
+
+**Two planes — keep them separate.**
+
+- **Graph = control plane** — durable, cross-session, human-in-the-loop: the plan, the dependency DAG, each node's acceptance criteria (its "tests"), status, findings. This is state + memory.
+- **Workflow = data plane** — transient, in-session: the engine for ONE node's fan-out / pipeline / loop / adversarial-verify. This is compute.
+
+**The pattern.** A graph node DEFINES a unit of work → a workflow EXECUTES its fan-out and RETURNS structured results → the main loop DISTILLS those back into the node (flip status, write the synthesis into the body) and freezes any heavy artifact to disk. The graph is the source of truth; a workflow's journals are transient scaffolding.
+
+**When to reach for a workflow** (from inside a node): the node's work is many independent, agent-shaped sub-tasks that benefit from structure and verification — an eval/test suite (N runs × arms × answer→judge), a multi-source research sweep, a large audit or migration, multi-perspective analysis. Build the workflow once; parameterize it per run.
+
+**When NOT to.**
+
+- Deterministic, measurable work → a plain script, no agents. Agents are the expensive part; never spend one on what a `curl`/`jq`/node script can compute exactly (coverage, counts, diffs, rendering).
+- Single-step work → one inline agent, or just do it.
+- **Never** automate the plan-walk, status transitions, keep/drop decisions, or review gates into a workflow. Those stay in the main loop, human-in-the-loop — and you NEVER set `done` (§3).
+
+**The tool, briefly.** `agent(prompt, {schema?, label?, phase?, model?, effort?})` spawns a subagent; its final message IS the return value, and with a JSON-Schema `schema` it returns a validated object (parse-free). `parallel(thunks)` runs tasks concurrently and awaits all (a barrier). `pipeline(items, ...stages)` streams each item through every stage with no barrier between them — the default for multi-stage work. `phase(title)` / `log(msg)` drive the progress display. Useful shapes: **fan-out** (N independent finders), **pipeline answer→judge** (the verify shape), **loop-until-dry** (keep finding until K empty rounds), **adversarial verify** (N skeptics try to refute a finding; kill it if the majority do), **judge panel** (score N independent attempts, synthesize the winner).
+
+**The clean contract (HARD RULE).** Workflows COMPUTE and RETURN; the **main loop** SYNCS the graph (announce-focus + OCC, §3). Do not have a workflow write to the plan graph concurrently — collect its results, then write them from the main loop with OCC so the canvas stays consistent and your avatar attribution is right. Spawning agents is **opt-in and costs tokens**: do it only when the user/harness has actually asked for multi-agent orchestration.
+
+**Writing results back — the batch endpoint.** When a workflow returns a set of nodes + edges (a research round, a batch of distilled findings), commit them in ONE call: `POST /api/graphs/:gid/batch`. It upserts many nodes + edges in a single transaction, is idempotent per node via a client `external_id` (re-running a round updates instead of duplicating), and stamps every row with a `run_id` so a run's additions can be inspected or undone. This is the write-back path: it collapses N racing single-writes into one transaction — the real memory win on a small box — and lets a re-run be a safe no-op.
+
+```bash
+# Results from the workflow, already structured. external_id is YOUR stable key
+# per node (so a re-run upserts, not duplicates); edges reference nodes by that
+# external_id (string) or by an existing numeric task id.
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq -n \
+  --arg run "research-2026-06-21-round1" \
+  '{run_id:$run,
+    nodes:[ {external_id:"claim:tsmc-capex",
+             content:"---\ntitle: TSMC raises 2026 capex\nstatus: review\n---\n## Finding\n…\n## Sources\n- …"} ],
+    edges:[ {source:"claim:tsmc-capex", target:"entity:tsmc", type:"related"} ]}')"
+# Response: {run_id, nodes:[{…,_op:created|updated|unchanged}], edges:[…],
+#            created:{…}, updated:{…}, unchanged:{…}}. Re-running the same batch
+# reports everything `unchanged` — no version churn, no canvas flash.
+```
+
+Agents write status `review`, never `done` (§3 — `done` is the human's call). The batch merge preserves UI-managed keys AND a human's `status` when your content omits them, so a re-run never silently reverts a node a human advanced. Keep the small, fixed node/edge vocabulary the graph already uses.
+
+**Hard-won lessons (validated on a real run, E13.10).**
+
+- **Shape = TWO fan-out workflows with deterministic GLUE between them, not one mega-workflow.** Use agents ONLY for the genuinely-LLM phases (build, judge); use plain node scripts for everything measurable (provision, measure, render, compare). The glue lives in the main loop between workflows. Minimize agents — they're the cost.
+- **Concurrency is ~serial on a small box** (the cap is ≈ cores − 2; on 1 core, fan-out just queues). The value of fan-out here is ORGANIZATION + structured verification, **not speed** — set that expectation.
+- **Structured output (JSON schema) is the contract** — build summaries and judge verdicts come back parse-free. `pipeline(answer→judge)` is the verification shape; lean on it.
+- **Data handoff is the rough edge.** `Workflow` `args` must be inline in the call (you can't reference a file), and the result arrives in the completion notification. So pass SMALL args / file PATHS (not file contents), and persist a workflow's result to disk for the next script to read.
+- **Memory is the binding constraint.** Many single writes each trigger a server-side embedding pass; the batch endpoint writes once. On a capable embedding backend, `EMBED_TASKS_PER_PASS` (a deploy env var, default 1 = unchanged) also groups embeddings per pass.
+- **Subagents are faithful "fresh sessions."** They inherit env (the `gt_` token), can curl the live API, honor model/effort overrides + schemas, and are lightweight — a no-context `agent()` given only a skill + a task behaves like a brand-new session.
+
+**A working example to ADAPT, not reinvent (committed):** `eval/skill-ab/ab-build.workflow.js` + `ab-aq.workflow.js` are the two fan-out workflows; `provision.js` / `measure.js` / `aggregate.js` / `compare.js` are the deterministic glue. Start from those.
+
+**If the Workflow tool is absent**, degrade to a single-agent sequential loop with the same discipline (read the graph → do the work → write back via the batch endpoint → repeat), just without the fan-out.
+
 ## 6. Update edge type or endpoints
 
 Switch a `related` edge to `dependency` (or vice versa), or repoint an edge to a different source/target. Cycle detection re-runs if you set `type: 'dependency'`.
@@ -653,6 +708,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs/:gid/edges` | List edges |
 | POST | `/api/graphs/:gid/edges` | `{source_id, target_id, type, meta?}` |
 | POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing |
+| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, type, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
