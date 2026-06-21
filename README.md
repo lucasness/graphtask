@@ -691,6 +691,21 @@ plus every edge with its `type`); fetch the bodies you need with
 `/graph/shortest-path` follow **`dependency` edges only** — a
 `related`-linked knowledge base is navigated through the `/graph` map.
 
+**Write-side structure (authoring a navigable graph)**
+
+Read quality is downstream of write-time structure, so the skill also carries
+a write-side doctrine (SKILL.md §2, "author a graph that stays navigable"),
+A/B-validated on fresh build agents: (1) **author the connective tissue** —
+when two areas relate only through an intermediate, model that intermediate as
+a real **bridge node** rather than faking a direct edge; (2) **name a node's
+neighbors in its body** (truthful, and it's what search matches to seed
+traversal); (3) treat a `related` edge as a **genuine, specific** semantic link,
+not loose topical proximity; (4) **optimize for truth, not the retriever** — a
+faithful graph is already the retrieval-optimal one, and phantom "edges to help
+search" only build a hairball that tanks precision. In the validation, the
+doctrine lifted blind mid-tier multi-hop answer quality and cut "can't answer
+from this pack" responses ~5× while keeping the graph *leaner*, not denser.
+
 **Live updates**
 
 The browser canvas re-renders within ~150 ms of any task/edge mutation
