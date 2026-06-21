@@ -32,8 +32,19 @@ const multihop = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'dataset-
 const goldClass = JSON.parse(fs.readFileSync(path.join(__dirname, 'frozen/goldclass.json'), 'utf-8')).cases;
 
 const map = await get(`/api/graphs/${GID}/graph`);
-const edges = (await get(`/api/graphs/${GID}/edges`)).filter((e) => e.type === 'related');
 const nodeIds = map.nodes.map((n) => Number(n.id));
+const newId2title = new Map(remap.map((r) => [r.newId, r.title]));
+const titleKeyOf = (e) => {
+  const a = newId2title.get(Number(e.source_id)) || String(e.source_id);
+  const b = newId2title.get(Number(e.target_id)) || String(e.target_id);
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+};
+// NOTE: adjacency is built in GET-order (NOT title-sorted) to stay CONSISTENT with
+// the mechanism baseline/c1/c2 were degraded under (changing it mid-run shifts which
+// bridge edges get the bias -> systematically different bases -> a confound). The
+// sampling KEY below is title-based, so the dominant draw is stable; the residual
+// per-copy variation (BFS tie-breaks) is just nuisance noise from the same distribution.
+const edges = (await get(`/api/graphs/${GID}/edges`)).filter((e) => e.type === 'related');
 const adj = buildAdj(nodeIds, edges);
 
 // per-case: frozen seeds + near/bridge, remapped stock->copy
@@ -51,15 +62,6 @@ for (const c of multihop.cases) {
 // collect bridge-path edges (the connective tissue we preferentially cut)
 const bridgeEdgeKeys = new Set();
 for (const c of cases) for (const g of c.bridge) for (const k of shortestPathEdges(adj, c.seeds, g)) bridgeEdgeKeys.add(k);
-
-// title-based stable identity for each edge, so two independently-ordered copies
-// degraded with the same seed remove the SAME edges (identical paired base).
-const newId2title = new Map(remap.map((r) => [r.newId, r.title]));
-const titleKeyOf = (e) => {
-  const a = newId2title.get(Number(e.source_id)) || String(e.source_id);
-  const b = newId2title.get(Number(e.target_id)) || String(e.target_id);
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
-};
 
 function reachStats(curEdges) {
   const a = buildAdj(nodeIds, curEdges);
