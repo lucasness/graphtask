@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 eval/.doc-expansions-*.json
 eval/.doc2query-*.json
+eval/skill-ab/frozen/stock-snapshot.json
