@@ -32,4 +32,16 @@ for (const run of m.runs) {
   process.stderr.write(`measured ${m.arm} r${run.runIdx}: ${run.coverage ? `covN${MAXN}=${run.coverage.context_pack['maxNodes' + MAXN].coverage} prec=${run.coverage.context_pack['maxNodes' + MAXN].precision} bridgeReach=${run.coverage.reachability_hops2.bridge} relEdges=${run.coverage.related_edges}` : `(confirm) nodes/edges via packRender avgPackNodes=${rp.avgPackNodes}`}\n`);
 }
 fs.writeFileSync(MANIFEST, JSON.stringify(m, null, 2));
-console.log(JSON.stringify({ arm: m.arm, track: m.track, measured: m.runs.length, maxNodes: MAXN }));
+
+// emit the ab-aq workflow args (questions subset + run packDirs)
+const QIDS = (arg('qids', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
+const PASSES = Number(arg('passes', '1'));
+const allQ = JSON.parse(fs.readFileSync(QUESTIONS, 'utf-8')).questions;
+const qsubset = (QIDS.length ? allQ.filter((q) => QIDS.includes(q.id)) : allQ).map((q) => ({ id: q.id, question: q.query, gold: q.gold }));
+const aqArgs = {
+  arm: m.arm,
+  runs: m.runs.map((r) => ({ runIdx: r.runIdx, packDir: r.packDir })),
+  questions: qsubset, passes: PASSES, answerModel: 'sonnet', judgeModel: 'opus',
+};
+fs.writeFileSync(MANIFEST.replace(/\.manifest\.json$/, '.aqargs.json'), JSON.stringify(aqArgs));
+console.log(JSON.stringify({ arm: m.arm, track: m.track, measured: m.runs.length, maxNodes: MAXN, aqQuestions: qsubset.length }));

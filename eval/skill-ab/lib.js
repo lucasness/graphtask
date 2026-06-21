@@ -42,7 +42,10 @@ async function req(method, url, body) {
       const r = await fetch(`${BASE}${url}`, init);
       if (r.status >= 500 && r.status !== 501) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       if (!r.ok) throw Object.assign(new Error(`${method} ${url} -> HTTP ${r.status}: ${await r.text()}`), { fatal: true });
-      if (THROTTLE) await sleep(THROTTLE);
+      // throttle ONLY the model-loading ops (node create/update embeds; search/context
+      // run inference) — these spike the 1.5GB server. Deletes/edges/GETs are cheap DB ops.
+      const heavy = /\/search$|\/context$/.test(url) || ((method === 'POST' || method === 'PATCH') && /\/tasks(\/|$)/.test(url));
+      if (THROTTLE && heavy) await sleep(THROTTLE);
       return r;
     } catch (e) {
       if (e.fatal) throw e;
@@ -145,3 +148,11 @@ export function shortestPathEdges(adj, seeds, target) {
   return edges;
 }
 export const edgeKey = (s, t) => [Math.min(Number(s), Number(t)), Math.max(Number(s), Number(t))].join('-');
+// deterministic [0,1) hash of a string (FNV-1a) — lets the degrade pick edges by
+// stable IDENTITY (endpoint titles) instead of array order, so two independent
+// copies degraded with the same seed get the IDENTICAL degraded base (paired A/B).
+export function hashUnit(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0) / 4294967296;
+}

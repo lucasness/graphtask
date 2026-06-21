@@ -34,7 +34,8 @@ for (let k = 0; k < RUNS; k++) {
   const packDir = path.join(runDir, `${stamp}-r${k}-packs`);
   if (TRACK === 'screen') {
     const remapPath = path.join(runDir, `${stamp}-r${k}.remap.json`);
-    const copyOut = JSON.parse(node('graph-copy.js', ['--src', SRC, '--cache', CACHE, '--name', `AB-${stamp}-r${k}`, '--out', remapPath]).trim().split('\n').pop());
+    // DB-level copy (instant, no re-embedding, no server memory spike — #436)
+    const copyOut = JSON.parse(node('db-copy.js', ['--src', SRC, '--name', `AB-${stamp}-r${k}`, '--out', remapPath]).trim().split('\n').pop());
     const deg = JSON.parse(node('degrade.js', ['--gid', copyOut.newGid, '--remap', remapPath, '--p', P, '--bias', BIAS, '--seed', String(seed)]).trim());
     runs.push({ runIdx: k, gid: copyOut.newGid, remap: remapPath, seed, packDir, degrade: deg });
     process.stderr.write(`provisioned screen ${stamp} r${k}: gid=${copyOut.newGid} seed=${seed} edgesAfter=${deg.edgesAfter} bridgeReachAfter=${deg.reachAfter.bridge}\n`);
@@ -47,4 +48,20 @@ for (let k = 0; k < RUNS; k++) {
 
 const manifest = { arm: ARM, track: TRACK, src: SRC, p: P, bias: BIAS, runs };
 if (OUT) fs.writeFileSync(OUT, JSON.stringify(manifest, null, 2));
+
+// emit the ab-build workflow args (skillPath + task come from CLI for parameterization)
+const SKILL_PATH = arg('skillPath', null);
+const TASK_FILE = arg('taskFile', null);
+if (SKILL_PATH && TASK_FILE && OUT) {
+  const buildArgs = {
+    arm: ARM, track: TRACK,
+    task: fs.readFileSync(TASK_FILE, 'utf-8'),
+    skillPath: SKILL_PATH,
+    runs: runs.map((r) => ({ gid: r.gid, runIdx: r.runIdx, ...(r.corpusPath ? { corpusPath: r.corpusPath } : {}) })),
+    base: process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000',
+    writerName: process.env.GRAPHTASK_WRITER_NAME || "Kevin's Claude",
+    builderModel: arg('builderModel', 'sonnet'),
+  };
+  fs.writeFileSync(OUT.replace(/\.manifest\.json$/, '.buildargs.json'), JSON.stringify(buildArgs));
+}
 console.log(JSON.stringify({ arm: ARM, track: TRACK, gids: runs.map((r) => r.gid), out: OUT }));

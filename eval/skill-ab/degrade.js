@@ -12,7 +12,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { get, del, post, arg, buildAdj, reachWithin, minDistToSeeds, shortestPathEdges, edgeKey, mulberry32 } from './lib.js';
+import { get, del, post, arg, buildAdj, reachWithin, minDistToSeeds, shortestPathEdges, edgeKey, hashUnit } from './lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GID = arg('gid', null);
@@ -52,6 +52,15 @@ for (const c of multihop.cases) {
 const bridgeEdgeKeys = new Set();
 for (const c of cases) for (const g of c.bridge) for (const k of shortestPathEdges(adj, c.seeds, g)) bridgeEdgeKeys.add(k);
 
+// title-based stable identity for each edge, so two independently-ordered copies
+// degraded with the same seed remove the SAME edges (identical paired base).
+const newId2title = new Map(remap.map((r) => [r.newId, r.title]));
+const titleKeyOf = (e) => {
+  const a = newId2title.get(Number(e.source_id)) || String(e.source_id);
+  const b = newId2title.get(Number(e.target_id)) || String(e.target_id);
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+};
+
 function reachStats(curEdges) {
   const a = buildAdj(nodeIds, curEdges);
   let allG = 0, allR = 0, brG = 0, brR = 0, nrG = 0, nrR = 0;
@@ -65,14 +74,16 @@ function reachStats(curEdges) {
 }
 const reachBefore = reachStats(edges);
 
-// weighted seeded sampling WITHOUT replacement: bridge-path edges BIAS× more likely.
-// Efraimidis-Spirakis: key = rng^(1/weight); remove the top-k by key.
-const rng = mulberry32(SEED);
+// weighted DETERMINISTIC sampling WITHOUT replacement: bridge-path edges BIAS× more
+// likely. Efraimidis-Spirakis with a per-edge key = hashUnit(seed|titlePair)^(1/weight)
+// — keyed on stable edge identity so the removed set is identical across copies.
 const removeN = Math.round(edges.length * P);
 const keyed = edges.map((e) => {
   const k = edgeKey(e.source_id, e.target_id);
-  const w = bridgeEdgeKeys.has(k) ? BIAS : 1;
-  return { e, isBridge: bridgeEdgeKeys.has(k), key: Math.pow(rng(), 1 / w) };
+  const isBridge = bridgeEdgeKeys.has(k);
+  const w = isBridge ? BIAS : 1;
+  const u = hashUnit(`${SEED}|${titleKeyOf(e)}`);
+  return { e, isBridge, key: Math.pow(u, 1 / w) };
 }).sort((a, b) => b.key - a.key);
 const toRemove = keyed.slice(0, removeN);
 
