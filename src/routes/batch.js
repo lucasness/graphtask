@@ -173,6 +173,11 @@ router.post('/', async (req, res) => {
         .status(400)
         .json({ error: 'each node needs content', failedAt: { kind: 'node', index: i } });
     const parsed = parseMarkdown(n.content);
+    if (parsed.frontmatterError)
+      return res.status(400).json({
+        error: `node frontmatter is not valid YAML — quote any title containing a colon, e.g. title: "Signal: ARR up" (${parsed.frontmatterError})`,
+        failedAt: { kind: 'node', index: i },
+      });
     const meta = applyDefaults(parsed.meta);
     const vErr = validateMeta(meta);
     if (vErr) return res.status(400).json({ error: vErr, failedAt: { kind: 'node', index: i } });

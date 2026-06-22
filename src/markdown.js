@@ -4,25 +4,31 @@ const FENCE = '---';
 
 export function parseMarkdown(text) {
   if (!text || !text.startsWith(FENCE + '\n')) {
-    return { meta: {}, body: text || '' };
+    return { meta: {}, body: text || '', frontmatterError: null };
   }
 
   const end = text.indexOf('\n' + FENCE, FENCE.length);
   if (end === -1) {
-    return { meta: {}, body: text };
+    return { meta: {}, body: text, frontmatterError: null };
   }
 
   const yamlStr = text.slice(FENCE.length + 1, end);
   const body = text.slice(end + FENCE.length + 2); // skip \n---\n
 
+  // `frontmatterError` distinguishes "the YAML failed to parse" (e.g. an
+  // unquoted colon in a title) from "valid YAML that simply has no title".
+  // Without it both collapse to the misleading "title is required" — callers
+  // can surface the real cause instead.
   let meta;
+  let frontmatterError = null;
   try {
     meta = YAML.parse(yamlStr) || {};
-  } catch {
+  } catch (e) {
     meta = {};
+    frontmatterError = e.message;
   }
 
-  return { meta, body };
+  return { meta, body, frontmatterError };
 }
 
 export function serializeMarkdown(meta, body) {

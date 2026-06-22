@@ -582,6 +582,8 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq
 # reports everything `unchanged` — no version churn, no canvas flash.
 ```
 
+**YAML caution:** quote any frontmatter title that contains a colon (`title: "Signal: ARR up"`) — an unquoted colon makes the YAML fail to parse and rejects the whole batch.
+
 Agents write status `review`, never `done` (§3 — `done` is the human's call). The batch merge preserves UI-managed keys AND a human's `status` when your content omits them, so a re-run never silently reverts a node a human advanced. Keep the small, fixed node/edge vocabulary the graph already uses.
 
 **Hard-won lessons (validated on a real run, E13.10).**

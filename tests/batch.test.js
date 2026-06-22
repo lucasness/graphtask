@@ -220,6 +220,15 @@ describe('POST /api/graphs/:gid/batch', () => {
     expect(res.body.failedAt).toEqual({ kind: 'node', index: 0 });
   });
 
+  it('rejects a node whose YAML title has an unquoted colon, with a clear error', async () => {
+    const res = await request(app)
+      .post(batchUrl())
+      .send({ nodes: [{ external_id: 'n1', content: '---\ntitle: Signal: ARR is up\nstatus: review\n---\nbody\n' }] });
+    expect(res.status).toBe(400);
+    expect(res.body.failedAt).toEqual({ kind: 'node', index: 0 });
+    expect(res.body.error).toMatch(/yaml|colon|quote/i); // not the misleading "title is required"
+  });
+
   it('rejects an empty batch', async () => {
     const res = await request(app).post(batchUrl()).send({ nodes: [], edges: [] });
     expect(res.status).toBe(400);

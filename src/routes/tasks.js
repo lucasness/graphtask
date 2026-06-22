@@ -29,7 +29,9 @@ router.post('/', async (req, res) => {
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
 
-  const { meta: rawMeta, body } = parseMarkdown(content);
+  const { meta: rawMeta, body, frontmatterError } = parseMarkdown(content);
+  if (frontmatterError)
+    return res.status(400).json({ error: `frontmatter is not valid YAML — quote any title containing a colon (${frontmatterError})` });
   const meta = applyDefaults(rawMeta);
 
   const err = validateMeta(meta);
@@ -123,6 +125,8 @@ router.patch('/:id', validateId, async (req, res) => {
   if (!content) return res.status(400).json({ error: 'content is required' });
 
   const writerParsed = parseMarkdown(content);
+  if (writerParsed.frontmatterError)
+    return res.status(400).json({ error: `frontmatter is not valid YAML — quote any title containing a colon (${writerParsed.frontmatterError})` });
   const writerMeta = applyDefaults(writerParsed.meta);
   const writerBody = writerParsed.body;
   const validationErr = validateMeta(writerMeta);
