@@ -261,7 +261,7 @@ If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/r
 
 For each node, write a real markdown body — title alone is never enough. The body is what the human sees when reviewing or exploring. See section 3 for what to put in the body at each status.
 
-The example below is plan-shaped (`dependency` edges for ordering). For a research / mapping shape, swap `"type":"dependency"` for `"type":"related"` and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape.
+The example below is plan-shaped (`required for` edges for ordering). For a research / mapping shape, swap `"purpose":"required for"` for `"purpose":"related to"` (or `supports`/`contradicts` for evidence relations) and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape. (See "The universal schema (E15)" for the full `purpose` vocabulary.)
 
 ```bash
 # Tasks. Body content tells the user what you intend to do, in plain markdown.
@@ -278,12 +278,13 @@ T3=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
   -d '{"content":"---\ntitle: Update auth tests\nstatus: todo\n---\n## Approach\nSwitch test fixtures from header-based to cookie-jar style. Update assertions for Set-Cookie response headers.\n"}' \
   | jq -r .id)
 
-# Bulk dependencies — transactional, all-or-nothing.
+# Bulk dependencies — transactional, all-or-nothing. `purpose: required for`
+# derives the cycle-checked `dependency` type.
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
   "${WRITE_HEADERS[@]}" \
   -d "{\"edges\":[
-    {\"source_id\":$T1,\"target_id\":$T2,\"type\":\"dependency\"},
-    {\"source_id\":$T2,\"target_id\":$T3,\"type\":\"dependency\"}
+    {\"source_id\":$T1,\"target_id\":$T2,\"purpose\":\"required for\"},
+    {\"source_id\":$T2,\"target_id\":$T3,\"purpose\":\"required for\"}
   ]}"
 ```
 
@@ -438,6 +439,54 @@ This protection only covers that fixed list. Custom frontmatter keys you drop fr
 
 **After everything is in `review`, stop.** Summarize in chat what you submitted and let the user review on the canvas. Don't poll the graph waiting for the human to mark things `done` — they'll use the UI. Your job ends at `review`.
 
+## The universal schema (E15): typed edges + typed node fields
+
+graphtask's one primitive — markdown nodes + edges + status — carries a small, server-typed vocabulary so the SAME graph serves execution plans AND deep research. Everything here is ADDITIVE and OPTIONAL: a plain task graph that never sets these fields behaves exactly as before. There is no separate "research mode" — research is just an application of this one schema.
+
+### Edge `purpose` — the field you set on every edge
+
+Each edge carries a `purpose` (the relationship it encodes, directed source → target). `purpose` is canonical; the server DERIVES a structural `type` from it and emits both:
+
+| `purpose` | meaning (source → target) | derived `type` |
+|---|---|---|
+| `required for` | source is a **prerequisite** of target (the old `dependency`) | `dependency` — DAG, cycle-checked, walked by ready/blockers/unblocks (§4) |
+| `supports` | source is **evidence FOR** target | `related` |
+| `contradicts` | source is **evidence AGAINST** target | `related` |
+| `related to` | loose association (the **default**) | `related` |
+
+- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is still accepted as a deprecated fallback (`dependency`→`required for`, `related`→`related to`).
+- ONLY `required for` is cycle-checked and traversed by §4's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
+
+### Node reserved fields (frontmatter `meta`)
+
+All optional, validated only WHEN PRESENT — no migration (they live in `meta`):
+
+| field | type | meaning |
+|---|---|---|
+| `type` | open string (≤40) | node kind. Absent = a work/knowledge node. `reference` is the one server-recognized value — an external citation/source. |
+| `significance` | number 0.0–1.0 (one-decimal convention) | how much this node matters. UNIVERSAL (plans + research). |
+| `confidence` | number 0.0–1.0 (one-decimal) | how sure we are (a finding) / source reliability (a `reference`). Research-tier. |
+| `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked. Distinct from the automatic `updated_at`. Research-tier. |
+
+These survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`).
+
+### Role predicates (derived, never stored)
+- **claim** = `confidence` set AND `type` ≠ `reference` — a node that ASSERTS something, with a sureness.
+- **open question** = `status: todo` AND no `confidence` — an unanswered question.
+- **reference** = `type: reference` — an external source.
+
+### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
+- **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error.
+- **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
+- **Use `type: reference` (not "source")** — one word, server-recognized.
+- **Findings are SEPARATE nodes**, never prose embedded in a question's body — so each finding carries its own `confidence`/`verified_at` and retrieval/filtering is per-finding and token-efficient.
+- **Completeness of retrieval FIRST, scrutinize confidence LATER.** Build the full picture, then filter by confidence at READ time — don't drop low-confidence nodes while building.
+- **Filters choose what to SHOW / SEED, never what to TRAVERSE.** Read-time filters (see "Read-side queries") apply at the output; on `/context` a low-confidence node bridging two matching nodes is KEPT and marked `bridge:true` so connectivity stays honest.
+
+### Completion gates — run BOTH after finishing graph work
+1. **Stop at `review`, never set `done`** (§3) — `done` is the human's call.
+2. **Run the inconsistency scan after ANY task that wrote to the graph** (research or not): `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
+
 ## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
 These queries are most natural on plan-shaped graphs where ordering matters. The **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs that use `dependency` edges — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done." **All of these follow `dependency` edges only — none traverse `related` links.** To navigate a knowledge-base graph wired with `related` edges (search → follow links), see *Search + traversal: the graph as a knowledge base* at the end of section 5.
@@ -515,7 +564,7 @@ done
 
 Search and traversal are **two complementary ways to pull context out of a graph — reach for both.** Search jumps to the most relevant nodes *by content* (the RAG-style move above); traversal follows the *edges* out of a node to gather what's connected to it. When the graph is itself a knowledge base — nodes are concept / topic pages and `related` edges are the cross-references between them, the way a wiki links articles — the strongest pattern is the one Karpathy calls an **"LLM wiki"**: rather than re-running vector retrieval on every question, **load the index, jump to an entry page, and follow its links.** Here that's: **search to find the entry node(s), then traverse `related` links to read the connected neighborhood, and synthesize from both.**
 
-The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status` — **no body**) plus every edge (`source`, `target`, `type` ∈ `dependency | related`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
+The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status` — **no body**) plus every edge (`source`, `target`, `purpose` ∈ `required for | supports | contradicts | related to`, and the derived `type` ∈ `dependency | related`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
 
 ```bash
 # 1. INDEX — the whole map once (structure only, no bodies).
@@ -541,6 +590,66 @@ done
 - *Deep / multi-hop knowledge-base answer* → search for entry points, traverse `related` links a hop or two out, read those bodies, then synthesize — index-then-links, not one-shot retrieval.
 
 **Heads-up:** every section-4 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
+
+## Read-side queries (E15): filters, frontier, inconsistency
+
+The query surface for the typed schema above. All are READ-only (a viewer can run them) and never mutate.
+
+### Metadata filters on `/search` and `/context`
+
+Both accept an optional `filter` — a Mongo/Pinecone-style object over node `meta`. Operators: `$eq $ne $gt $gte $lt $lte $in $nin` plus `$and` / `$or`; a flat object is an implicit AND; a bare value is implicit `$eq`. Comparators compare numbers numerically and ISO datetimes chronologically; an ABSENT field fails the comparators but PASSES `$ne` / `$nin` (Mongo semantics — "field ≠ x" is true when the field isn't there).
+
+```bash
+# High-confidence, non-reference search hits only. Ranking is untouched — the
+# filter just drops non-matching candidates (you still rerank, §5).
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+  -d '{"query":"selenium supply","filter":{"confidence":{"$gte":0.7},"type":{"$ne":"reference"}}}'
+
+# Context neighborhood, filtered at OUTPUT. A low-confidence node on the path
+# between two matching nodes is RETAINED and marked bridge:true — the filter
+# NEVER prunes traversal. `meta` is surfaced on each node when a filter is set.
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/context" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+  -d '{"query":"how does X relate to Y","filter":{"confidence":{"$gte":0.6}}}'
+```
+
+An absent filter → response byte-identical to the pre-filter contract. An invalid filter → 400. Structured fields aren't text-indexed, so filtering never affects relevance ranking.
+
+### Re-verification frontier — "what established knowledge most needs re-checking"
+
+`POST /frontier` returns LOAD-BEARING confidence-bearing nodes that are STALE or LOW-confidence — the maintenance queue a flat doc store can't express (complements `/tasks/ready`). Importance = OUT-degree over `required for` + `supports` edges, so a foundation many things REST ON ranks first.
+
+```bash
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+  -d '{"minImportance":2,"staleDays":90,"lowConfidenceBelow":0.5,"maxResults":50}'
+# → {frontier:[{id,title,status,type,importance,confidence,verified_at,stale,lowConfidence}], truncated, params}
+```
+
+All params optional (defaults shown). A node with no `verified_at` counts as stale (never verified). Plain tasks (no `confidence`, not a `reference`) are excluded. Over the cap → `truncated:true`.
+
+### Inconsistency scan — "where does the graph contradict itself"
+
+`POST /inconsistencies` finds DIRECTED cycles in the supports/contradicts subgraph with an ODD number of `contradicts` edges (signed-graph balance). Even-contradicts (mutual disagreement) and pure-supports (circular reasoning) are NOT flagged.
+
+```bash
+# Graph-wide — list every tension.
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
+# Per-claim — only tensions through node 42 ("is claim X contested?").
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{"start": 42}'
+# → {mode, inconsistencies:[{nodes,edges,length,contradicts,balanced}], truncated, scanned}
+```
+
+Guardrailed (max cycle length / count → `truncated:true`). This IS completion gate (2): run it after writing, surface tensions by name, never auto-resolve.
+
+### Agent-side `purpose` traversal
+
+`GET /graph` already emits `purpose` (and derived `type`) on every link, so you can walk SIGNED relations yourself: `supports` / `contradicts` edges into/out of a node N are its evidence / counter-evidence; `required for` edges are its prerequisites (or use §4's status queries, which traverse `required for` server-side). Combine with the search-then-traverse "LLM wiki" move in §5.
+
+### Which mode for which question
+- *"high-confidence answers about X"* → `/search` with a `confidence` filter, then rerank (§5).
+- *"the neighborhood of X, trustworthy nodes only, without losing connectivity"* → `/context` with a filter (bridges kept).
+- *"what needs re-verifying / what's gone stale"* → `/frontier`.
+- *"does the graph contradict itself / is claim X contested"* → `/inconsistencies` (graph-wide / per-claim).
+- *"what supports or contradicts N"* → `GET /graph`, then filter N's links by `purpose`.
 
 ## Using graphtask with dynamic workflows
 
@@ -575,8 +684,11 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq
   --arg run "research-2026-06-21-round1" \
   '{run_id:$run,
     nodes:[ {external_id:"claim:tsmc-capex",
-             content:"---\ntitle: TSMC raises 2026 capex\nstatus: review\n---\n## Finding\n…\n## Sources\n- …"} ],
-    edges:[ {source:"claim:tsmc-capex", target:"entity:tsmc", type:"related"} ]}')"
+             content:"---\ntitle: TSMC raises 2026 capex\nstatus: review\nconfidence: 0.8\nverified_at: 2026-06-21T00:00:00Z\n---\n## Finding\n…"},
+            {external_id:"src:tsmc-q1-call",
+             content:"---\ntitle: TSMC Q1 2026 earnings call\nstatus: review\ntype: reference\nconfidence: 0.9\n---\n## Source\n…"} ],
+    edges:[ {source:"src:tsmc-q1-call", target:"claim:tsmc-capex", purpose:"supports"},
+            {source:"claim:tsmc-capex", target:"entity:tsmc", purpose:"related to"} ]}')"
 # Response: {run_id, nodes:[{…,_op:created|updated|unchanged}], edges:[…],
 #            created:{…}, updated:{…}, unchanged:{…}}. Re-running the same batch
 # reports everything `unchanged` — no version churn, no canvas flash.
@@ -599,9 +711,9 @@ Agents write status `review`, never `done` (§3 — `done` is the human's call).
 
 **If the Workflow tool is absent**, degrade to a single-agent sequential loop with the same discipline (read the graph → do the work → write back via the batch endpoint → repeat), just without the fan-out.
 
-## 6. Update edge type or endpoints
+## 6. Update edge purpose or endpoints
 
-Switch a `related` edge to `dependency` (or vice versa), or repoint an edge to a different source/target. Cycle detection re-runs if you set `type: 'dependency'`.
+Change an edge's `purpose` (e.g. `related to` → `supports`, or into/out of `required for`), or repoint it to a different source/target. The server re-derives `type` from the new `purpose`; cycle detection re-runs whenever the result is `required for` (derived `dependency`). See "The universal schema (E15)" above for the `purpose` vocabulary.
 
 **Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
 
@@ -615,7 +727,7 @@ curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
   -d "$(jq -nc \
     --argjson v "$(echo "$CUR" | jq .version)" \
     --argjson r "$CUR" \
-    '{type: "related", base_version: $v, base_row: $r}')"
+    '{purpose: "supports", base_version: $v, base_row: $r}')"
 ```
 
 (Edges use `base_row` instead of `base_content` because they have structured fields, not a content blob.)
@@ -708,14 +820,17 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
-| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, type, meta?}` |
-| POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing |
+| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to` (server derives + stores `type`; legacy `type` accepted as a fallback). See "The universal schema (E15)". |
+| POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; each edge takes `purpose` (or legacy `type`) |
 | POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, type, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
-| POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. For content questions, prefer this over grep — see section 5. |
+| POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see "Read-side queries (E15)". For content questions, prefer this over grep — see section 5. |
+| POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see "Read-side queries (E15)". |
+| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
 | POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Same body/response, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`Content-Type: image/png|jpeg|gif|webp|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}`; reference the URL from a task's `background-image` frontmatter to make it render on the canvas. |
@@ -728,10 +843,16 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 title: string (required, ≤100 chars)
 description: optional string (≤200 chars)
 status: todo | in_progress | review | done   # defaults to todo
+type: optional open string (≤40)             # E15; `reference` = an external source
+significance: optional number 0.0–1.0        # E15; how much this node matters (universal)
+confidence: optional number 0.0–1.0          # E15; how sure (a finding) / source reliability (research-tier)
+verified_at: optional ISO-8601 datetime      # E15; last DELIBERATE re-check (≠ auto updated_at)
 background-image: optional URL string (≤500 chars)   # UI-managed; see below
 ---
 free-form markdown body
 ```
+
+The four E15 fields are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). See "The universal schema (E15)" for the predicates and conventions.
 
 `background-image` holds a URL into the graph's uploads (e.g.
 `/api/graphs/:gid/uploads/:id`). The canvas renders it inside the node frame
@@ -807,12 +928,12 @@ the graph?"* One line of confirmation is cheaper than an unwanted upload.
 {
   "source_id": 1,
   "target_id": 2,
-  "type": "dependency",
+  "purpose": "required for",
   "meta": {}
 }
 ```
 
-`type` ∈ `dependency | related`. Dependency edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk).
+`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is still accepted. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See "The universal schema (E15)".
 
 ## Setup (only if the user asks)
 
