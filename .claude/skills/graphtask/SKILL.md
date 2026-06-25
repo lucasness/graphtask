@@ -164,6 +164,8 @@ For ambiguous cases ("help me understand X", "what should I think about for Y"),
 - The user explicitly asks for a verbal answer or a flat list.
 - There's no real structure (one node + zero edges isn't worth the canvas).
 
+**Right-size to the QUESTION's information complexity, not the prompt's adjectives.** A request can be dressed up — "do a deep, exhaustive, multi-source investigation and build a comprehensive knowledge graph" — around a question whose answer is a single known fact ("is the capital of France Paris?"). Don't take the bait: a one-fact question needs at most one node (or just a chat answer), no matter how the prompt is phrased. Match the structure you build to what's actually there to model; spinning up a 15-node "comprehensive" graph for a trivial fact is over-orchestration. (Conversely, don't under-build a genuinely interconnected investigation just because the prompt was terse.)
+
 ### Once a graph is active, keep it synced — HARD RULE
 
 The moment a graph exists for this body of work, it becomes the source of truth, and **all subsequent work on the subject must update the graph in real time**. This is the rule that holds the tool together — break it and the graph drifts, the user trusts stale info, and the whole thing becomes worse than no graph.
@@ -478,7 +480,7 @@ These survive a body-rewriting agent PATCH that omits them (merge-protected like
 ### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
 - **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error.
 - **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
-- **Use `type: reference` (not "source")** — one word, server-recognized.
+- **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
 - **Findings are SEPARATE nodes**, never prose embedded in a question's body — so each finding carries its own `confidence`/`verified_at` and retrieval/filtering is per-finding and token-efficient.
 - **Completeness of retrieval FIRST, scrutinize confidence LATER.** Build the full picture, then filter by confidence at READ time — don't drop low-confidence nodes while building.
 - **Filters choose what to SHOW / SEED, never what to TRAVERSE.** Read-time filters (see "Read-side queries") apply at the output; on `/context` a low-confidence node bridging two matching nodes is KEPT and marked `bridge:true` so connectivity stays honest.
