@@ -88,6 +88,8 @@ Note: in_progress amber + done indigo are **independent of the orange/green/blue
 
 The graph view's cytoscape `style` array can't take CSS variables directly (it's a JS object), so `statusPalette()` in `public/app.js` reads the tokens via `getComputedStyle(document.documentElement)` at boot and feeds them in. As long as you touch these tokens (not the JS), both views stay in sync.
 
+**Note — the E15 schema is intentionally not visualized.** The E15 universal-schema fields (node `significance` / `confidence` / `verified_at` / `type`, and the edge `purpose`) are an agent- and query-facing data concern, not a visual one: by design they get **no canvas rendering**. The graph view still draws off task `status` (the `--status-*` tokens above) and the **derived** edge `type` (`dependency` vs `related`) — a `supports`, `contradicts`, or `related to` edge all render as a `related` edge today. If these are ever surfaced visually (e.g. a distinct stroke for `contradicts`), that's a new design decision to spec here first.
+
 **Picking a color token (decision order):**
 
 1. If the role is in the *Brand + interactive aliases* table above, use that name.

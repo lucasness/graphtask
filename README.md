@@ -538,7 +538,8 @@ edges(
   graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
   source_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
   target_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  type edge_type,                            -- dependency | related
+  purpose TEXT NOT NULL DEFAULT 'related to', -- required for | supports | contradicts | related to (E15, canonical)
+  type edge_type,                            -- derived from purpose: required for→dependency, else→related
   meta JSONB NOT NULL,
   UNIQUE(source_id, target_id),
   CHECK(source_id <> target_id)
@@ -590,6 +591,16 @@ uploads(
   both succeed. The old `graphs_name_norm_uniq` index was dropped in
   Phase B; rely on `id`, not `name`, for any lookup.
 
+#### Universal schema (E15)
+
+One backward-compatible schema serves both execution plans and deep research. Everything is additive and optional — a plain task graph that never sets these fields behaves exactly as before.
+
+- **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose`; a legacy `type` is still accepted (`dependency`→`required for`, `related`→`related to`). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
+- **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`). The three numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
+- **Role predicates** (derived, not stored): a **claim** = `confidence` set AND `type` ≠ `reference`; an **open question** = `status: todo` with no `confidence`; a **reference** = `type: reference`.
+- **No canvas/UI rendering** for the new fields, by design — they're agent-/query-facing. The canvas still renders off the derived `type`.
+- **Completion gates** (the skill enforces both): stop at `review`, never `done`; and after any graph write, run the inconsistency scan and surface tensions — never auto-resolve a `contradicts` edge.
+
 ### API
 
 All task/edge/graph-view routes are scoped to a graph via `:gid`.
@@ -613,15 +624,19 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
 | GET | `/api/graphs/:gid/edges` | List edges in graph |
-| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, type, meta?}` |
+| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for \| supports \| contradicts \| related to` (server derives + stores `type`; legacy `type` accepted) |
 | POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
-| PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, type, meta |
+| PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, `purpose`, meta (a purpose change into/out of `required for` re-runs cycle detection) |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |
 | POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
-| POST | `/api/graphs/:gid/search` | Hybrid keyword+vector search over the graph's nodes. Body: `{query, config?}`. Returns `{query, results, timings}` where `results` is the ranked candidate list (`{taskId, score, source, snippet, meta}`). |
+| POST | `/api/graphs/:gid/search` | Hybrid keyword+vector search over the graph's nodes. Body: `{query, config?, filter?}`. Returns `{query, results, timings}` where `results` is the ranked candidate list (`{taskId, score, source, snippet, meta}`). The optional `filter` (E15) is a Mongo-style metadata filter (`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin` + `$and/$or`) that post-filters results without changing ranking. |
 | POST | `/api/search` | Cross-graph search over the graphs the caller can read |
+| POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood with bodies (one cohesive KB call). Body `{query?\|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. The E15 `filter` applies at output with the **bridge rule** (a node bridging two matching nodes is retained, marked `bridge:true`), never pruning traversal. |
+| POST | `/api/graphs/:gid/frontier` | E15 re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. |
+| POST | `/api/graphs/:gid/inconsistencies` | E15 signed-cycle scan: directed cycles in the supports/contradicts subgraph with an odd number of `contradicts` edges. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. |
+| POST | `/api/graphs/:gid/batch` | Transactional upsert of many nodes + edges (idempotent per node `external_id`; `run_id` attribution). The dynamic-workflow write-back path. |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`image/png\|jpeg\|gif\|webp\|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}` — reference the URL from a task's `background-image` frontmatter to render the image inside the node frame. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes, served with stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
