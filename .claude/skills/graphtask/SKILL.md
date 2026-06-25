@@ -711,6 +711,32 @@ Agents write status `review`, never `done` (§3 — `done` is the human's call).
 
 **A working example to ADAPT, not reinvent (committed):** `eval/skill-ab/ab-build.workflow.js` + `ab-aq.workflow.js` are the two fan-out workflows; `provision.js` / `measure.js` / `aggregate.js` / `compare.js` are the deterministic glue. Start from those.
 
+### Example: a deep-research workflow (E15 schema)
+
+A concrete, parameterized research workflow ships at **`.claude/skills/graphtask/workflows/research.workflow.js`** (run it with `Workflow({ scriptPath: ".../research.workflow.js", args: { question, gid, base } })`). Its only required input is a research question. It implements the canonical shape against the universal schema:
+
+**read KB (filtered) → [discover (fan-out) → fetch sources → adversarial 3-vote verify → dedup] looped until dry → completeness critic**, returning verified findings in the small fixed vocabulary:
+- each finding → a **claim node** at `status: review` with `confidence` (from the verify vote-margin), `significance`, and `verified_at` — and **no `type`** (it's a claim, identified by confidence + status);
+- each source → a **`type: reference`** node, with a **`supports`** edge source→finding;
+- a finding that conflicts with another → a **`contradicts`** edge;
+- the critic's gaps → **`todo` open-question** nodes (NO confidence).
+
+Per the clean contract, the workflow COMPUTES and RETURNS `{ nodes, edges, openQuestions }`; the MAIN LOOP then does the side-effects:
+
+```bash
+# 1. write the round atomically at status review (idempotent on external_id),
+#    stamping verified_at with a real timestamp; sources land as reference nodes.
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$ROUND_JSON"
+# 2. COMPLETION GATE 1 is already honored — everything is `review`, never `done`.
+# 3. work the re-verification frontier (stale load-bearing knowledge to re-check):
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" "${WRITE_HEADERS[@]}" -d '{}'
+# 4. COMPLETION GATE 2 — run the inconsistency scan and SURFACE any tension by
+#    name (never auto-resolve a contradicts edge):
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" "${WRITE_HEADERS[@]}" -d '{}'
+```
+
+Re-running the workflow on the SAME graph next session compounds: the read-KB stage skips what's already confident, the batch write upserts (no duplicates), and the frontier resurfaces what's gone stale. That loop — build → read → re-verify → compound — is the whole point of the typed schema.
+
 **If the Workflow tool is absent**, degrade to a single-agent sequential loop with the same discipline (read the graph → do the work → write back via the batch endpoint → repeat), just without the fan-out.
 
 ## 6. Update edge purpose or endpoints
