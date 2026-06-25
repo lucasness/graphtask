@@ -14,6 +14,7 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { SearchService } from '../search/service.js';
 import { configFromEnv } from '../search/config.js';
+import { compileFilter } from '../metaFilter.js';
 
 const router = Router({ mergeParams: true });
 
@@ -76,10 +77,16 @@ export function pooledAdHocDeps(config, def = getDefaultService()) {
 
 router.post('/', async (req, res, next) => {
   const { gid } = req.params;
-  const { query, config } = req.body || {};
+  const { query, config, filter } = req.body || {};
   if (typeof query !== 'string' || query.trim() === '') {
     return res.status(400).json({ error: 'query is required' });
   }
+
+  // E15.B1 — optional metadata post-filter. Compiled up front so a malformed
+  // filter is a 400 before we spend a search. Absent filter → match-all, and
+  // the response below is byte-identical to the pre-B1 contract.
+  const compiled = compileFilter(filter);
+  if (compiled.error) return res.status(400).json({ error: `invalid filter: ${compiled.error}` });
 
   let service;
   try {
@@ -90,7 +97,22 @@ router.post('/', async (req, res, next) => {
   }
 
   try {
-    const { candidates, timings } = await service.search(query, { gid, user: req.user });
+    let { candidates, timings } = await service.search(query, { gid, user: req.user });
+    if (filter !== undefined && filter !== null) {
+      // Post-filter on CURRENT node meta (one query — the index copy can lag a
+      // recent write; the filter must reflect live values). Ranking is left
+      // exactly as the retriever produced it; we only drop non-matching hits.
+      const ids = candidates.map((c) => Number(c.taskId)).filter(Number.isFinite);
+      const metaById = new Map();
+      if (ids.length) {
+        const { rows } = await pool.query(
+          'SELECT id, meta FROM tasks WHERE graph_id = $1 AND id = ANY($2)',
+          [gid, ids],
+        );
+        for (const r of rows) metaById.set(Number(r.id), r.meta || {});
+      }
+      candidates = candidates.filter((c) => compiled.match(metaById.get(Number(c.taskId)) || {}));
+    }
     res.json({ query, results: candidates, timings });
   } catch (err) {
     next(err);

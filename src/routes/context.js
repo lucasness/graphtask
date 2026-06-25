@@ -22,6 +22,7 @@ import { EDGE_TYPES } from '../search/types.js';
 import { buildNeighborhood } from '../search/contextPack.js';
 import { getDefaultService, pooledAdHocDeps } from './search.js';
 import { SearchService } from '../search/service.js';
+import { compileFilter } from '../metaFilter.js';
 
 const router = Router({ mergeParams: true });
 
@@ -97,8 +98,55 @@ function validateBody(body) {
     out.alpha = b.alpha;
   }
 
+  // E15.B1 — optional metadata filter applied at OUTPUT (never traversal).
+  out.filter = b.filter ?? null;
+  const compiled = compileFilter(out.filter);
+  if (compiled.error) return { error: `invalid filter: ${compiled.error}` };
+  out.match = compiled.match;
+
   out.config = b.config;
   return { value: out };
+}
+
+// E15.B1 bridge rule. A non-matching node is RETAINED (as a marked bridge) when
+// it sits on a corridor between two matching nodes — i.e. its connected
+// component of non-matching nodes touches ≥2 distinct matching nodes. Dangling
+// non-matching appendages (≤1 matching neighbor) are dropped. This keeps the
+// filter from severing connectivity between high-confidence nodes that are only
+// linked through a low-confidence intermediate.
+function findBridges(ids, edges, matchSet) {
+  const adj = new Map();
+  const link = (a, b) => {
+    if (!adj.has(a)) adj.set(a, new Set());
+    adj.get(a).add(b);
+  };
+  for (const e of edges) {
+    link(e.source, e.target);
+    link(e.target, e.source);
+  }
+  const nonMatch = ids.filter((id) => !matchSet.has(id));
+  const seen = new Set();
+  const bridges = new Set();
+  for (const startNode of nonMatch) {
+    if (seen.has(startNode)) continue;
+    const comp = [];
+    const matchingNeighbors = new Set();
+    const stack = [startNode];
+    seen.add(startNode);
+    while (stack.length) {
+      const u = stack.pop();
+      comp.push(u);
+      for (const v of adj.get(u) || []) {
+        if (matchSet.has(v)) matchingNeighbors.add(v);
+        else if (!seen.has(v)) {
+          seen.add(v);
+          stack.push(v);
+        }
+      }
+    }
+    if (matchingNeighbors.size >= 2) for (const id of comp) bridges.add(id);
+  }
+  return bridges;
 }
 
 router.post('/', async (req, res, next) => {
@@ -184,6 +232,7 @@ router.post('/', async (req, res, next) => {
     [gid, ids],
   );
   const byId = new Map();
+  const metaById = new Map(); // sidecar so the unfiltered node shape stays pristine
   for (const row of nodeRows) {
     const { meta, body } = parseMarkdown(row.content || '');
     byId.set(Number(row.id), {
@@ -191,8 +240,9 @@ router.post('/', async (req, res, next) => {
       status: meta.status != null ? String(meta.status) : 'todo',
       body: body || '',
     });
+    metaById.set(Number(row.id), meta || {});
   }
-  const nodes = ids
+  let nodes = ids
     .filter((id) => byId.has(id))
     .map((id) => {
       const n = byId.get(id);
@@ -205,9 +255,29 @@ router.post('/', async (req, res, next) => {
       return node;
     });
   timings.hydrate = Date.now() - hStart;
+
+  // E15.B1 — apply the metadata filter at OUTPUT, with the bridge rule. Expansion
+  // above ran on STRUCTURE alone; the filter only chooses what to RETURN. When no
+  // filter is given the response is byte-identical to the pre-B1 contract.
+  let outEdges = edges;
+  if (p.filter) {
+    const presentIds = nodes.map((n) => n.id);
+    const matchSet = new Set(nodes.filter((n) => p.match(metaById.get(n.id) || {})).map((n) => n.id));
+    const bridges = findBridges(presentIds, edges, matchSet);
+    const keep = new Set([...matchSet, ...bridges]);
+    nodes = nodes
+      .filter((n) => keep.has(n.id))
+      .map((n) => {
+        const out = { ...n, meta: metaById.get(n.id) || {} };
+        if (bridges.has(n.id)) out.bridge = true;
+        return out;
+      });
+    outEdges = edges.filter((e) => keep.has(e.source) && keep.has(e.target));
+  }
+
   timings.total = Date.now() - t0;
 
-  res.json({ seeds, nodes, edges, timings, truncated });
+  res.json({ seeds, nodes, edges: outEdges, timings, truncated });
 });
 
 export default router;
