@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { withTx } from '../db.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
 import { mergeFields } from '../merge.js';
-import { normalizeMeta, flattenEdge, unflattenEdge } from './edges.js';
+import { normalizeMeta, flattenEdge, unflattenEdge, resolveEdgeKind } from './edges.js';
 
 // Batch upsert (E14.1) — write many nodes + edges in ONE transactional call.
 // Built for dynamic-workflow write-back: an orchestrator commits a whole round
@@ -25,7 +25,6 @@ import { normalizeMeta, flattenEdge, unflattenEdge } from './edges.js';
 
 const router = Router({ mergeParams: true });
 
-const VALID_TYPES = ['dependency', 'related'];
 const MAX_NODES = 500;
 const MAX_EDGES = 1000;
 const MAX_ID_LEN = 200; // cap on client-supplied external_id / run_id (TEXT columns)
@@ -33,7 +32,13 @@ const MAX_ID_LEN = 200; // cap on client-supplied external_id / run_id (TEXT col
 // owned progress — an agent re-running a round must not reset a human's
 // in_progress/review/done back to todo. x/y/color/background-image are the
 // canvas-owned drag/recolor/image keys the single-write PATCH already protects.
-const PROTECTED_TASK_KEYS = ['status', 'x', 'y', 'color', 'background-image'];
+// significance/confidence/verified_at (E15.A2) are the reserved research fields:
+// a body-rewriting re-run that omits them must not wipe a value a human or an
+// earlier verify pass set. Explicit null still clears (mergeFields escape hatch).
+const PROTECTED_TASK_KEYS = [
+  'status', 'x', 'y', 'color', 'background-image',
+  'significance', 'confidence', 'verified_at',
+];
 const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve'];
 
 // Order-independent deep stringify, so an idempotent re-run that produces
@@ -198,16 +203,16 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'edge source is required', failedAt: { kind: 'edge', index: i } });
     if (e.target === undefined || e.target === null)
       return res.status(400).json({ error: 'edge target is required', failedAt: { kind: 'edge', index: i } });
-    if (!e.type || !VALID_TYPES.includes(e.type))
-      return res
-        .status(400)
-        .json({ error: 'type must be dependency or related', failedAt: { kind: 'edge', index: i } });
+    const kind = resolveEdgeKind(e);
+    if (kind.error)
+      return res.status(400).json({ error: kind.error, failedAt: { kind: 'edge', index: i } });
     const nm = normalizeMeta(e.meta || {});
     if (nm.error) return res.status(400).json({ error: nm.error, failedAt: { kind: 'edge', index: i } });
     edgeSpecs.push({
       source: typeof e.source === 'string' ? e.source.trim() : e.source,
       target: typeof e.target === 'string' ? e.target.trim() : e.target,
-      type: e.type,
+      type: kind.type,
+      purpose: kind.purpose,
       meta: nm.meta,
       externalId: typeof e.external_id === 'string' ? e.external_id.trim() : null,
       index: i,
@@ -335,10 +340,10 @@ router.post('/', async (req, res) => {
         if (existing.rows.length === 0) {
           const ins = await client.query(
             `INSERT INTO edges
-               (graph_id, source_id, target_id, type, meta, external_id, run_id, last_modified_by, last_modified_by_user)
-             VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7, $8, $9) RETURNING *`,
+               (graph_id, source_id, target_id, type, purpose, meta, external_id, run_id, last_modified_by, last_modified_by_user)
+             VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7, $8, $9, $10) RETURNING *`,
             [
-              gid, spec.source_id, spec.target_id, spec.type, JSON.stringify(spec.meta),
+              gid, spec.source_id, spec.target_id, spec.type, spec.purpose, JSON.stringify(spec.meta),
               spec.externalId, runId, req.writerType, req.user?.id ?? null,
             ],
           );
@@ -346,10 +351,12 @@ router.post('/', async (req, res) => {
           createdEdges++;
         } else {
           const cur = existing.rows[0];
+          // Merge keys on `purpose` (canonical); `type` is re-derived from the
+          // merged purpose by unflattenEdge.
           const writerRow = {
             source_id: spec.source_id,
             target_id: spec.target_id,
-            type: spec.type,
+            purpose: spec.purpose,
             meta: spec.meta,
           };
           const { merged } = mergeFields(
@@ -360,16 +367,16 @@ router.post('/', async (req, res) => {
           );
           const fin = unflattenEdge(merged);
           // Idempotent no-op: skip the write (no version bump / SSE / run_id churn).
-          if (fin.type === cur.type && valueEqual(fin.meta || {}, cur.meta || {})) {
+          if (fin.purpose === cur.purpose && valueEqual(fin.meta || {}, cur.meta || {})) {
             outEdges.push({ ...cur, _op: 'unchanged' });
             unchangedEdges++;
           } else {
             const upd = await client.query(
               `UPDATE edges
-                  SET type = $1::edge_type, meta = $2, version = version + 1,
-                      last_modified_by = $3, last_modified_by_user = $4
-                WHERE id = $5 RETURNING *`,
-              [fin.type, JSON.stringify(fin.meta), req.writerType, req.user?.id ?? null, cur.id],
+                  SET type = $1::edge_type, purpose = $2, meta = $3, version = version + 1,
+                      last_modified_by = $4, last_modified_by_user = $5
+                WHERE id = $6 RETURNING *`,
+              [fin.type, fin.purpose, JSON.stringify(fin.meta), req.writerType, req.user?.id ?? null, cur.id],
             );
             outEdges.push({ ...upd.rows[0], _op: 'updated' });
             updatedEdges++;
