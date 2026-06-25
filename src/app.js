@@ -15,6 +15,8 @@ import uploadsRouter from './routes/uploads.js';
 import searchRouter from './routes/search.js';
 import searchAllRouter from './routes/searchAll.js';
 import contextRouter from './routes/context.js';
+import frontierRouter from './routes/frontier.js';
+import inconsistencyRouter from './routes/inconsistency.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
@@ -107,6 +109,8 @@ app.use('/api/search', searchAllRouter);
 // graph + reuses the pooled search model; read-scoped like /search even though
 // it's a POST (the query/seeds ride in the body).
 app.use('/api/graphs/:gid/context', requireGraph('read'), contextRouter);
+app.use('/api/graphs/:gid/frontier', requireGraph('read'), frontierRouter);
+app.use('/api/graphs/:gid/inconsistencies', requireGraph('read'), inconsistencyRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
 app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);
