@@ -2,20 +2,40 @@ import { Router } from 'express';
 import pool, { withTx } from '../db.js';
 import { requireIntegerParam } from './_validate.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
+import {
+  VALID_TYPES,
+  EDGE_PURPOSES,
+  DEFAULT_PURPOSE,
+  purposeToType,
+  typeToPurpose,
+  resolveEdgeKind,
+} from '../edgePurpose.js';
+
+// Re-export the pure derivation helpers so existing importers (batch.js, tests)
+// can keep pulling them from the edges route module.
+export {
+  VALID_TYPES,
+  EDGE_PURPOSES,
+  DEFAULT_PURPOSE,
+  purposeToType,
+  typeToPurpose,
+  resolveEdgeKind,
+};
 
 const router = Router({ mergeParams: true });
 const validateId = requireIntegerParam('id');
-const VALID_TYPES = ['dependency', 'related'];
 
 // Shape edges use for OCC merge: top-level scalar fields + meta keys
 // flattened to `meta.<key>` so concurrent edits to different meta keys
 // (e.g. one writer touches color, the other touches curve) merge cleanly.
+// Keyed on `purpose` (canonical), NOT `type` — `type` is re-derived after the
+// merge so two writers can't disagree on the derived value.
 export function flattenEdge(row) {
   return flattenJsonb(
     {
       source_id: row.source_id,
       target_id: row.target_id,
-      type: row.type,
+      purpose: row.purpose ?? (row.type !== undefined ? typeToPurpose(row.type) : DEFAULT_PURPOSE),
       meta: row.meta || {},
     },
     'meta',
@@ -23,10 +43,12 @@ export function flattenEdge(row) {
 }
 export function unflattenEdge(flat) {
   const out = unflattenJsonb(flat, 'meta');
+  const purpose = out.purpose ?? DEFAULT_PURPOSE;
   return {
     source_id: out.source_id,
     target_id: out.target_id,
-    type: out.type,
+    purpose,
+    type: purposeToType(purpose),
     meta: out.meta || {},
   };
 }
@@ -102,14 +124,15 @@ async function assertEndpointsInGraph(client, gid, sourceId, targetId) {
 
 router.post('/', async (req, res) => {
   const { gid } = req.params;
-  const { source_id, target_id, type } = req.body;
+  const { source_id, target_id } = req.body;
   const normalizedMeta = normalizeMeta(req.body.meta || {});
   if (normalizedMeta.error) return res.status(400).json({ error: normalizedMeta.error });
 
   if (!source_id) return res.status(400).json({ error: 'source_id is required' });
   if (!target_id) return res.status(400).json({ error: 'target_id is required' });
-  if (!type || !VALID_TYPES.includes(type))
-    return res.status(400).json({ error: 'type must be dependency or related' });
+  const kind = resolveEdgeKind(req.body);
+  if (kind.error) return res.status(400).json({ error: kind.error });
+  const { purpose, type } = kind;
   if (source_id === target_id)
     return res.status(400).json({ error: 'source and target must be different' });
 
@@ -138,9 +161,9 @@ router.post('/', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by, last_modified_by_user)
-         VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7) RETURNING *`,
-        [gid, source_id, target_id, type, JSON.stringify(normalizedMeta.meta), req.writerType, req.user?.id ?? null]
+        `INSERT INTO edges (graph_id, source_id, target_id, type, purpose, meta, last_modified_by, last_modified_by_user)
+         VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7, $8) RETURNING *`,
+        [gid, source_id, target_id, type, purpose, JSON.stringify(normalizedMeta.meta), req.writerType, req.user?.id ?? null]
       );
       return result.rows[0];
     });
@@ -177,19 +200,20 @@ router.post('/bulk', async (req, res) => {
   const normalized = [];
   for (let i = 0; i < list.length; i++) {
     const spec = list[i] || {};
-    const { source_id, target_id, type } = spec;
+    const { source_id, target_id } = spec;
     if (!Number.isInteger(source_id))
       return res.status(400).json({ error: 'source_id must be an integer', failedAt: i });
     if (!Number.isInteger(target_id))
       return res.status(400).json({ error: 'target_id must be an integer', failedAt: i });
-    if (!type || !VALID_TYPES.includes(type))
-      return res.status(400).json({ error: 'type must be dependency or related', failedAt: i });
+    const kind = resolveEdgeKind(spec);
+    if (kind.error)
+      return res.status(400).json({ error: kind.error, failedAt: i });
     if (source_id === target_id)
       return res.status(400).json({ error: 'source and target must be different', failedAt: i });
     const normMeta = normalizeMeta(spec.meta || {});
     if (normMeta.error)
       return res.status(400).json({ error: normMeta.error, failedAt: i });
-    normalized.push({ source_id, target_id, type, meta: normMeta.meta });
+    normalized.push({ source_id, target_id, type: kind.type, purpose: kind.purpose, meta: normMeta.meta });
   }
 
   try {
@@ -213,9 +237,9 @@ router.post('/bulk', async (req, res) => {
         const e = normalized[i];
         try {
           const r = await client.query(
-            `INSERT INTO edges (graph_id, source_id, target_id, type, meta, last_modified_by, last_modified_by_user)
-             VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7) RETURNING *`,
-            [gid, e.source_id, e.target_id, e.type, JSON.stringify(e.meta), req.writerType, req.user?.id ?? null]
+            `INSERT INTO edges (graph_id, source_id, target_id, type, purpose, meta, last_modified_by, last_modified_by_user)
+             VALUES ($1, $2, $3, $4::edge_type, $5, $6, $7, $8) RETURNING *`,
+            [gid, e.source_id, e.target_id, e.type, e.purpose, JSON.stringify(e.meta), req.writerType, req.user?.id ?? null]
           );
           inserted.push(r.rows[0]);
         } catch (err) {
@@ -280,10 +304,23 @@ router.get('/', async (req, res) => {
 
 router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const { source_id, target_id, type, base_version, base_row } = req.body;
+  const { source_id, target_id, base_version, base_row } = req.body;
 
-  if (type !== undefined && !VALID_TYPES.includes(type))
-    return res.status(400).json({ error: 'type must be dependency or related' });
+  // Resolve the writer's intended purpose: explicit `purpose` wins; else a
+  // legacy `type` is accepted (deprecated); else undefined = "not changing the
+  // purpose" → inherit it from the base row in writerRow below.
+  let writerPurpose;
+  if (req.body.purpose !== undefined && req.body.purpose !== null) {
+    if (!EDGE_PURPOSES.includes(req.body.purpose))
+      return res.status(400).json({
+        error: "purpose must be one of 'required for', 'supports', 'contradicts', 'related to'",
+      });
+    writerPurpose = req.body.purpose;
+  } else if (req.body.type !== undefined && req.body.type !== null) {
+    if (!VALID_TYPES.includes(req.body.type))
+      return res.status(400).json({ error: 'type must be dependency or related' });
+    writerPurpose = typeToPurpose(req.body.type);
+  }
 
   const current = await pool.query(
     `SELECT e.*, g.owner_user_id AS graph_owner_user_id
@@ -300,6 +337,10 @@ router.patch('/:id', validateId, async (req, res) => {
   // truth for fields the writer didn't mention in this PATCH. Falls back to
   // the current row when the client hasn't opted in to OCC.
   const base = base_row || existing;
+  // base_row from an older client may carry only `type` — derive its purpose
+  // so the merge has the canonical field on all three sides.
+  const basePurpose =
+    base.purpose ?? (base.type !== undefined ? typeToPurpose(base.type) : DEFAULT_PURPOSE);
 
   // Build the writer's intended full row: their base view with the partial
   // changes applied. Meta is a shallow merge so writers can patch individual
@@ -315,7 +356,7 @@ router.patch('/:id', validateId, async (req, res) => {
   const writerRow = {
     source_id: source_id !== undefined ? source_id : base.source_id,
     target_id: target_id !== undefined ? target_id : base.target_id,
-    type: type !== undefined ? type : base.type,
+    purpose: writerPurpose !== undefined ? writerPurpose : basePurpose,
     meta: writerMeta,
   };
 
@@ -349,7 +390,8 @@ router.patch('/:id', validateId, async (req, res) => {
 
   const newSource = finalRow.source_id;
   const newTarget = finalRow.target_id;
-  const newType = finalRow.type;
+  const newPurpose = finalRow.purpose ?? DEFAULT_PURPOSE;
+  const newType = purposeToType(newPurpose);
   const newMeta = finalRow.meta;
 
   if (newSource === newTarget)
@@ -382,13 +424,14 @@ router.patch('/:id', validateId, async (req, res) => {
             SET source_id = $1,
                 target_id = $2,
                 type = $3::edge_type,
-                meta = $4,
+                purpose = $4,
+                meta = $5,
                 version = version + 1,
-                last_modified_by = $5,
-                last_modified_by_user = $6
-          WHERE id = $7 AND graph_id = $8
+                last_modified_by = $6,
+                last_modified_by_user = $7
+          WHERE id = $8 AND graph_id = $9
         RETURNING *`,
-        [newSource, newTarget, newType, JSON.stringify(newMeta), req.writerType, req.user?.id ?? null, id, gid]
+        [newSource, newTarget, newType, newPurpose, JSON.stringify(newMeta), req.writerType, req.user?.id ?? null, id, gid]
       );
       return result.rows[0];
     });

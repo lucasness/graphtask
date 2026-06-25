@@ -441,6 +441,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS tasks_graph_external_id_uniq
 CREATE INDEX IF NOT EXISTS tasks_run_id_idx ON tasks(run_id) WHERE run_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS edges_run_id_idx ON edges(run_id) WHERE run_id IS NOT NULL;
 
+-- E15.A1: edge `purpose` as the canonical edge field. purpose ∈
+-- {'required for','supports','contradicts','related to'} (directed source→
+-- target). The existing `type` enum is KEPT as a derived-internal structural
+-- column (purpose='required for' → 'dependency', everything else → 'related')
+-- so every cycle-detection + dependency-traversal query keeps keying off `type`
+-- with no SQL change. Additive + idempotent:
+--   1. ADD COLUMN with DEFAULT 'related to' backfills every legacy row.
+--   2. The UPDATE promotes the dependency rows to 'required for'. Keyed on
+--      type='dependency' (and only when not already promoted) so it's a no-op
+--      on every boot after the first and never churns correctly-synced rows.
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'related to';
+DO $$ BEGIN
+  ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_purpose_valid;
+  ALTER TABLE edges ADD CONSTRAINT edges_purpose_valid
+    CHECK (purpose IN ('required for', 'supports', 'contradicts', 'related to'));
+END $$;
+UPDATE edges SET purpose = 'required for'
+ WHERE type = 'dependency' AND purpose <> 'required for';
+
 -- Graph-scoped uploaded image bytes. Referenced by `background-image` in a
 -- task's frontmatter as `/api/graphs/<gid>/uploads/<id>`. The bytes live in
 -- Postgres so a self-hosted instance needs nothing beyond the existing DB.

@@ -62,7 +62,7 @@ describe('Database schema', () => {
     expect(columns).toEqual([
       'id', 'graph_id', 'source_id', 'target_id', 'type', 'meta', 'created_at',
       'version', 'last_modified_by', 'last_modified_by_user',
-      'external_id', 'run_id',
+      'external_id', 'run_id', 'purpose',
     ]);
   });
 

@@ -63,7 +63,9 @@ router.get('/', async (req, res) => {
     [gid]
   );
   const links = await pool.query(
-    `SELECT id, source_id AS source, target_id AS target, type, meta, version
+    // Emit `purpose` (canonical, E15.A1) AND the derived `type` so the canvas
+    // keeps rendering off `type` with no change while agents read `purpose`.
+    `SELECT id, source_id AS source, target_id AS target, purpose, type, meta, version
      FROM edges WHERE graph_id = $1 ORDER BY id`,
     [gid]
   );
