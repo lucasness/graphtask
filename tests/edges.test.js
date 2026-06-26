@@ -38,7 +38,7 @@ describe('Edge CRUD', () => {
     it('should create a dependency edge', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency' });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for' });
       expect(res.status).toBe(201);
       expect(res.body.source_id).toBe(1);
       expect(res.body.target_id).toBe(2);
@@ -49,7 +49,7 @@ describe('Edge CRUD', () => {
     it('should create a related edge', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 3, type: 'related' });
+        .send({ source_id: 1, target_id: 3, purpose: 'related to' });
       expect(res.status).toBe(201);
       expect(res.body.type).toBe('related');
     });
@@ -57,7 +57,7 @@ describe('Edge CRUD', () => {
     it('should create an edge with curve metadata (legacy number)', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency', meta: { curve: 42.123 } });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for', meta: { curve: 42.123 } });
       expect(res.status).toBe(201);
       // Legacy numbers normalize to {distance, weight: 0.5} on write.
       expect(res.body.meta.curve).toEqual({ distance: 42.12, weight: 0.5 });
@@ -69,7 +69,7 @@ describe('Edge CRUD', () => {
         .send({
           source_id: 1,
           target_id: 2,
-          type: 'dependency',
+          purpose: 'required for',
           meta: { curve: { distance: -50, weight: 0.25 } },
         });
       expect(res.status).toBe(201);
@@ -82,7 +82,7 @@ describe('Edge CRUD', () => {
         .send({
           source_id: 1,
           target_id: 2,
-          type: 'dependency',
+          purpose: 'required for',
           meta: { curve: { distance: 10, weight: 1.5 } },
         });
       expect(res.status).toBe(400);
@@ -92,7 +92,7 @@ describe('Edge CRUD', () => {
     it('should create an edge with color metadata', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency', meta: { color: '#253F55' } });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for', meta: { color: '#253F55' } });
       expect(res.status).toBe(201);
       expect(res.body.meta.color).toBe('#253F55');
     });
@@ -100,45 +100,45 @@ describe('Edge CRUD', () => {
     it('should reject edge with missing source_id', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ target_id: 2, type: 'dependency' });
+        .send({ target_id: 2, purpose: 'required for' });
       expect(res.status).toBe(400);
     });
 
     it('should reject edge with missing target_id', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, type: 'dependency' });
+        .send({ source_id: 1, purpose: 'required for' });
       expect(res.status).toBe(400);
     });
 
     it('should reject edge with invalid type', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'invalid' });
+        .send({ source_id: 1, target_id: 2, purpose: 'invalid' });
       expect(res.status).toBe(400);
     });
 
     it('should reject duplicate edge', async () => {
       await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency' });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for' });
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency' });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for' });
       expect(res.status).toBe(409);
     });
 
     it('should reject self-referencing edge', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 1, type: 'dependency' });
+        .send({ source_id: 1, target_id: 1, purpose: 'required for' });
       expect(res.status).toBe(400);
     });
 
     it('should reject edge referencing non-existent task', async () => {
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 9999, type: 'dependency' });
+        .send({ source_id: 1, target_id: 9999, purpose: 'required for' });
       expect(res.status).toBe(400);
     });
 
@@ -152,7 +152,7 @@ describe('Edge CRUD', () => {
       );
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: r.rows[0].id, type: 'dependency' });
+        .send({ source_id: 1, target_id: r.rows[0].id, purpose: 'required for' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/this graph/i);
     });
@@ -160,13 +160,13 @@ describe('Edge CRUD', () => {
     it('should detect and reject cycles for dependency edges', async () => {
       await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency' });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for' });
       await request(app)
         .post(edgesUrl())
-        .send({ source_id: 2, target_id: 3, type: 'dependency' });
+        .send({ source_id: 2, target_id: 3, purpose: 'required for' });
       const res = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 3, target_id: 1, type: 'dependency' });
+        .send({ source_id: 3, target_id: 1, purpose: 'required for' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/cycle/i);
     });
@@ -174,13 +174,13 @@ describe('Edge CRUD', () => {
     it('should allow cycles for related edges', async () => {
       const r1 = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'related' });
+        .send({ source_id: 1, target_id: 2, purpose: 'related to' });
       const r2 = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 2, target_id: 3, type: 'related' });
+        .send({ source_id: 2, target_id: 3, purpose: 'related to' });
       const r3 = await request(app)
         .post(edgesUrl())
-        .send({ source_id: 3, target_id: 1, type: 'related' });
+        .send({ source_id: 3, target_id: 1, purpose: 'related to' });
       expect(r1.status).toBe(201);
       expect(r2.status).toBe(201);
       expect(r3.status).toBe(201);
@@ -197,10 +197,10 @@ describe('Edge CRUD', () => {
       const [r1, r2] = await Promise.all([
         request(app)
           .post(edgesUrl())
-          .send({ source_id: 2, target_id: 3, type: 'dependency' }),
+          .send({ source_id: 2, target_id: 3, purpose: 'required for' }),
         request(app)
           .post(edgesUrl())
-          .send({ source_id: 3, target_id: 2, type: 'dependency' }),
+          .send({ source_id: 3, target_id: 2, purpose: 'required for' }),
       ]);
       const successes = [r1, r2].filter((r) => r.status === 201).length;
       expect(successes).toBeLessThanOrEqual(1);
@@ -259,10 +259,10 @@ describe('Edge CRUD', () => {
       // Build chain A → B → C (edge ids 1 and 2)
       await request(app)
         .post(edgesUrl())
-        .send({ source_id: 1, target_id: 2, type: 'dependency' });
+        .send({ source_id: 1, target_id: 2, purpose: 'required for' });
       await request(app)
         .post(edgesUrl())
-        .send({ source_id: 2, target_id: 3, type: 'dependency' });
+        .send({ source_id: 2, target_id: 3, purpose: 'required for' });
       // Re-target edge 1 (A→B) to C→B. Resulting graph: C→B (id 1), B→C (id 2).
       // Path B→C→B is a cycle.
       const res = await request(app)
@@ -384,8 +384,8 @@ describe('Edge CRUD', () => {
         .post(`${edgesUrl()}/bulk`)
         .send({
           edges: [
-            { source_id: 1, target_id: 2, type: 'dependency' },
-            { source_id: 2, target_id: 3, type: 'dependency' },
+            { source_id: 1, target_id: 2, purpose: 'required for' },
+            { source_id: 2, target_id: 3, purpose: 'required for' },
           ],
         });
       expect(res.status).toBe(201);
@@ -405,7 +405,7 @@ describe('Edge CRUD', () => {
         .post(`${edgesUrl()}/bulk`)
         .send({
           edges: [
-            { source_id: 3, target_id: 1, type: 'dependency' },
+            { source_id: 3, target_id: 1, purpose: 'required for' },
           ],
         });
       expect(res.status).toBe(400);
@@ -421,9 +421,9 @@ describe('Edge CRUD', () => {
         .post(`${edgesUrl()}/bulk`)
         .send({
           edges: [
-            { source_id: 1, target_id: 2, type: 'dependency' },
-            { source_id: 2, target_id: 3, type: 'dependency' },
-            { source_id: 3, target_id: 1, type: 'dependency' },
+            { source_id: 1, target_id: 2, purpose: 'required for' },
+            { source_id: 2, target_id: 3, purpose: 'required for' },
+            { source_id: 3, target_id: 1, purpose: 'required for' },
           ],
         });
       expect(res.status).toBe(400);
@@ -437,8 +437,8 @@ describe('Edge CRUD', () => {
         .post(`${edgesUrl()}/bulk`)
         .send({
           edges: [
-            { source_id: 1, target_id: 2, type: 'related' },
-            { source_id: 1, target_id: 2, type: 'related' },
+            { source_id: 1, target_id: 2, purpose: 'related to' },
+            { source_id: 1, target_id: 2, purpose: 'related to' },
           ],
         });
       expect(res.status).toBe(409);
@@ -465,7 +465,7 @@ describe('Edge CRUD', () => {
         .post(`${edgesUrl()}/bulk`)
         .send({
           edges: [
-            { source_id: 1, target_id: o.rows[0].id, type: 'dependency' },
+            { source_id: 1, target_id: o.rows[0].id, purpose: 'required for' },
           ],
         });
       expect(res.status).toBe(400);

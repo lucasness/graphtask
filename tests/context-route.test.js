@@ -33,7 +33,8 @@ async function mkTask(title, opts) {
   return r.body.id;
 }
 async function mkEdge(source_id, target_id, type) {
-  const r = await request(app).post(edgesUrl()).send({ source_id, target_id, type });
+  const purpose = type === 'dependency' ? 'required for' : 'related to';
+  const r = await request(app).post(edgesUrl()).send({ source_id, target_id, purpose });
   expect(r.status).toBe(201);
 }
 

@@ -4548,7 +4548,7 @@ async function commitEdgeTypeEdit() {
     const res = await patchWithRetry(
       `${apiBase()}/edges/${rawId}`,
       (base) => {
-        const body = { source_id: newSourceId, target_id: newTargetId, type: newType };
+        const body = { source_id: newSourceId, target_id: newTargetId, purpose: typeToPurpose(newType) };
         if (base) {
           body.base_row = base;
           body.base_version = base.version;
@@ -5165,11 +5165,19 @@ async function deleteTask(id) {
   await fetch(`${apiBase()}/tasks/${id}`, { method: 'DELETE' });
 }
 
+// The canvas's two edge affordances map to the two `purpose` values it can
+// author: a dependency edge → 'required for', a related edge → 'related to'.
+// (`supports`/`contradicts` are agent-set, not drawable on the canvas.) `purpose`
+// is the canonical edge field; the server derives `type` from it.
+function typeToPurpose(type) {
+  return type === 'dependency' ? 'required for' : 'related to';
+}
+
 async function createEdge(source_id, target_id, type) {
   return fetch(`${apiBase()}/edges`, {
     method: 'POST',
     headers: writeHeaders(),
-    body: JSON.stringify({ source_id, target_id, type }),
+    body: JSON.stringify({ source_id, target_id, purpose: typeToPurpose(type) }),
   });
 }
 

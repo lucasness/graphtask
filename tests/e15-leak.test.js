@@ -101,7 +101,7 @@ describe('T-leak: legacy / plain graphs are unaffected', () => {
   it('a graph with no reserved fields loads through every endpoint', async () => {
     const a = (await post('/tasks', { content: node({ title: 'Legacy A', status: 'todo' }, 'tungsten') })).body;
     const b = (await post('/tasks', { content: node({ title: 'Legacy B', status: 'todo' }, 'tungsten') })).body;
-    await post('/edges', { source_id: a.id, target_id: b.id, type: 'related' }); // legacy `type` write
+    await post('/edges', { source_id: a.id, target_id: b.id, purpose: 'related to' });
 
     expect((await request(app).get(`/api/graphs/${gid}/graph`)).status).toBe(200);
     expect((await post('/search', { query: 'tungsten' })).status).toBe(200);

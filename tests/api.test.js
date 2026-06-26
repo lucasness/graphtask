@@ -57,10 +57,10 @@ describe('API integration', () => {
 
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: c.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: c.body.id, purpose: 'required for' });
 
     const leaves = await request(app).get(`${tasksUrl()}/leaves`);
     const ids = leaves.body.map((t) => t.id).sort();
@@ -74,14 +74,14 @@ describe('API integration', () => {
 
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: b.body.id, target_id: c.body.id, type: 'dependency' });
+      .send({ source_id: b.body.id, target_id: c.body.id, purpose: 'required for' });
 
     const cycle = await request(app)
       .post(edgesUrl())
-      .send({ source_id: c.body.id, target_id: a.body.id, type: 'dependency' });
+      .send({ source_id: c.body.id, target_id: a.body.id, purpose: 'required for' });
     expect(cycle.status).toBe(400);
     expect(cycle.body.error).toMatch(/cycle/i);
   });
@@ -92,7 +92,7 @@ describe('API integration', () => {
 
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
 
     await request(app).delete(`${tasksUrl()}/${a.body.id}`);
 
@@ -105,7 +105,7 @@ describe('API integration', () => {
     const b = await request(app).post(tasksUrl()).send({ content: md('B') });
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
 
     const del = await request(app).delete(`/api/graphs/${gid}`);
     expect(del.status).toBe(200);
@@ -121,7 +121,7 @@ describe('API integration', () => {
     const b = await request(app).post(tasksUrl()).send({ content: md('B') });
     await request(app)
       .post(edgesUrl())
-      .send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
+      .send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
 
     const graph = await request(app).get(graphUrl());
     expect(graph.status).toBe(200);
@@ -137,10 +137,10 @@ describe('API integration', () => {
     const c = await request(app).post(tasksUrl()).send({ content: md('C') });
     const d = await request(app).post(tasksUrl()).send({ content: md('D') });
 
-    await request(app).post(edgesUrl()).send({ source_id: a.body.id, target_id: b.body.id, type: 'dependency' });
-    await request(app).post(edgesUrl()).send({ source_id: b.body.id, target_id: d.body.id, type: 'dependency' });
-    await request(app).post(edgesUrl()).send({ source_id: a.body.id, target_id: c.body.id, type: 'dependency' });
-    await request(app).post(edgesUrl()).send({ source_id: c.body.id, target_id: d.body.id, type: 'dependency' });
+    await request(app).post(edgesUrl()).send({ source_id: a.body.id, target_id: b.body.id, purpose: 'required for' });
+    await request(app).post(edgesUrl()).send({ source_id: b.body.id, target_id: d.body.id, purpose: 'required for' });
+    await request(app).post(edgesUrl()).send({ source_id: a.body.id, target_id: c.body.id, purpose: 'required for' });
+    await request(app).post(edgesUrl()).send({ source_id: c.body.id, target_id: d.body.id, purpose: 'required for' });
 
     const res = await request(app).get(
       `${graphUrl()}/shortest-path?from=${a.body.id}&to=${d.body.id}`

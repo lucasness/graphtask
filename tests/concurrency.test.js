@@ -223,7 +223,7 @@ describe('OCC: edges three-way merge', () => {
     const a = await makeTask(md({ title: 'A' }));
     const b = await makeTask(md({ title: 'B' }));
     const e = await request(app).post(edgesUrl()).send({
-      source_id: a.id, target_id: b.id, type: 'dependency',
+      source_id: a.id, target_id: b.id, purpose: 'required for',
     });
     return e.body;
   }

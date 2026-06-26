@@ -31,7 +31,7 @@ describe('POST /api/graphs/:gid/batch', () => {
           { external_id: 'n1', content: nodeContent('Node One') },
           { external_id: 'n2', content: nodeContent('Node Two') },
         ],
-        edges: [{ source: 'n1', target: 'n2', type: 'dependency' }],
+        edges: [{ source: 'n1', target: 'n2', purpose: 'required for' }],
       });
     expect(res.status).toBe(200);
     expect(res.body.created).toEqual({ nodes: 2, edges: 1 });
@@ -52,7 +52,7 @@ describe('POST /api/graphs/:gid/batch', () => {
         { external_id: 'n1', content: nodeContent('One') },
         { external_id: 'n2', content: nodeContent('Two') },
       ],
-      edges: [{ source: 'n1', target: 'n2', type: 'dependency' }],
+      edges: [{ source: 'n1', target: 'n2', purpose: 'required for' }],
     };
     const first = await request(app).post(batchUrl()).send(payload);
     expect(first.status).toBe(200);
@@ -175,8 +175,8 @@ describe('POST /api/graphs/:gid/batch', () => {
           { external_id: 'b', content: nodeContent('B') },
         ],
         edges: [
-          { source: 'a', target: 'b', type: 'dependency' },
-          { source: 'b', target: 'a', type: 'dependency' },
+          { source: 'a', target: 'b', purpose: 'required for' },
+          { source: 'b', target: 'a', purpose: 'required for' },
         ],
       });
     expect(res.status).toBe(400);
@@ -194,7 +194,7 @@ describe('POST /api/graphs/:gid/batch', () => {
       .post(batchUrl())
       .send({
         nodes: [{ external_id: 'n2', content: nodeContent('New') }],
-        edges: [{ source: seedId, target: 'n2', type: 'related' }],
+        edges: [{ source: seedId, target: 'n2', purpose: 'related to' }],
       });
     expect(res.status).toBe(200);
     expect(res.body.edges[0].source_id).toBe(seedId);
@@ -205,7 +205,7 @@ describe('POST /api/graphs/:gid/batch', () => {
       .post(batchUrl())
       .send({
         nodes: [{ external_id: 'n1', content: nodeContent('One') }],
-        edges: [{ source: 'n1', target: 'ghost', type: 'related' }],
+        edges: [{ source: 'n1', target: 'ghost', purpose: 'related to' }],
       });
     expect(res.status).toBe(400);
     expect(res.body.failedAt).toEqual({ kind: 'edge', index: 0 });

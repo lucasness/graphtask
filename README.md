@@ -595,7 +595,7 @@ uploads(
 
 One backward-compatible schema serves both execution plans and deep research. Everything is additive and optional — a plain task graph that never sets these fields behaves exactly as before.
 
-- **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose`; a legacy `type` is still accepted (`dependency`→`required for`, `related`→`related to`). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
+- **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose` (the only accepted edge field on writes — a legacy `type` is no longer accepted). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
 - **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`). The three numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
 - **Role predicates** (derived, not stored): a **claim** = `confidence` set AND `type` ≠ `reference`; an **open question** = `status: todo` with no `confidence`; a **reference** = `type: reference`.
 - **No canvas/UI rendering** for the new fields, by design — they're agent-/query-facing. The canvas still renders off the derived `type`.
@@ -624,7 +624,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
 | GET | `/api/graphs/:gid/edges` | List edges in graph |
-| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for \| supports \| contradicts \| related to` (server derives + stores `type`; legacy `type` accepted) |
+| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for \| supports \| contradicts \| related to`, required (server derives + stores `type`; legacy `type` no longer accepted) |
 | POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, `purpose`, meta (a purpose change into/out of `required for` re-runs cycle detection) |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |

@@ -366,7 +366,7 @@ describe('Graph CRUD', () => {
       await request(app).post(`/api/graphs/${oldId}/edges`).send({
         source_id: t1.body.id,
         target_id: t2.body.id,
-        type: 'dependency',
+        purpose: 'required for',
       });
 
       const rot = await request(app).post(`/api/graphs/${oldId}/rotate-id`);

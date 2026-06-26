@@ -16,7 +16,6 @@ import {
 import {
   resolveEdgeKind,
   purposeToType,
-  typeToPurpose,
   EDGE_PURPOSES,
 } from '../src/edgePurpose.js';
 
@@ -63,27 +62,23 @@ describe('A1 derivation helpers', () => {
     expect(purposeToType('related to')).toBe('related');
   });
 
-  it('typeToPurpose: legacy type → purpose', () => {
-    expect(typeToPurpose('dependency')).toBe('required for');
-    expect(typeToPurpose('related')).toBe('related to');
-  });
-
   it('resolveEdgeKind: purpose wins, derives type', () => {
     expect(resolveEdgeKind({ purpose: 'supports' })).toEqual({ purpose: 'supports', type: 'related' });
     expect(resolveEdgeKind({ purpose: 'required for' })).toEqual({ purpose: 'required for', type: 'dependency' });
   });
 
-  it('resolveEdgeKind: legacy type fallback when no purpose', () => {
-    expect(resolveEdgeKind({ type: 'dependency' })).toEqual({ purpose: 'required for', type: 'dependency' });
-    expect(resolveEdgeKind({ type: 'related' })).toEqual({ purpose: 'related to', type: 'related' });
+  it('resolveEdgeKind: a legacy `type` is no longer accepted as input', () => {
+    // type is not read at all → a body with only `type` is missing `purpose`.
+    expect(resolveEdgeKind({ type: 'dependency' }).error).toMatch(/purpose is required/);
+    expect(resolveEdgeKind({ type: 'related' }).error).toMatch(/purpose is required/);
   });
 
-  it('resolveEdgeKind: purpose overrides any stray type', () => {
+  it('resolveEdgeKind: a stray `type` alongside purpose is ignored', () => {
     expect(resolveEdgeKind({ purpose: 'contradicts', type: 'dependency' }))
       .toEqual({ purpose: 'contradicts', type: 'related' });
   });
 
-  it('resolveEdgeKind: rejects neither purpose nor type (required on write)', () => {
+  it('resolveEdgeKind: rejects a write with no purpose (required on write)', () => {
     expect(resolveEdgeKind({}).error).toMatch(/purpose is required/);
   });
 
@@ -114,20 +109,16 @@ describe('A1 edge purpose — create / bulk / batch / patch', () => {
     expect(b.body.type).toBe('related');
   });
 
-  it('POST is rejected when neither purpose nor type is given', async () => {
+  it('POST is rejected when purpose is missing', async () => {
     const res = await request(app).post(edgesUrl()).send({ source_id: 1, target_id: 2 });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/purpose is required/);
   });
 
-  it('POST back-compat: a legacy `type` still works (canvas keeps working)', async () => {
-    const dep = await request(app).post(edgesUrl()).send({ source_id: 1, target_id: 2, type: 'dependency' });
-    expect(dep.status).toBe(201);
-    expect(dep.body.purpose).toBe('required for');
-    expect(dep.body.type).toBe('dependency');
-    const rel = await request(app).post(edgesUrl()).send({ source_id: 1, target_id: 3, type: 'related' });
-    expect(rel.body.purpose).toBe('related to');
-    expect(rel.body.type).toBe('related');
+  it('POST: a legacy `type` (no purpose) is rejected — purpose is the only accepted edge field', async () => {
+    const res = await request(app).post(edgesUrl()).send({ source_id: 1, target_id: 2, type: 'dependency' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/purpose is required/);
   });
 
   it('"required for" is cycle-checked; other purposes are not', async () => {
@@ -145,7 +136,7 @@ describe('A1 edge purpose — create / bulk / batch / patch', () => {
       edges: [
         { source_id: 1, target_id: 2, purpose: 'required for' },
         { source_id: 1, target_id: 3, purpose: 'supports' },
-        { source_id: 2, target_id: 3, type: 'related' }, // legacy fallback in bulk
+        { source_id: 2, target_id: 3, purpose: 'related to' },
       ],
     });
     expect(res.status).toBe(201);

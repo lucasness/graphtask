@@ -456,7 +456,7 @@ Each edge carries a `purpose` (the relationship it encodes, directed source → 
 | `contradicts` | source is **evidence AGAINST** target | `related` |
 | `related to` | loose association (the **default**) | `related` |
 
-- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is still accepted as a deprecated fallback (`dependency`→`required for`, `related`→`related to`).
+- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the **only** accepted edge field on writes. The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input (a write with no `purpose` is rejected).
 - ONLY `required for` is cycle-checked and traversed by §4's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
 
 ### Node reserved fields (frontmatter `meta`)
@@ -849,8 +849,8 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
-| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to` (server derives + stores `type`; legacy `type` accepted as a fallback). See "The universal schema (E15)". |
-| POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; each edge takes `purpose` (or legacy `type`) |
+| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See "The universal schema (E15)". |
+| POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; each edge takes `purpose` (required) |
 | POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, type, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
@@ -962,7 +962,7 @@ the graph?"* One line of confirmation is cheaper than an unwanted upload.
 }
 ```
 
-`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is still accepted. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See "The universal schema (E15)".
+`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set; required on writes). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is no longer accepted as input. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See "The universal schema (E15)".
 
 ## Setup (only if the user asks)
 

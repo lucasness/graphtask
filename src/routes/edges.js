@@ -7,7 +7,6 @@ import {
   EDGE_PURPOSES,
   DEFAULT_PURPOSE,
   purposeToType,
-  typeToPurpose,
   resolveEdgeKind,
 } from '../edgePurpose.js';
 
@@ -18,7 +17,6 @@ export {
   EDGE_PURPOSES,
   DEFAULT_PURPOSE,
   purposeToType,
-  typeToPurpose,
   resolveEdgeKind,
 };
 
@@ -35,7 +33,7 @@ export function flattenEdge(row) {
     {
       source_id: row.source_id,
       target_id: row.target_id,
-      purpose: row.purpose ?? (row.type !== undefined ? typeToPurpose(row.type) : DEFAULT_PURPOSE),
+      purpose: row.purpose ?? DEFAULT_PURPOSE,
       meta: row.meta || {},
     },
     'meta',
@@ -306,9 +304,9 @@ router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   const { source_id, target_id, base_version, base_row } = req.body;
 
-  // Resolve the writer's intended purpose: explicit `purpose` wins; else a
-  // legacy `type` is accepted (deprecated); else undefined = "not changing the
-  // purpose" → inherit it from the base row in writerRow below.
+  // Resolve the writer's intended purpose: `purpose` when given, else undefined
+  // = "not changing the purpose" → inherit it from the base row in writerRow
+  // below. `type` is no longer accepted as input.
   let writerPurpose;
   if (req.body.purpose !== undefined && req.body.purpose !== null) {
     if (!EDGE_PURPOSES.includes(req.body.purpose))
@@ -316,10 +314,6 @@ router.patch('/:id', validateId, async (req, res) => {
         error: "purpose must be one of 'required for', 'supports', 'contradicts', 'related to'",
       });
     writerPurpose = req.body.purpose;
-  } else if (req.body.type !== undefined && req.body.type !== null) {
-    if (!VALID_TYPES.includes(req.body.type))
-      return res.status(400).json({ error: 'type must be dependency or related' });
-    writerPurpose = typeToPurpose(req.body.type);
   }
 
   const current = await pool.query(
@@ -337,10 +331,7 @@ router.patch('/:id', validateId, async (req, res) => {
   // truth for fields the writer didn't mention in this PATCH. Falls back to
   // the current row when the client hasn't opted in to OCC.
   const base = base_row || existing;
-  // base_row from an older client may carry only `type` — derive its purpose
-  // so the merge has the canonical field on all three sides.
-  const basePurpose =
-    base.purpose ?? (base.type !== undefined ? typeToPurpose(base.type) : DEFAULT_PURPOSE);
+  const basePurpose = base.purpose ?? DEFAULT_PURPOSE;
 
   // Build the writer's intended full row: their base view with the partial
   // changes applied. Meta is a shallow merge so writers can patch individual
