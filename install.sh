@@ -4,29 +4,36 @@
 # What this does:
 #   1. Copies SKILL.md to ~/.claude/skills/graphtask/SKILL.md
 #      (falls back to fetching from GitHub if not run from a cloned repo)
-#   2. Merges two hooks into ~/.claude/settings.json:
+#   2. Copies the bundled workflows/ (e.g. research.workflow.js, which SKILL.md
+#      references) to ~/.claude/skills/graphtask/workflows/ — same local-then-
+#      remote fallback as the skill file.
+#   3. Merges two hooks into ~/.claude/settings.json:
 #        - SessionStart: clears stale agent-session state on session start
 #        - Stop:         departs agent presence at the end of every response
 #      The skill ships with these expectations; without them, the agent's
 #      avatar lingers on the canvas until the 30-minute server-side reaper
 #      catches it.
 #
-# Safe to re-run: skill copy is overwriting (newer version wins) and the hook
-# merge is idempotent (checks for the exact command string before adding).
-# A timestamped backup of settings.json is written before any change.
+# Safe to re-run: skill/workflow copies are overwriting (newer version wins) and
+# the hook merge is idempotent (checks for the exact command string before
+# adding). A timestamped backup of settings.json is written before any change.
 #
 # Override defaults via env:
-#   CLAUDE_HOME=<path>           default: ~/.claude
-#   GRAPHTASK_SKILL_URL=<url>    default: GitHub raw URL for SKILL.md
+#   CLAUDE_HOME=<path>            default: ~/.claude
+#   GRAPHTASK_SKILL_URL=<url>     default: GitHub raw URL for SKILL.md
+#   GRAPHTASK_WORKFLOW_URL=<url>  default: GitHub raw URL for research.workflow.js
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 LOCAL_SKILL="$SCRIPT_DIR/.claude/skills/graphtask/SKILL.md"
 REMOTE_SKILL="${GRAPHTASK_SKILL_URL:-https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/SKILL.md}"
+LOCAL_WORKFLOWS_DIR="$SCRIPT_DIR/.claude/skills/graphtask/workflows"
+REMOTE_WORKFLOW="${GRAPHTASK_WORKFLOW_URL:-https://raw.githubusercontent.com/lucasness/graphtask/main/.claude/skills/graphtask/workflows/research.workflow.js}"
 
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 SKILL_DIR="$CLAUDE_HOME/skills/graphtask"
+WORKFLOWS_DIR="$SKILL_DIR/workflows"
 SETTINGS="$CLAUDE_HOME/settings.json"
 
 # --- preflight ---
@@ -54,6 +61,24 @@ elif command -v wget >/dev/null 2>&1; then
 else
   echo "error: no local SKILL.md and neither curl nor wget available" >&2
   exit 1
+fi
+
+# --- 1b. install bundled workflows ---
+# SKILL.md references .claude/skills/graphtask/workflows/research.workflow.js;
+# ship it alongside the skill. Same local-then-remote fallback as above.
+mkdir -p "$WORKFLOWS_DIR"
+if [ -d "$LOCAL_WORKFLOWS_DIR" ]; then
+  cp "$LOCAL_WORKFLOWS_DIR"/*.js "$WORKFLOWS_DIR"/ 2>/dev/null \
+    && echo "✓ workflows copied from $LOCAL_WORKFLOWS_DIR" \
+    || echo "… no workflow files found in $LOCAL_WORKFLOWS_DIR"
+elif command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$REMOTE_WORKFLOW" -o "$WORKFLOWS_DIR/research.workflow.js"
+  echo "✓ workflow downloaded from $REMOTE_WORKFLOW"
+elif command -v wget >/dev/null 2>&1; then
+  wget -q "$REMOTE_WORKFLOW" -O "$WORKFLOWS_DIR/research.workflow.js"
+  echo "✓ workflow downloaded from $REMOTE_WORKFLOW"
+else
+  echo "… skipped workflows: no local dir and neither curl nor wget available" >&2
 fi
 
 # --- 2. install hooks ---
@@ -93,8 +118,9 @@ fi
 cat <<EOF
 
 graphtask skill installed.
-  skill:    $SKILL_DIR/SKILL.md
-  settings: $SETTINGS
+  skill:     $SKILL_DIR/SKILL.md
+  workflows: $WORKFLOWS_DIR/
+  settings:  $SETTINGS
 
 Next steps:
   1. Restart Claude Code so the new hooks load.
