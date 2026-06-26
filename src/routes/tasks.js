@@ -147,16 +147,24 @@ router.patch('/:id', validateId, async (req, res) => {
   let mergedMeta = writerMeta;
   let mergedBody = writerBody;
 
-  // Three-way merge only when the client opts in (sends both base_version
-  // and base_content) AND there has been a concurrent write since they read.
+  // Three-way merge whenever the client opts in by sending both base_version
+  // and base_content — NOT only when a concurrent write is detected. The
+  // protected-key preservation (UI-managed x/y/color/background-image and the
+  // research fields significance/confidence/verified_at) must apply on EVERY
+  // agent PATCH that rebuilds content from scratch, even with no contention:
+  // an agent that omits those keys would otherwise blind-wipe them on the
+  // common no-concurrent-write path. When base_version === cur.version (no
+  // concurrent write) base equals current, so the merge degenerates to
+  // "writer's edits win, omitted-protected keys kept" — the same result as a
+  // plain replace except the protected keys survive. (batch.js already merges
+  // unconditionally for this reason; this aligns the single-task PATCH.)
   // Without base fields, fall back to simple replace — backward compat for
   // clients that don't yet send the base.
-  const concurrentWrite =
+  const hasBaseFields =
     base_version !== undefined &&
-    base_content !== undefined &&
-    base_version !== cur.version;
+    base_content !== undefined;
 
-  if (concurrentWrite) {
+  if (hasBaseFields) {
     const baseParsed = parseMarkdown(base_content);
     const baseMeta = applyDefaults(baseParsed.meta);
     const currentParsed = parseMarkdown(cur.content);

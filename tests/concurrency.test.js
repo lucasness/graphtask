@@ -345,3 +345,137 @@ describe('OCC: graphs three-way merge', () => {
     expect(ok.body.last_modified_by).toBe('agent');
   });
 });
+
+// Regression for the bug where an agent that rebuilds a task's content from
+// scratch and omits UI-managed / research frontmatter keys silently WIPED them
+// on the common no-concurrent-write path. The protected-key preservation lived
+// behind a `base_version !== cur.version` gate, so it only ran when another
+// write had landed since the agent read. With no contention the PATCH fell
+// through to a blind replace and the omitted keys were lost. The merge now runs
+// whenever the client sends base_version + base_content, regardless of version
+// equality, so protected keys survive an omission even with zero contention.
+describe('OCC: protected keys survive omission with NO concurrent write (regression)', () => {
+  // Frontmatter with arbitrary meta keys (x/y/confidence/etc.) the base helper
+  // can't express. Numeric values are emitted bare so YAML parses them as
+  // numbers (meta.x === 100, not "100").
+  function mdMeta(extra = {}, body = '') {
+    const lines = Object.entries(extra).map(([k, v]) => `${k}: ${v}`);
+    return `---\n${lines.join('\n')}\n---\n${body}`;
+  }
+
+  it('agent omitting x/y preserves them when base_version === current version', async () => {
+    // Canvas-managed position lives on the row.
+    const task = await makeTask(
+      mdMeta({ title: 'Node', status: 'todo', x: 100, y: 200 }, 'original body'),
+    );
+    expect(task.meta.x).toBe(100);
+    expect(task.meta.y).toBe(200);
+    expect(task.version).toBe(0);
+
+    // Agent rewrites title/status/body from scratch, OMITTING x/y, with a base
+    // that matches the current version — i.e. NO concurrent write happened.
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'agent')
+      .send({
+        content: mdMeta({ title: 'Node', status: 'done' }, 'new body'),
+        base_version: task.version,
+        base_content: task.content,
+      });
+
+    expect(res.status).toBe(200);
+    // The agent's edits land...
+    expect(res.body.meta.status).toBe('done');
+    expect(res.body.content).toContain('new body');
+    // ...and the omitted positions SURVIVE (this is the regression).
+    expect(res.body.meta.x).toBe(100);
+    expect(res.body.meta.y).toBe(200);
+  });
+
+  it('agent omitting research fields (significance/confidence/verified_at) preserves them, no contention', async () => {
+    const task = await makeTask(
+      mdMeta({
+        title: 'Finding',
+        status: 'review',
+        significance: 0.8,
+        confidence: 0.6,
+        verified_at: '2026-01-01T00:00:00.000Z',
+      }, 'claim'),
+    );
+    expect(task.meta.confidence).toBe(0.6);
+
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'agent')
+      .send({
+        content: mdMeta({ title: 'Finding', status: 'review' }, 'claim refined'),
+        base_version: task.version,
+        base_content: task.content,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.significance).toBe(0.8);
+    expect(res.body.meta.confidence).toBe(0.6);
+    expect(res.body.meta.verified_at).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('escape hatch: explicit null clears a protected key even with no contention', async () => {
+    const task = await makeTask(mdMeta({ title: 'Node', status: 'todo', x: 100, y: 200 }));
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'agent')
+      .send({
+        content: mdMeta({ title: 'Node', status: 'todo', x: 'null', y: 200 }),
+        base_version: task.version,
+        base_content: task.content,
+      });
+    expect(res.status).toBe(200);
+    // x explicitly nulled → cleared; y untouched → kept.
+    expect(res.body.meta.x == null).toBe(true);
+    expect(res.body.meta.y).toBe(200);
+  });
+
+  it('explicit new value for a protected key still wins with no contention', async () => {
+    const task = await makeTask(mdMeta({ title: 'Node', status: 'todo', x: 100, y: 200 }));
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'agent')
+      .send({
+        content: mdMeta({ title: 'Node', status: 'todo', x: 999, y: 200 }),
+        base_version: task.version,
+        base_content: task.content,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.meta.x).toBe(999);
+  });
+
+  it('human writer omitting x/y is NOT protected (humans manage their own UI keys)', async () => {
+    // Protection is agent-only by design; locks that the distinction is intact.
+    const task = await makeTask(mdMeta({ title: 'Node', status: 'todo', x: 100, y: 200 }));
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'human')
+      .send({
+        content: mdMeta({ title: 'Node', status: 'done' }),
+        base_version: task.version,
+        base_content: task.content,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.meta.status).toBe('done');
+    expect(res.body.meta.x == null).toBe(true);
+    expect(res.body.meta.y == null).toBe(true);
+  });
+
+  it('backward compat: an agent PATCH WITHOUT base fields still blind-replaces (no protection)', async () => {
+    // No base_version/base_content → the merge is intentionally not engaged, so
+    // omitted keys are dropped. This path is unchanged by the fix.
+    const task = await makeTask(mdMeta({ title: 'Node', status: 'todo', x: 100, y: 200 }));
+    const res = await request(app)
+      .patch(`${tasksUrl()}/${task.id}`)
+      .set('X-Writer-Type', 'agent')
+      .send({ content: mdMeta({ title: 'Node', status: 'done' }) });
+    expect(res.status).toBe(200);
+    expect(res.body.meta.x == null).toBe(true);
+    expect(res.body.meta.y == null).toBe(true);
+  });
+});
