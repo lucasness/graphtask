@@ -29,8 +29,8 @@ When the user reports an auth error from the canvas or asks you to debug one, wo
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| 401 on any `/api/*` write | Sent an `Authorization: Bearer …` that doesn't start with `gt_` and isn't a valid Clerk session | Drop the header (anon) or re-export a real `gt_…` token. The server's strict 401 path only triggers for malformed `gt_` lookups, so this usually means a token got truncated or revoked. |
-| 401 on `/api/me` or `/api/me/agent_tokens` | Endpoint requires a real user; the caller is anon or has only an agent token without the right scope | These are user-facing — direct the user to the in-app modal instead of calling them as the agent. |
+| 401 on any `/api/*` write | Sent an `Authorization: Bearer gt_…` whose token doesn't resolve (truncated or revoked). A non-`gt_` bearer or an invalid Clerk JWT does NOT 401 — it silently degrades to anonymous. | Drop the header (anon) or re-export a real `gt_…` token. The server's strict 401 path only triggers for malformed `gt_` lookups, so this usually means a token got truncated or revoked. |
+| 401 on `/api/me/*` (e.g. `/api/me/agent_tokens`) | Caller is anonymous (no signed-in user / no valid token). An agent token CAN GET its own `/agent_tokens` (200) but gets 403, not 401, on POST/DELETE there — it may read but not mint/revoke. | Direct the user to the in-app modal. |
 | 403 on `GET /api/graphs/:id` or `/graph` | Owned graph with `anon_role=none` and you aren't a member | Owner must either flip `anon_role` to `viewer`/`editor` or add the user (or your token's owner) as a member. |
 | 403 on `POST/PATCH/DELETE` but `GET` works | `anon_role=viewer` lets you read; writes need editor+ | Owner flips `anon_role=editor` or grants the writer member-editor explicitly. |
 | 403 specifically on `/members` or `PATCH {anon_role}` | These require `manage` — owner only | Only the owner can change sharing. Other roles cannot, even editors. |
@@ -104,6 +104,27 @@ else
 fi
 ```
 
+**Shell state does NOT survive between separate Bash tool calls.** Env vars and (especially) bash arrays built in one call are gone in the next — and arrays can't be exported anyway — so the one-time identity block above sets `WRITE_HEADERS`/`READ_HEADERS`/`AGENT_ID` for THAT call only. A later write in a fresh Bash call would otherwise ship empty headers (no `Content-Type`, no `X-Writer-*`, no `Authorization`) and go out unattributed or malformed. **Re-derive everything from the persisted files at the top of EVERY bash block** (or keep a whole read-author-write cycle inside one invocation):
+
+```bash
+# --- Rehydrate: paste at the TOP of every bash block (needs the §1 files) ---
+GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
+AGENT_ID="$(jq -r .id .graphtask/agent-session.json)"
+AGENT_NAME="$(jq -r .name .graphtask/agent-session.json)"
+GID="$(cat .graphtask/graph-id)"
+WRITE_HEADERS=(
+  -H 'Content-Type: application/json'
+  -H 'X-Writer-Type: agent'
+  -H "X-Writer-Id: $AGENT_ID"
+  -H "X-Writer-Name: $AGENT_NAME"
+)
+READ_HEADERS=()
+if [ -n "$GRAPHTASK_AGENT_TOKEN" ]; then
+  WRITE_HEADERS+=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
+  READ_HEADERS=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
+fi
+```
+
 **Every write `curl` below should use `"${WRITE_HEADERS[@]}"` in place of the bare `-H 'Content-Type: application/json'`.** Reads (`GET`) only need `"${READ_HEADERS[@]}"` when you're accessing a private graph owned by the authed user — public reads work without it.
 
 After any write to a graph, record the gid so the optional cleanup hook (below) can depart your presence on session end:
@@ -116,7 +137,7 @@ See [Presence lifecycle](#presence-lifecycle) below for how your avatar gets cle
 
 ## Listing graphs and naming
 
-`GET /api/graphs` returns the graphs the **current authenticated viewer** can see (owned + member-of), or all graphs when `auth_enabled: false`. It is not a public directory; private graphs only reachable by id stay reachable by id.
+`GET /api/graphs` returns the graphs the **current authenticated viewer** can see (owned + member-of). On a no-auth instance it returns `[]` — there is no signed-in viewer to scope to, so nothing is listed; legacy un-owned graphs stay reachable only by their id/URL. It is not a public directory; private graphs only reachable by id stay reachable by id.
 
 Graph names are not globally unique — duplicate-name `POST` and `PATCH` both succeed (200/201). Don't expect 409 on name conflicts.
 
@@ -171,10 +192,11 @@ For ambiguous cases ("help me understand X", "what should I think about for Y"),
 The moment a graph exists for this body of work, it becomes the source of truth, and **all subsequent work on the subject must update the graph in real time**. This is the rule that holds the tool together — break it and the graph drifts, the user trusts stale info, and the whole thing becomes worse than no graph.
 
 - **Status transitions happen as the work happens**, not batched at the end. Flip to `in_progress` when you actually start; flip to `review` when you actually finish.
-- **Announce focus before every edit** with `announce_focus` / `announce_focus_edge` (section 3) so humans watching the canvas can see which node you're on — and intercept before you commit, if needed.
+- **Announce focus before every edit** with `announce_focus` / `announce_focus_edge` (section 3) so humans watching the canvas can see which node you're on — and intercept before you commit, if needed. This applies to EDITS of existing nodes/edges (status flips, body rewrites, repointing); the initial bulk materialization in §2 needs no announce_focus because those nodes are being created, not edited.
 - **New findings update the right node's body**, not just a chat message. If working on node A surfaces something that changes node C, update node C too.
 - **New connections become new edges.** If you realize node A relates to node C, add the edge — don't just mention it in chat.
-- **Re-read before each write** (the OCC dance in section 3). The user may have edited the graph in the UI since your last touch.
+- **Re-read before each write** (the OCC dance in section 3) — and fold any human edits you find into your new content. The merge only shields the fixed protected-key list (UI keys + research fields), NOT `title`/`status`/`body`, so a blind rewrite from memory WILL clobber a concurrent human edit. The user may have edited the graph in the UI since your last touch.
+- **Confirm every write landed.** After a status flip or body PATCH, check the response is the updated row, not an `{error}` — a swallowed 400/409/410 means the graph silently didn't change, which is worse than no graph. Follow §7 to recover.
 - **Touched gids get appended** to `.graphtask/agent-session-graphs` so the Stop hook can depart your presence cleanly.
 - **Run tests / code / research alongside the graph, not instead of it.** If you find yourself working for more than a few minutes without touching the graph, that's a bug — pause and reconcile.
 
@@ -196,7 +218,7 @@ For research / mapping / freeform graphs, the loop is looser: explore → add no
 **Other quick queries** (any graph shape):
 
 - *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize.
-- *"What can I work on next?"* — `GET /tasks/ready` (plan graphs) or `GET /tasks/leaves` then filter to `status=todo` (any graph).
+- *"What can I work on next?"* — `GET /tasks/ready` (it already returns open questions: `status=todo`, no `confidence`, all prereqs done). If you fall back to `GET /tasks/leaves` (any graph), filter the SAME way — `status==todo` AND no `confidence` (`jq 'select(.meta.status=="todo" and (.meta.confidence|not))'`) — so confidence-bearing findings sitting at todo don't surface as work to do.
 - *"Mark X done"* / *"Finish X"* — you move it to `review`. Only flip to `done` if the user explicitly says so for *that* node. See section 3.
 
 ## 1. Resolve the active graph
@@ -317,7 +339,7 @@ The body content should always justify the current status. What "justify" means 
 | `review` | You (when you think it's done) | Self-contained synthesis ready for the human. Execution nodes: what you did, files changed, how to verify. Research / mapping nodes: the synthesized finding with sources and reasoning. **This is what the human reads to confirm.** |
 | `done` | **Only the human** | Their confirmation that they accept the node. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that node only* — don't infer permission for siblings, parents, or the rest of the graph. |
 
-**Read before you write, and send OCC fields.** Always GET the task right before you PATCH it AND include `base_version` + `base_content` in the PATCH body. Without those, the server falls back to "blind replace" and your write silently overwrites any UI-managed frontmatter keys (positions `x`/`y`, `color`, `curve`) that exist on the row but aren't in your new content. With OCC fields the server runs a three-way merge that preserves fields you didn't touch — so you can safely rewrite the title/status/body without enumerating every other meta key.
+**Read before you write, and send OCC fields.** Always GET the task right before you PATCH it AND include `base_version` + `base_content` in the PATCH body. Without those, the server falls back to "blind replace" and your write silently overwrites any UI-managed frontmatter keys (positions `x`/`y`, `color`, `background-image`) that exist on the row but aren't in your new content. With OCC fields the server runs a three-way merge that preserves the fixed list of protected keys you didn't touch. **The merge only protects that fixed key list, though — `title`/`status`/`body` are writer-wins.** Because the OCC dance sends the content you just fetched as `base_content`, base == current, so the merge can't detect a concurrent human edit to those fields: whatever you PATCH overwrites them. So GET first, READ the returned title/body/status, fold any human changes into your new content, and only then PATCH — never rewrite from memory.
 
 **Keep related task bodies in sync.** When work on one task surfaces information that affects another (e.g., you find that the schema migration also needs a new index, which is a different task), update *that* task's body to reflect the new finding. The graph is a living context document, not a one-shot plan. Each task body should be accurate to the current state of the work.
 
@@ -333,7 +355,7 @@ Only proceed if (a) blockers is zero, or (b) the user explicitly OKs starting wh
 
 For readiness queries (section 4), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
 
-PATCH replaces the entire `content` blob (frontmatter + body). The OCC pattern below is the **only safe way to update a task**: GET first, capture `version` + `content`, then PATCH with those as `base_version` + `base_content`. The server's three-way merge then preserves any UI-managed keys (`x`/`y` positions, `color`, `curve`) that aren't in your new content.
+PATCH replaces the entire `content` blob (frontmatter + body). The OCC pattern below is the **only safe way to update a task**: GET first, capture `version` + `content`, then PATCH with those as `base_version` + `base_content`. The server's three-way merge then preserves any UI-managed keys (`x`/`y` positions, `color`, `background-image`) that aren't in your new content — but it does NOT shield `title`/`status`/`body`, so base your new content on what you just GET-ed, not on memory.
 
 **Required: announce your focus.** Before you start touching a task — and every time you switch which task you're working on — POST to `/api/graphs/:gid/selection` with `cursor_anchor` + `editing` set to that task. This is what tells humans watching the canvas which node you're on; without it, your edits show up as flickers on the canvas with no source attribution and no colored outline. The server keeps one selection per writer (so a new POST replaces the previous), and your Stop hook DELETEs presence at end of turn which cascades to clearing the selection. The helpers below combine selection-announce with `patch_task` so you can't accidentally forget.
 
@@ -374,6 +396,11 @@ patch_task() {
   # Fetches the current task, then PATCHes with OCC so the server can
   # protect UI-managed frontmatter keys (positions etc.) you didn't touch.
   # ALWAYS call announce_focus first (or use work_on_task which bundles them).
+  # IMPORTANT: $NEW_CONTENT must already fold in the human's CURRENT
+  # title/body/status. base_content is the row we just fetched, so the merge
+  # only shields the fixed protected-key list — title/status/body are
+  # writer-wins, and a blind rewrite WILL clobber a concurrent human edit. Read
+  # CUR_JSON (below) before composing $NEW_CONTENT; don't rewrite from memory.
   local TID="$1"
   local NEW_CONTENT="$2"
   local CUR_JSON
@@ -382,13 +409,22 @@ patch_task() {
   CUR_VERSION=$(echo "$CUR_JSON" | jq -r .version)
   local CUR_CONTENT
   CUR_CONTENT=$(echo "$CUR_JSON" | jq -r .content)
-  curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$TID" \
+  local RESP
+  RESP=$(curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$TID" \
     "${WRITE_HEADERS[@]}" \
     -d "$(jq -nc \
       --arg c "$NEW_CONTENT" \
       --argjson v "$CUR_VERSION" \
       --arg b "$CUR_CONTENT" \
-      '{content: $c, base_version: $v, base_content: $b}')"
+      '{content: $c, base_version: $v, base_content: $b}')")
+  # Confirm the write landed: the response must be the updated row, not an
+  # error. On failure follow §7 — re-fetch on 410/404, retry once on 409 with
+  # the body's `current` row as the new base, fix-and-retry on 400.
+  if echo "$RESP" | jq -e '.error' >/dev/null 2>&1; then
+    echo "patch_task: write FAILED for $TID — $(echo "$RESP" | jq -r '.error')" >&2
+    return 1
+  fi
+  echo "$RESP"
 }
 
 work_on_task() {
@@ -431,7 +467,7 @@ EOF
 )"
 ```
 
-Notice the PATCH body has no `x`/`y`, `color`, or `background-image` keys, but the user's drag positions, color tweaks, and chosen node image will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`, `background-image`. Edge protections: `meta.color`, `meta.curve`.
+Notice the PATCH body has no `x`/`y`, `color`, or `background-image` keys, but the user's drag positions, color tweaks, and chosen node image will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`, `background-image`, plus the E15 research fields `significance`, `confidence`, `verified_at` (see 'Node reserved fields' below). Edge protections: `meta.color`, `meta.curve`.
 
 This protection only covers that fixed list. Custom frontmatter keys you drop from a rewritten content blob are still treated as removals — if you want them to survive across PATCHes, include them yourself (read existing frontmatter from `base_content`, splice in your changes, send the merged blob).
 
@@ -456,7 +492,7 @@ Each edge carries a `purpose` (the relationship it encodes, directed source → 
 | `contradicts` | source is **evidence AGAINST** target | `related` |
 | `related to` | loose association (the **default**) | `related` |
 
-- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the **only** accepted edge field on writes. The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input (a write with no `purpose` is rejected).
+- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the only edge *relationship* field you send (the server also accepts `meta` for edge `color`/`curve`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input. `POST /edges`, `/edges/bulk`, and `/batch` reject a write with no `purpose`; `PATCH /edges/:id` treats an omitted `purpose` as "keep the existing relationship".
 - ONLY `required for` is cycle-checked and traversed by §4's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
 
 ### Node reserved fields (frontmatter `meta`)
@@ -478,7 +514,7 @@ These survive a body-rewriting agent PATCH that omits them (merge-protected like
 - **reference** = `type: reference` — an external source.
 
 ### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
-- **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error.
+- **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error. To remove a `confidence` value set by mistake you must send `confidence: null` — omitting it preserves the old value (merge protection), so the node stays hidden from `/ready`. Same for clearing a stale `verified_at`.
 - **A finding is born at `review` (or `done`), never `todo`.** `todo` means "open question, not yet answered" — that's what `/ready` hands back as work to do. The instant you record a finding (you set `confidence`), give it a real status: `review` for a first-pass claim awaiting human confirmation, `done` only on explicit human say-so, and a `type: reference` source is `done` once located. Leaving a confidence-bearing node at `todo` is the same category error as the bullet above — and `/ready` filters such nodes out, so a finding stuck at `todo` silently goes missing from BOTH the work queue and the answered-knowledge view.
 - **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
 - **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes.
@@ -489,13 +525,13 @@ These survive a body-rewriting agent PATCH that omits them (merge-protected like
 
 ### Completion gates — run BOTH after finishing graph work
 1. **Stop at `review`, never set `done`** (§3) — `done` is the human's call.
-2. **Run the inconsistency scan after ANY task that wrote to the graph** (research or not): `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
+2. **Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
 
 ## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
 These queries are most natural on plan-shaped graphs where ordering matters. The **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs that use `dependency` edges — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done." **All of these follow `dependency` edges only — none traverse `related` links.** To navigate a knowledge-base graph wired with `related` edges (search → follow links), see *Search + traversal: the graph as a knowledge base* at the end of section 5.
 
-The server does the recursion — never compute readiness yourself. All four status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
+The server does the recursion — never compute readiness yourself. All three status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
 
 ```bash
 # What can I work on right now? Returns OPEN QUESTIONS — todo tasks with NO
@@ -572,7 +608,7 @@ done
 
 Search and traversal are **two complementary ways to pull context out of a graph — reach for both.** Search jumps to the most relevant nodes *by content* (the RAG-style move above); traversal follows the *edges* out of a node to gather what's connected to it. When the graph is itself a knowledge base — nodes are concept / topic pages and `related` edges are the cross-references between them, the way a wiki links articles — the strongest pattern is the one Karpathy calls an **"LLM wiki"**: rather than re-running vector retrieval on every question, **load the index, jump to an entry page, and follow its links.** Here that's: **search to find the entry node(s), then traverse `related` links to read the connected neighborhood, and synthesize from both.**
 
-The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status` — **no body**) plus every edge (`source`, `target`, `purpose` ∈ `required for | supports | contradicts | related to`, and the derived `type` ∈ `dependency | related`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
+The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status`, plus the full `meta` frontmatter — **no body**) plus every edge (`source`, `target`, `purpose` ∈ `required for | supports | contradicts | related to`, the derived `type` ∈ `dependency | related`, and `meta`/`version`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
 
 ```bash
 # 1. INDEX — the whole map once (structure only, no bodies).
@@ -643,7 +679,7 @@ All params optional (defaults shown). A node with no `verified_at` counts as sta
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 # Per-claim — only tensions through node 42 ("is claim X contested?").
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{"start": 42}'
-# → {mode, inconsistencies:[{nodes,edges,length,contradicts,balanced}], truncated, scanned}
+# → {mode, start?, inconsistencies:[{nodes,edges,length,contradicts,balanced}], truncated, scanned, params}
 ```
 
 Guardrailed (max cycle length / count → `truncated:true`). This IS completion gate (2): run it after writing, surface tensions by name, never auto-resolve.
@@ -735,11 +771,13 @@ Per the clean contract, the workflow COMPUTES and RETURNS `{ nodes, edges, openQ
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$ROUND_JSON"
 # 2. COMPLETION GATE 1 is already honored — everything is `review`, never `done`.
 # 3. work the re-verification frontier (stale load-bearing knowledge to re-check):
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" "${WRITE_HEADERS[@]}" -d '{}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 # 4. COMPLETION GATE 2 — run the inconsistency scan and SURFACE any tension by
 #    name (never auto-resolve a contradicts edge):
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" "${WRITE_HEADERS[@]}" -d '{}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 ```
+
+Rule of thumb: read-only POSTs — `search` / `context` / `frontier` / `inconsistencies` — take `READ_HEADERS` + an explicit `Content-Type`; only mutating calls (e.g. the `batch` write in step 1) take `WRITE_HEADERS`.
 
 Re-running the workflow on the SAME graph next session compounds: the read-KB stage skips what's already confident, the batch write upserts (no duplicates), and the frontier resurfaces what's gone stale. That loop — build → read → re-verify → compound — is the whole point of the typed schema.
 
@@ -751,11 +789,11 @@ Change an edge's `purpose` (e.g. `related to` → `supports`, or into/out of `re
 
 **Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
 
-Same OCC rule as tasks: GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge.
+Same OCC rule as tasks: GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge. There is no single-edge GET route — fetch the edge by filtering the edge list (`GET /api/graphs/$GID/edges`), which returns full edge rows (`source_id`, `target_id`, `purpose`, `meta`, `version`) suitable for `base_row`.
 
 ```bash
 announce_focus_edge "$EID"
-CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges/$EID")
+CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges" | jq --argjson id "$EID" '.[] | select(.id==$id)')
 curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
   "${WRITE_HEADERS[@]}" \
   -d "$(jq -nc \
@@ -784,7 +822,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 
 - `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
-- `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See "Images and agent discretion" above for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
+- `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See "Images and agent discretion" below for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
 
@@ -830,7 +868,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}` — probe first to learn the deployment mode |
-| GET | `/api/graphs` | Lists graphs the viewer owns + is a member of (auth on); all graphs (auth off) |
+| GET | `/api/graphs` | Lists graphs the viewer owns + is a member of; anonymous callers (which includes every caller in auth-off mode) get `[]` — legacy un-owned graphs stay reachable by URL only |
 | POST | `/api/graphs` | `{name, description?}` — duplicate names allowed; new graphs default `anon_role='viewer'` and `settings={}` |
 | GET | `/api/graphs/:id` | One graph; also returns `viewer_can_edit` / `viewer_can_manage` based on the caller's role |
 | PATCH | `/api/graphs/:id` | `{name?, description?, anon_role?, settings?}` — `anon_role` ∈ `none | viewer | editor`; see section 9 for `settings` |
@@ -848,7 +886,7 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | PATCH | `/api/graphs/:gid/tasks/:id` | `{content}` — full replace |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to its edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | DAG roots (no incoming dep edges) |
-| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start: status=todo with all recursive prereqs done |
+| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start: status=todo AND no `confidence` (a confidence-bearing node is a claim/finding, not an open question) with all recursive prereqs done |
 | GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
@@ -856,14 +894,14 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET | `/api/graphs/:gid/edges` | List edges |
 | POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See "The universal schema (E15)". |
 | POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; each edge takes `purpose` (required) |
-| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, type, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
+| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
 | POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see "Read-side queries (E15)". For content questions, prefer this over grep — see section 5. |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see "Read-side queries (E15)". |
-| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
 | POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Same body/response, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
@@ -886,7 +924,7 @@ background-image: optional URL string (≤500 chars)   # UI-managed; see below
 free-form markdown body
 ```
 
-The four E15 fields are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). See "The universal schema (E15)" for the predicates and conventions.
+Three of the four E15 fields — `significance`, `confidence`, `verified_at` — are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). `type` is validated when present but is NOT merge-protected: a body-rewriting PATCH that omits `type` drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content. See "The universal schema (E15)" for the predicates and conventions.
 
 `background-image` holds a URL into the graph's uploads (e.g.
 `/api/graphs/:gid/uploads/:id`). The canvas renders it inside the node frame
