@@ -479,6 +479,7 @@ These survive a body-rewriting agent PATCH that omits them (merge-protected like
 
 ### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
 - **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error.
+- **A finding is born at `review` (or `done`), never `todo`.** `todo` means "open question, not yet answered" — that's what `/ready` hands back as work to do. The instant you record a finding (you set `confidence`), give it a real status: `review` for a first-pass claim awaiting human confirmation, `done` only on explicit human say-so, and a `type: reference` source is `done` once located. Leaving a confidence-bearing node at `todo` is the same category error as the bullet above — and `/ready` filters such nodes out, so a finding stuck at `todo` silently goes missing from BOTH the work queue and the answered-knowledge view.
 - **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
 - **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes.
 - **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
@@ -497,7 +498,11 @@ These queries are most natural on plan-shaped graphs where ordering matters. The
 The server does the recursion — never compute readiness yourself. All four status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
 
 ```bash
-# What can I work on right now? Returns todo tasks with all recursive prereqs done.
+# What can I work on right now? Returns OPEN QUESTIONS — todo tasks with NO
+# confidence (per the role predicate) and all recursive prereqs done. A
+# confidence-bearing node is a claim/finding, not ready work, so it never
+# appears here even if it still sits at todo; re-checking findings is /frontier's
+# job. So in a mixed plan+knowledge graph, /ready stays a clean "what to do next".
 curl -sS "$GT_BASE/api/graphs/$GID/tasks/ready"
 
 # What's blocking task X from being completable? Returns recursive prereqs not yet done

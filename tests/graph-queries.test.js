@@ -144,6 +144,21 @@ describe('Graph queries', () => {
       const ids = res.body.map((t) => t.id).sort();
       expect(ids).toEqual([2, 3, 5]); // B, C, E
     });
+
+    it('excludes a confidence-bearing node (a finding is not an open question)', async () => {
+      // E (id 5) is an unblocked todo, so it is "ready" — until it carries a
+      // confidence value. A confidence-bearing node is a claim/finding, not an
+      // open question; the role predicate (open question = todo with NO
+      // confidence) means it must drop out of /ready even while still at todo.
+      // This guards the knowledge-node leak for legacy rows that were never
+      // re-statused, not just well-formed new writes.
+      await pool.query(
+        `UPDATE tasks SET meta = jsonb_set(meta, '{confidence}', '0.8') WHERE id = 5`
+      );
+      const res = await request(app).get(`${tasksUrl()}/ready`);
+      const ids = res.body.map((t) => t.id).sort();
+      expect(ids).toEqual([1]); // only the open question A; E is now a finding
+    });
   });
 
   describe('GET /api/graphs/:gid/tasks/:id/blockers', () => {

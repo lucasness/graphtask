@@ -81,6 +81,15 @@ router.get('/leaves', async (req, res) => {
 // 'done'. Treats 'review' and 'in_progress' as not-yet-done — matches the
 // agent convention where 'review' is "agent thinks it's finished, awaiting
 // human confirmation."
+//
+// In a mixed world-model graph (plan nodes + knowledge nodes) `/ready` is a
+// PLAN question — "what work can I start now?" — so it must return open
+// QUESTIONS, not findings. Per the README role predicate an open question is
+// `status: todo` WITH NO confidence; a confidence-bearing node is a claim/
+// finding (its re-checking is the frontier's job, not /ready's). We therefore
+// require `confidence IS NULL` here so a knowledge node that carries a
+// confidence value never masquerades as ready work — even legacy/mislabeled
+// rows that still sit at todo (the write side is permissive for human drags).
 router.get('/ready', async (req, res) => {
   const { gid } = req.params;
   const result = await pool.query(
@@ -98,6 +107,7 @@ router.get('/ready', async (req, res) => {
      SELECT t.* FROM tasks t
       WHERE t.graph_id = $1
         AND t.meta->>'status' = 'todo'
+        AND t.meta->>'confidence' IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM prereqs p
           JOIN tasks tp ON tp.id = p.prereq
