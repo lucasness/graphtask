@@ -91,8 +91,10 @@ Postgres yourself and point the app at your local database.
 **Prerequisites**
 
 - **Node 22+** — the start script uses `node --env-file`, a Node 22 flag.
-- **PostgreSQL 14+** — any modern version. No extensions needed; all graph
-  traversal (including shortest-path) runs as recursive CTEs in plain SQL.
+- **PostgreSQL 14+** — any modern version. No extensions to install by hand —
+  the schema only uses the standard-contrib `pgcrypto` extension (bundled with
+  stock Postgres) and creates it itself. All graph traversal runs as recursive
+  CTEs.
 
 **Environment variables** (resolved in `src/db.js` / `src/server.js`, loaded
 from `.env` by `npm start`)
@@ -194,8 +196,10 @@ Open <http://localhost:3000>.
 
 **Tests**
 
-`npm test` spins up and tears down a `graphtask_test` database on your local
-Postgres. No extensions required.
+`npm test` (re)creates a `graphtask_test` database on your local Postgres at
+the start of each run (dropping any prior one). No extensions to install by
+hand — the schema only uses the standard-contrib `pgcrypto` extension (bundled
+with stock Postgres) and creates it itself.
 
 Production tuning notes (open-file limits, single-process presence) live
 under [Production notes](#production-notes).
@@ -211,14 +215,15 @@ any deploy path — hosted, Docker, or local.
 ### Set up
 
 ```sh
-# 1. Install the skill (one-time; available in every project on your machine).
+# 1. Install jq (the skill's recipes and the hooks parse JSON with it).
+#    install.sh exits early if jq is missing, so install it first.
+brew install jq        # macOS — or: apt install jq / apk add jq
+
+# 2. Install the skill (one-time; available in every project on your machine).
 #    Also merges presence-cleanup hooks into ~/.claude/settings.json
 #    (with a timestamped backup) so the agent's 🤖 avatar blinks out
 #    cleanly when it stops working.
 bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
-
-# 2. Install jq (the skill's recipes and the hooks parse JSON with it)
-brew install jq        # macOS — or: apt install jq / apk add jq
 
 # 3. Point the agent at your graphtask instance
 export GRAPHTASK_BASE_URL="https://graphtask.wafers.live"   # hosted
@@ -238,6 +243,7 @@ claude
 
 What `install.sh` does — also visible in the script itself:
 - copies `SKILL.md` to `~/.claude/skills/graphtask/`
+- copies the bundled `workflows/` (e.g. `research.workflow.js`, referenced by SKILL.md) to `~/.claude/skills/graphtask/workflows/`
 - merges two hooks into `~/.claude/settings.json` (with a `.bak.<timestamp>` backup):
   - **SessionStart**: clears any stale agent-session files from a prior crash
   - **Stop**: departs the agent's presence at the end of every response so the 🤖 avatar blinks out cleanly when the agent stops working
@@ -401,13 +407,16 @@ an edit overlay) always apply.
 | `S` | Both | Graph: cycle selected node status; Enter saves, Esc cancels. Kanban: directly cycle selected card's status (drag is the primary UX; S is "next status, no confirm") |
 | `B` | Graph | Open color palette for selected nodes/edges |
 | `E` | Graph | Start edge creation, cycle in-progress edge direction, or cycle selected edge direction |
+| `C` | Graph | Open color palette for the selected edge(s) (edge-context color; `B` also works) |
+| `D` | Graph | Cycle selected edge direction forward → related → backward (canonical edge-direction key; `E` also works) |
 | `Enter` | Graph | Commit pending explicit edit session |
-| `Cmd/Ctrl+Enter` | Both | Commit new-node creation from anywhere (graph view); save panel edits (both views) |
+| `Cmd/Ctrl+Enter` | Both | Commit new-node creation from anywhere — only while an unsaved pending node exists (graph view). Panel field edits autosave on a short debounce; no key is needed to save them. |
 | `Esc` | Both | Cancel current edit, close panel, or clear selection |
-| `Backspace/Delete` | Graph | Open delete confirmation |
+| `Backspace/Delete` | Both | Open delete confirmation |
 | Arrow keys | Graph | Move selection to nearest node/edge in that direction; inside color palette, navigate swatches |
 | Cmd/Ctrl drag | Graph | Rubber-band select nodes and edge midpoints |
 | `Cmd/Ctrl+K` | Both | Open settings |
+| `Cmd/Ctrl+F` | Both | Open the in-app search bar (KB search); replaces the browser's native find |
 
 ### Editing flows
 
@@ -618,7 +627,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
-| GET | `/api/graphs/:gid/tasks/ready` | Status=todo tasks where every recursive prereq is done (treats `review` as not-yet-done) |
+| GET | `/api/graphs/:gid/tasks/ready` | Open questions ready to start: `status:todo` AND **no `confidence` set** AND every recursive prereq is `done` (treats `review`/`in_progress` as not-yet-done). A confidence-bearing todo node is a claim/finding, not ready work — its re-checking is `/frontier`'s job, so it never appears here. |
 | GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
@@ -640,7 +649,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`image/png\|jpeg\|gif\|webp\|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}` — reference the URL from a task's `background-image` frontmatter to render the image inside the node frame. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes, served with stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
-| GET | `/api/config` | `{auth_enabled, provider, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
+| GET | `/api/config` | `{auth_enabled, provider, publishable_key, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
 | GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
 | GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |
 
@@ -1157,8 +1166,10 @@ graphs / tasks / edges are untouched.
   list into `mergeFields`. When the writer is an agent and the new
   edit omits a key in that list (and the key existed in base), the
   merge treats it as "didn't mention" rather than "removed" and
-  preserves the current value. Tasks protect `x`, `y`, `color`; edges
-  protect `meta.color`, `meta.curve`. An agent that genuinely wants to
+  preserves the current value. Tasks protect `x`, `y`, `color`,
+  `background-image`, plus the E15 research fields `significance`,
+  `confidence`, `verified_at`; edges protect `meta.color`, `meta.curve`. An
+  agent that genuinely wants to
   clear one of these sends an explicit `null` — `null` is defined, so
   the protection short-circuit doesn't fire and the clear lands.
 
@@ -1217,6 +1228,11 @@ Completion checklist — the detailed entries below carry the full context.
   `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`.
 - [x] **Modular UI primitives** — `VIEWS` registry + `View` interface; per-view
   branching now dispatches through `activeView()`. (`public/app.js`)
+- [x] **Find / search bar (Cmd/Ctrl+F)** — in-app search bar, This-graph/All-graphs
+  toggle, `?node=` jump (`public/app.js`).
+- [x] **Knowledge-base search (hybrid + graph)** — lexical(BM25)+dense(pgvector)→RRF→optional
+  rerank→graph expansion; per-graph + cross-graph endpoints; embedding indexer +
+  boot warmup (`src/search/`, `src/routes/search.js`, `searchAll.js`).
 
 **Planned — not started**
 
@@ -1229,12 +1245,6 @@ Completion checklist — the detailed entries below carry the full context.
   panel + avatar-bar reflow.
 - [ ] **Configurable custom fields** — graph-declared typed task fields.
 - [ ] **Custom ordering** — per-graph, per-view sort/grouping (needs custom fields).
-- [ ] **Find / search bar (Cmd/Ctrl+F)** — intercept the browser find
-  hotkey; a search bar whose Enter runs the hybrid + graph KB search,
-  jump-to-node. (UI front door for the item below.)
-- [ ] **Knowledge-base search (hybrid + graph)** — BM25 (`pg_search`) +
-  pgvector → RRF → cross-encoder rerank → traverse our `edges`. Postgres-
-  native; Cmd/Ctrl+F is its UI.
 
 **Reach — aspirational, unscheduled**
 
@@ -1261,7 +1271,7 @@ Completion checklist — the detailed entries below carry the full context.
     graph settings (Appearance → View); preference is per-user, per-graph,
     client-only (`localStorage['graphtask:view:<gid>']`) — two
     collaborators on the same graph can be in different views. See
-    *Views — per-graph view preference* below.
+    *Views — per-graph view preference* above.
 
   **Planned views:**
   - [ ] **Tech tree** — Civilization-style layered DAG. Tasks ordered into
@@ -1375,19 +1385,19 @@ Completion checklist — the detailed entries below carry the full context.
   infrastructure is exercised across two or three views and the
   shape of "view-specific config" becomes clear.
 
-- **Find / search bar (Cmd/Ctrl+F) — the front door to KB search.** ⬜
-  Today pressing Cmd/Ctrl+F triggers the *browser's* native find — which
-  reports "0/0" even when the word is plainly on screen, because Cytoscape
+- **Find / search bar (Cmd/Ctrl+F) — the front door to KB search.** ✅
+  Previously, pressing Cmd/Ctrl+F triggered the *browser's* native find — which
+  reported "0/0" even when the word was plainly on screen, because Cytoscape
   paints node labels onto a `<canvas>` and the browser only searches the DOM
-  text layer. Replace that dead-end with our own search bar that drives the
-  hybrid + graph search below. *(Tracked as graph task #172, the UI layer;
-  depends on #171, the search backend.)*
+  text layer. That dead-end is now replaced with our own search bar that drives
+  the hybrid + graph search below. *(Shipped as graph task #172, the UI layer;
+  built on #171, the search backend.)*
 
-  - **Interception.** Intercept the hotkey the same way Cmd/Ctrl+K already
-    opens graph settings (`public/app.js` global keydown handler, ~line
-    7882: `e.preventDefault(); openGraphSettings();`). Add a sibling branch
-    for `e.key === 'f'` that `preventDefault()`s the native find and opens
-    the bar. No conflict with the bare `f` graph hotkey (zoom-to-fit,
+  - **Interception.** Intercepts the hotkey the same way Cmd/Ctrl+K
+    opens graph settings (`public/app.js` global keydown handler, Cmd+K
+    branch ~line 8637). A sibling branch for `e.key === 'f'`
+    `preventDefault()`s the native find and calls `openSearchBar()` (~line
+    8646). No conflict with the bare `f` graph hotkey (zoom-to-fit,
     `handleGraphKeydown`) — that one carries no modifier.
 
   - **Cmd+F just shows a text input bar.** Pressing **Enter triggers our
@@ -1409,7 +1419,10 @@ Completion checklist — the detailed entries below carry the full context.
     BM25 stage formalizes — the Enter-triggered query is cross-graph,
     hybrid, and graph-expanded.
 
-- **Knowledge-base search across graphs.** ⬜ Each node body is a piece
+- **Knowledge-base search across graphs.** ✅ *(retrieval core shipped — hybrid
+  + graph expansion + rerank + cross-graph + metadata filter + boot warmup;
+  HippoRAG/PPR expansion, a GPU `bge-reranker` default, and autonomous ingestion
+  remain future)* Each node body is a piece
   of markdown that evolves with the work, so a long-lived graph
   already functions as a notebook — but today the only way to find
   "the node about X" is to know the gid and `GET` it. Add a search
@@ -1431,7 +1444,7 @@ Completion checklist — the detailed entries below carry the full context.
     concepts. Get recall@50 solid *before* layering the reranker — a
     reranker can only reorder what retrieval already found (it can't fix a
     retrieval miss; **graph expansion** can). Rerank is **off by default** for
-    our flows (see *How search is used* above); graph expansion is the
+    our flows (see *How search is used* below); graph expansion is the
     higher-value next layer.
   - **Storage (Postgres-native — free + self-hostable).**
     - **Dense:** `pgvector` (HNSW). Matches/beats Qdrant/Milvus under ~50M
