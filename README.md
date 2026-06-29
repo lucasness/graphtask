@@ -233,9 +233,11 @@ export GRAPHTASK_BASE_URL="https://graphtask.wafers.live"   # hosted
 # export GRAPHTASK_BASE_URL="https://graphtask.example.com"     # self-hosted
 # export GRAPHTASK_BASE_URL="http://localhost:3000"             # local Docker / npm start
 
-# 4. Mint and export an agent token — REQUIRED on auth-enabled instances.
-#    (The hosted instance always is; Docker/local only if you opted in.)
-#    See "Mint an agent token" below for the mint flow.
+# 4. Mint and export an agent token — recommended on auth-enabled instances
+#    (the hosted one always is). Without it the agent still works, but anonymously:
+#    what it creates isn't tied to your account or shown in your "My graphs"
+#    sidebar. With a token, your work is saved to you. The agent will flag this
+#    and offer to proceed either way. See "Mint an agent token" below.
 export GRAPHTASK_AGENT_TOKEN=gt_...
 
 # 5. Restart Claude Code so the new hooks load, then in any project:
@@ -264,11 +266,14 @@ open it in a browser to watch updates live.
 ### Mint an agent token
 
 If your graphtask instance has `AUTH_PROVIDER=clerk` (the hosted version
-always does; local / Docker setups only if you opted in), the agent
-needs a `gt_*` token to attribute writes to your account. Without one,
-the skill's preflight refuses to run on auth-enabled instances —
-the alternative is silently producing orphan graphs (owner-less,
-invisible in your "My graphs" sidebar).
+always does; local / Docker setups only if you opted in), a `gt_*` token
+attributes the agent's writes to your account. It's **recommended, not
+required**: without one the agent still works, but anonymously — the
+graphs it creates are owner-less (`owner_user_id NULL`) and don't appear
+in your "My graphs" sidebar, reachable only by URL. With a token, your
+work is saved to you. The skill is set up to notice when no token is
+present, tell you this tradeoff, and let you choose — provide a token, or
+go ahead anonymously.
 
 1. **Mint.** Sign in to the app, click the key icon in the sidebar,
    click Generate. The modal shows the `gt_…` string **exactly once** —

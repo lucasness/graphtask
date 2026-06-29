@@ -101,7 +101,11 @@ Three layers in order of strictness. When `auth_enabled: false`, only the third 
 
 Legacy graphs (`owner_user_id IS NULL`, created before Phase B or on a no-auth instance) always behave as URL-bearer regardless of mode.
 
-**Your writes need attribution.** Without an agent token, you look anonymous to the server — fine for `anon_role=editor` graphs, blocked on owned graphs with `anon_role=none`. To attribute writes to a specific user, the user generates a token from the in-app key-icon panel and exports it as `GRAPHTASK_AGENT_TOKEN`. The identity block below picks it up automatically. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
+**Check for a token before your first write — and if there isn't one, say so.** A `gt_` agent token ties everything you create to the user's account. You can absolutely work WITHOUT one — anonymously — and it functions; but graphs you create land with `owner_user_id: null`: not tied to the user, not in their **My graphs** sidebar, governed only by `anon_role`, reachable only by URL. So a successful (`201`) anonymous write is **not** confirmation the work is saved to *them* — it's an orphan graph.
+
+Because of that, **never go anonymous silently.** If `GRAPHTASK_AGENT_TOKEN` is unset on an auth-enabled instance, before your first write tell the user, plainly: *you can keep working anonymously, but a token saves your work to your account (and shows it in your sidebar) — here's how to mint one.* Then let them choose — wait for a token if they want one, or proceed anonymously if they'd rather just get going. Anonymous is a fully supported path; the only rule is that it's the user's **informed** choice, not a default you slid into. (On a no-auth instance there's no token concept — anonymous is the only mode, so no nudge is needed.)
+
+To attribute writes, the user generates a token from the in-app key-icon panel (Settings → Agent tokens) and exports it as `GRAPHTASK_AGENT_TOKEN`; the identity block below picks it up automatically. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
 
 ### Why am I getting 401 / 403?
 
@@ -172,10 +176,11 @@ WRITE_HEADERS=(
 
 # Authed deployments (AUTH_PROVIDER=clerk): the user generates an agent token
 # in the in-app Settings → Agent tokens panel and exports it as
-# GRAPHTASK_AGENT_TOKEN. **Required on auth-enabled instances** — the section 1
-# preflight refuses to proceed without it (anonymous writes would create
-# orphan graphs that don't appear in the user's "My graphs" sidebar). On
-# no-auth deployments the var is unset and the block below is a no-op.
+# GRAPHTASK_AGENT_TOKEN. **Recommended on auth-enabled instances** so your work
+# is saved to the user's account — without it the §1 check tells the user the
+# tradeoff and lets them choose (anonymous still works; it just creates orphan
+# graphs not in their "My graphs" sidebar). On no-auth deployments the var is
+# unset and the block below is a no-op.
 if [ -n "$GRAPHTASK_AGENT_TOKEN" ]; then
   WRITE_HEADERS+=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
   READ_HEADERS=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
@@ -250,20 +255,27 @@ CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
   exit 1
 }
 
-# Auth gate: on auth-enabled instances, refuse to proceed without a token.
-# Anonymous agent writes create orphan graphs (owner_user_id NULL) that won't
-# appear in the user's "My graphs" sidebar — fail loud, not silent.
+# Token check (auth-enabled instances): a token saves what you create to the
+# user's account. WITHOUT one you can still work — anonymously — but the graph
+# lands with owner_user_id NULL: not in their "My graphs" sidebar, reachable
+# only by URL. Anonymous is allowed; the rule is just DON'T slide into it
+# silently. If there's no token, surface the message below to the user and
+# RECOMMEND minting one, then let them decide (provide a token, or say "go ahead
+# anonymously"). Do NOT exit — anonymous is a supported path, not an error.
 AUTH_ENABLED=$(echo "$CONFIG" | jq -r .auth_enabled)
 if [ "$AUTH_ENABLED" = "true" ] && [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
   cat >&2 <<EOF
-graphtask at $GT_BASE has auth enabled; GRAPHTASK_AGENT_TOKEN is required.
-Open the in-app Agent tokens panel (key icon), generate a token, then persist it
-via whichever env mechanism your project uses, e.g.:
-  export GRAPHTASK_AGENT_TOKEN=gt_...        # this shell only
-  echo GRAPHTASK_AGENT_TOKEN=gt_... >> ~/.zshrc   # all future shells
-Then re-run.
+No GRAPHTASK_AGENT_TOKEN set — I can work anonymously, but anything I create
+won't be saved to your account (it won't show in your "My graphs" sidebar and is
+reachable only by its URL). To save your work to your account, mint a token:
+  • open $GT_BASE → sign in → Settings (Cmd/Ctrl+K) → Agent tokens → generate
+  • export GRAPHTASK_AGENT_TOKEN=gt_...          # this shell
+  • echo GRAPHTASK_AGENT_TOKEN=gt_... >> ~/.zshrc    # future shells
+Then I'll pick it up automatically. Or tell me to go ahead anonymously.
 EOF
-  exit 1
+  # Relay the above to the user in your own words and recommend a token. Then
+  # continue per their choice — anonymous writes below are fine once they've
+  # knowingly opted in (or if they're not reachable to answer).
 fi
 
 mkdir -p .graphtask
@@ -1027,7 +1039,7 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
 3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.wafers.live`. Self-hosted: `export GRAPHTASK_BASE_URL=https://graphtask.example.com`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`. The agent uses this for both API calls AND the URL it prints to the user — so it must be reachable from the user's browser, not just the agent.
-4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **required**, not optional) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). The section 1 preflight will refuse to run without it on auth-enabled instances, so this is a blocker if missed.
+4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **recommended** so the user's work is saved to their account) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). Without it the agent still works anonymously, but creates orphan graphs not tied to their account — so the section 1 check surfaces the tradeoff and lets them choose; it does not hard-block.
 
 If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
 
