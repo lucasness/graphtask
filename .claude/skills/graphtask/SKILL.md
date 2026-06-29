@@ -1,7 +1,7 @@
 ---
 name: graphtask
 description: Build any structured artifact as a live graph of markdown nodes connected by typed edges — execution plans, research and concept maps, relationship networks, decision trees, personal planning (medical treatment, physical therapy, training regimens, career paths), or whatever shape the user invents next. Nodes hold markdown bodies with status (todo → in_progress → review → done); edges are dependency (DAG, cycle-checked) or related (free-form). The browser canvas updates live so the user watches the work form. Includes status-aware traversal (ready/blockers/unblocks), transactional bulk edges, presence + selection so humans see your focus, and OCC merges that protect UI-managed fields.
-when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked", "what does my graph say about X", "how are X and Y connected". Once a graph exists it also doubles as a queryable knowledge base — answer those by searching it and traversing its links (section 5), not by guessing. Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
+when_to_use: Reach for this whenever the work has structure worth seeing — multi-step plans, research with interconnected concepts, mapping relationships between people/orgs/systems/processes, decision trees, anything where dependencies or connections matter more than a flat list. Strong triggers: exiting Plan mode, "turn this plan into a graph", "track this in graphtask", "map the relationships between X", "research how Y works and show the connections", "show me the structure of Z", "build a concept graph of W", "what's ready / what's blocking X / what gets unblocked", "what does my graph say about X", "how are X and Y connected". Once a graph exists it also doubles as a queryable knowledge base — answer those by searching it and traversing its links (section 6), not by guessing. Don't force it on one-step work. Once a graph is active for a body of work, every status change, finding, and new connection MUST go into the graph in real time — an out-of-sync graph is worse than no graph.
 allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *) Bash(cat *) Bash(git config *) Workflow Agent
 ---
 
@@ -10,6 +10,86 @@ allowed-tools: Bash(curl *) Bash(jq *) Bash(mkdir -p *) Bash(grep *) Bash(echo *
 graphtask is a graph workspace — markdown nodes connected by typed edges, on a live canvas anyone can watch. Use it for execution plans, research and concept maps, relationship networks, decision trees, personal planning (medical treatment, physical therapy, training regimens, career paths), or whatever shape the user invents next. The REST API at `$GRAPHTASK_BASE_URL` is the agent surface: create a graph, add tasks (markdown with frontmatter — "task" is the API noun for any node, regardless of graph kind), wire dependency or related edges between them, and update status as work or research progresses. The browser canvas updates **live** via SSE, so a user watching the page sees every change you make in real time.
 
 The user controls where the instance lives (hosted or local) and what `GRAPHTASK_BASE_URL` points at — you don't choose. **Before any other work, probe `GET $GRAPHTASK_BASE_URL/api/config`** — it returns `{auth_enabled, provider, viewer_user_id}` and tells you which access model is active.
+
+## When this skill applies
+
+### Why a graph beats a flat plan or notes
+
+When the work has any structure, **propose the graph** — and tell the user why if they haven't asked:
+
+- **Dependencies are visible.** What blocks what is a glance, not a paragraph. The server answers "what's ready" / "what's blocking X" / "what does finishing Y unlock" so neither of you has to reason about ordering by hand.
+- **The structure is the artifact.** For research, mapping, and concept work, the graph itself is the deliverable the user keeps. Prose gets buried; a graph stays explorable.
+- **Live two-way collaboration.** Humans watching the canvas see nodes appear, status flip, edges connect — and can rename, rewire, or add without breaking your flow. A flat plan can't offer that.
+- **Persistent, living context.** Each node body is a document that evolves with the work. A week later the graph still reflects current understanding, not a snapshot.
+- **Traversal queries.** "Critical path." "What's unexplored." "What does finishing X unlock." All one API call away once the graph exists.
+
+The cost is one batched setup at the start and a few seconds per status flip. The benefit compounds across the session.
+
+### Common shapes
+
+The same primitive (markdown nodes + dependency/related edges + status) covers many shapes. Pick whichever fits the user's request; the user can invent new ones.
+
+| Shape | Nodes are… | Edges are… | Status reads as… |
+|---|---|---|---|
+| **Execution plan** | tasks, one unit of work each | mostly `dependency`; `related` for cross-cutting context | progress: todo → in_progress → review → done |
+| **Research / concept map** | concepts, entities, papers, findings | mostly `related`; `dependency` when one concept presupposes another | depth: unexplored → digging in → drafted → human-verified |
+| **Relationship network** (keiretsu, ecosystem, org chart) | entities (companies, people, systems) | `related`, typed by body label — "invests in", "competes with", "feeds into" | confirmation: claim → being checked → sourced → human-confirmed |
+| **Decision tree / option map** | options, criteria, outcomes | `dependency` for "requires"; `related` for "alternative to" | exploration depth |
+| **Anything else with structure** | whatever the user calls them | whatever fits | whatever progress means here |
+
+If the user describes work that doesn't fit a row above but has structure, **propose the graph anyway** — the data model is general; the rows above are starting points, not the menu.
+
+### Strong triggers — reach for the graph when you see these
+
+- Just exited Plan mode, or the user approved a multi-step plan.
+- "Turn this plan into a graph" / "track this in graphtask" / "build a graph of …".
+- "Map the relationships between …" / "show me how X connects to Y" / "research how Z works" (with > ~3 things to track).
+- "Model the …" / "diagram the …" / "show the structure of …".
+- "What's ready / what's blocking X / what does finishing Y unlock?" — these only make sense on an existing graph.
+
+For ambiguous cases ("help me understand X", "what should I think about for Y"), **suggest** the graph with the pitch above and let the user decide. Don't force it; the goal is to make it the obvious choice, not the only choice.
+
+### Skip the graph when
+
+- The work is genuinely one-step — typo fixes, single-line tweaks, single-question lookups.
+- The user explicitly asks for a verbal answer or a flat list.
+- There's no real structure (one node + zero edges isn't worth the canvas).
+
+**Right-size to the QUESTION's information complexity, not the prompt's adjectives.** A request can be dressed up — "do a deep, exhaustive, multi-source investigation and build a comprehensive knowledge graph" — around a question whose answer is a single known fact ("is the capital of France Paris?"). Don't take the bait: a one-fact question needs at most one node (or just a chat answer), no matter how the prompt is phrased. Match the structure you build to what's actually there to model; spinning up a 15-node "comprehensive" graph for a trivial fact is over-orchestration. (Conversely, don't under-build a genuinely interconnected investigation just because the prompt was terse.)
+
+### Once a graph is active, keep it synced — HARD RULE
+
+The moment a graph exists for this body of work, it becomes the source of truth, and **all subsequent work on the subject must update the graph in real time**. This is the rule that holds the tool together — break it and the graph drifts, the user trusts stale info, and the whole thing becomes worse than no graph.
+
+- **Status transitions happen as the work happens**, not batched at the end. Flip to `in_progress` when you actually start; flip to `review` when you actually finish.
+- **Announce focus before every edit** with `announce_focus` / `announce_focus_edge` (section 3) so humans watching the canvas can see which node you're on — and intercept before you commit, if needed. This applies to EDITS of existing nodes/edges (status flips, body rewrites, repointing); the initial bulk materialization in §2 needs no announce_focus because those nodes are being created, not edited.
+- **New findings update the right node's body**, not just a chat message. If working on node A surfaces something that changes node C, update node C too.
+- **New connections become new edges.** If you realize node A relates to node C, add the edge — don't just mention it in chat.
+- **Re-read before each write** (the OCC dance in section 3) — and fold any human edits you find into your new content. The merge only shields the fixed protected-key list (UI keys + research fields), NOT `title`/`status`/`body`, so a blind rewrite from memory WILL clobber a concurrent human edit. The user may have edited the graph in the UI since your last touch.
+- **Confirm every write landed.** After a status flip or body PATCH, check the response is the updated row, not an `{error}` — a swallowed 400/409/410 means the graph silently didn't change, which is worse than no graph. Follow §7 to recover.
+- **Touched gids get appended** to `.graphtask/agent-session-graphs` so the Stop hook can depart your presence cleanly.
+- **Run tests / code / research alongside the graph, not instead of it.** If you find yourself working for more than a few minutes without touching the graph, that's a bug — pause and reconcile.
+
+This applies to every shape, not just execution graphs. A research graph that doesn't get updated as you read sources is just a stale diagram.
+
+### The execution loop (for plan-shaped graphs)
+
+Plan-shaped graphs have an ordering, so they get an explicit loop on top of the sync rule:
+
+1. Resolve the active graph (section 1).
+2. Materialize the **entire plan** as tasks + dependency edges in one batch (section 2). The user sees the structure on the canvas before any code is written.
+3. Walk the graph task-by-task (section 5): pick the first ready task, check its blockers (section 3), announce focus, mark `in_progress`, do the work, mark `review` when finished, move on.
+4. After every task is in `review`, stop and tell the user it's ready to confirm.
+
+Don't dive into implementation, then "remember" to make a graph after — the user wants to watch the structure appear *before* work starts, then watch each task light up as you progress.
+
+For research / mapping / freeform graphs, the loop is looser: explore → add nodes → connect → refine → repeat, with the same sync discipline above. There's no enforced ordering and no "stop at review" gate — the graph keeps growing until the user says it's complete.
+
+**Other quick queries** (any graph shape):
+
+- *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize.
+- *"What can I work on next?"* — `GET /tasks/ready` (it already returns open questions — see [§5](#5-status-aware-traversal-find-what-to-work-on-next-whats-blocking-what-gets-unblocked) for the exact predicate). If you fall back to `GET /tasks/leaves` (any graph), filter the SAME way — `status==todo` AND no `confidence` (`jq 'select(.meta.status=="todo" and (.meta.confidence|not))'`) — so confidence-bearing findings sitting at todo don't surface as work to do.
+- *"Mark X done"* / *"Finish X"* — you move it to `review`. Only flip to `done` if the user explicitly says so for *that* node. See section 3.
 
 ## Access model
 
@@ -135,91 +215,20 @@ grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .
 
 See [Presence lifecycle](#presence-lifecycle) below for how your avatar gets cleaned up between turns.
 
+## Presence lifecycle
+
+Your writes drop `🤖 <operator>'s Claude` into the canvas avatar bar (the operator = the token owner on authed instances; see [Agent identity](#agent-identity-do-this-once-per-session)). Two things can clear it:
+
+- **Claude Code lifecycle hooks** (set up at install time, outside this skill): a `Stop` hook departs your presence on every graph you've touched at the end of each turn, and `SessionStart` clears stale identity files. With hooks installed, the avatar blinks in on your first write and out the moment you finish responding.
+- **Server-side idle reaper** — sweeps inactive presence after ~30 minutes. The safety net if hooks aren't installed or a session ends ungracefully.
+
+You don't manage the hooks yourself. The thing you DO need to do — keep doing — is appending touched gids to `.graphtask/agent-session-graphs` after every write so the hook (if present) knows which graphs to depart from.
+
 ## Listing graphs and naming
 
 `GET /api/graphs` returns the graphs the **current authenticated viewer** can see (owned + member-of). On a no-auth instance it returns `[]` — there is no signed-in viewer to scope to, so nothing is listed; legacy un-owned graphs stay reachable only by their id/URL. It is not a public directory; private graphs only reachable by id stay reachable by id.
 
 Graph names are not globally unique — duplicate-name `POST` and `PATCH` both succeed (200/201). Don't expect 409 on name conflicts.
-
-## When this skill applies
-
-### Why a graph beats a flat plan or notes
-
-When the work has any structure, **propose the graph** — and tell the user why if they haven't asked:
-
-- **Dependencies are visible.** What blocks what is a glance, not a paragraph. The server answers "what's ready" / "what's blocking X" / "what does finishing Y unlock" so neither of you has to reason about ordering by hand.
-- **The structure is the artifact.** For research, mapping, and concept work, the graph itself is the deliverable the user keeps. Prose gets buried; a graph stays explorable.
-- **Live two-way collaboration.** Humans watching the canvas see nodes appear, status flip, edges connect — and can rename, rewire, or add without breaking your flow. A flat plan can't offer that.
-- **Persistent, living context.** Each node body is a document that evolves with the work. A week later the graph still reflects current understanding, not a snapshot.
-- **Traversal queries.** "Critical path." "What's unexplored." "What does finishing X unlock." All one API call away once the graph exists.
-
-The cost is one batched setup at the start and a few seconds per status flip. The benefit compounds across the session.
-
-### Common shapes
-
-The same primitive (markdown nodes + dependency/related edges + status) covers many shapes. Pick whichever fits the user's request; the user can invent new ones.
-
-| Shape | Nodes are… | Edges are… | Status reads as… |
-|---|---|---|---|
-| **Execution plan** | tasks, one unit of work each | mostly `dependency`; `related` for cross-cutting context | progress: todo → in_progress → review → done |
-| **Research / concept map** | concepts, entities, papers, findings | mostly `related`; `dependency` when one concept presupposes another | depth: unexplored → digging in → drafted → human-verified |
-| **Relationship network** (keiretsu, ecosystem, org chart) | entities (companies, people, systems) | `related`, typed by body label — "invests in", "competes with", "feeds into" | confirmation: claim → being checked → sourced → human-confirmed |
-| **Decision tree / option map** | options, criteria, outcomes | `dependency` for "requires"; `related` for "alternative to" | exploration depth |
-| **Anything else with structure** | whatever the user calls them | whatever fits | whatever progress means here |
-
-If the user describes work that doesn't fit a row above but has structure, **propose the graph anyway** — the data model is general; the rows above are starting points, not the menu.
-
-### Strong triggers — reach for the graph when you see these
-
-- Just exited Plan mode, or the user approved a multi-step plan.
-- "Turn this plan into a graph" / "track this in graphtask" / "build a graph of …".
-- "Map the relationships between …" / "show me how X connects to Y" / "research how Z works" (with > ~3 things to track).
-- "Model the …" / "diagram the …" / "show the structure of …".
-- "What's ready / what's blocking X / what does finishing Y unlock?" — these only make sense on an existing graph.
-
-For ambiguous cases ("help me understand X", "what should I think about for Y"), **suggest** the graph with the pitch above and let the user decide. Don't force it; the goal is to make it the obvious choice, not the only choice.
-
-### Skip the graph when
-
-- The work is genuinely one-step — typo fixes, single-line tweaks, single-question lookups.
-- The user explicitly asks for a verbal answer or a flat list.
-- There's no real structure (one node + zero edges isn't worth the canvas).
-
-**Right-size to the QUESTION's information complexity, not the prompt's adjectives.** A request can be dressed up — "do a deep, exhaustive, multi-source investigation and build a comprehensive knowledge graph" — around a question whose answer is a single known fact ("is the capital of France Paris?"). Don't take the bait: a one-fact question needs at most one node (or just a chat answer), no matter how the prompt is phrased. Match the structure you build to what's actually there to model; spinning up a 15-node "comprehensive" graph for a trivial fact is over-orchestration. (Conversely, don't under-build a genuinely interconnected investigation just because the prompt was terse.)
-
-### Once a graph is active, keep it synced — HARD RULE
-
-The moment a graph exists for this body of work, it becomes the source of truth, and **all subsequent work on the subject must update the graph in real time**. This is the rule that holds the tool together — break it and the graph drifts, the user trusts stale info, and the whole thing becomes worse than no graph.
-
-- **Status transitions happen as the work happens**, not batched at the end. Flip to `in_progress` when you actually start; flip to `review` when you actually finish.
-- **Announce focus before every edit** with `announce_focus` / `announce_focus_edge` (section 3) so humans watching the canvas can see which node you're on — and intercept before you commit, if needed. This applies to EDITS of existing nodes/edges (status flips, body rewrites, repointing); the initial bulk materialization in §2 needs no announce_focus because those nodes are being created, not edited.
-- **New findings update the right node's body**, not just a chat message. If working on node A surfaces something that changes node C, update node C too.
-- **New connections become new edges.** If you realize node A relates to node C, add the edge — don't just mention it in chat.
-- **Re-read before each write** (the OCC dance in section 3) — and fold any human edits you find into your new content. The merge only shields the fixed protected-key list (UI keys + research fields), NOT `title`/`status`/`body`, so a blind rewrite from memory WILL clobber a concurrent human edit. The user may have edited the graph in the UI since your last touch.
-- **Confirm every write landed.** After a status flip or body PATCH, check the response is the updated row, not an `{error}` — a swallowed 400/409/410 means the graph silently didn't change, which is worse than no graph. Follow §7 to recover.
-- **Touched gids get appended** to `.graphtask/agent-session-graphs` so the Stop hook can depart your presence cleanly.
-- **Run tests / code / research alongside the graph, not instead of it.** If you find yourself working for more than a few minutes without touching the graph, that's a bug — pause and reconcile.
-
-This applies to every shape, not just execution graphs. A research graph that doesn't get updated as you read sources is just a stale diagram.
-
-### The execution loop (for plan-shaped graphs)
-
-Plan-shaped graphs have an ordering, so they get an explicit loop on top of the sync rule:
-
-1. Resolve the active graph (section 1).
-2. Materialize the **entire plan** as tasks + dependency edges in one batch (section 2). The user sees the structure on the canvas before any code is written.
-3. Walk the graph task-by-task (section 4): pick the first ready task, check its blockers (section 3), announce focus, mark `in_progress`, do the work, mark `review` when finished, move on.
-4. After every task is in `review`, stop and tell the user it's ready to confirm.
-
-Don't dive into implementation, then "remember" to make a graph after — the user wants to watch the structure appear *before* work starts, then watch each task light up as you progress.
-
-For research / mapping / freeform graphs, the loop is looser: explore → add nodes → connect → refine → repeat, with the same sync discipline above. There's no enforced ordering and no "stop at review" gate — the graph keeps growing until the user says it's complete.
-
-**Other quick queries** (any graph shape):
-
-- *"What's blocking X?"* — `GET /tasks/<X>/blockers` and summarize.
-- *"What can I work on next?"* — `GET /tasks/ready` (it already returns open questions: `status=todo`, no `confidence`, all prereqs done). If you fall back to `GET /tasks/leaves` (any graph), filter the SAME way — `status==todo` AND no `confidence` (`jq 'select(.meta.status=="todo" and (.meta.confidence|not))'`) — so confidence-bearing findings sitting at todo don't surface as work to do.
-- *"Mark X done"* / *"Finish X"* — you move it to `review`. Only flip to `done` if the user explicitly says so for *that* node. See section 3.
 
 ## 1. Resolve the active graph
 
@@ -277,6 +286,56 @@ grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .
 
 If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/rotate-id` to invalidate it and update the local file with the new id from the response.
 
+## The universal schema (E15)
+
+graphtask's one primitive — markdown nodes + edges + status — carries a small, server-typed vocabulary so the SAME graph serves execution plans AND deep research. Everything here is ADDITIVE and OPTIONAL: a plain task graph that never sets these fields behaves exactly as before. There is no separate "research mode" — research is just an application of this one schema.
+
+### Edge `purpose` — the field you set on every edge
+
+Each edge carries a `purpose` (the relationship it encodes, directed source → target). `purpose` is canonical; the server DERIVES a structural `type` from it and emits both:
+
+| `purpose` | meaning (source → target) | derived `type` |
+|---|---|---|
+| `required for` | source is a **prerequisite** of target (the old `dependency`) | `dependency` — DAG, cycle-checked, walked by ready/blockers/unblocks (§5) |
+| `supports` | source is **evidence FOR** target | `related` |
+| `contradicts` | source is **evidence AGAINST** target | `related` |
+| `related to` | loose association (the **default**) | `related` |
+
+- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the only edge *relationship* field you send (the server also accepts `meta` for edge `color`/`curve`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input. `POST /edges`, `/edges/bulk`, and `/batch` reject a write with no `purpose`; `PATCH /edges/:id` treats an omitted `purpose` as "keep the existing relationship".
+- ONLY `required for` is cycle-checked and traversed by §5's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
+
+### Node reserved fields (frontmatter `meta`)
+
+All optional, validated only WHEN PRESENT — no migration (they live in `meta`):
+
+| field | type | meaning |
+|---|---|---|
+| `type` | open string (≤40) | node kind. Absent = a work/knowledge node. `reference` is the one server-recognized value — an external citation/source. |
+| `significance` | number 0.0–1.0 (one-decimal convention) | how much this node matters. UNIVERSAL (plans + research). |
+| `confidence` | number 0.0–1.0 (one-decimal) | how sure we are (a finding) / source reliability (a `reference`). Research-tier. |
+| `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked. Distinct from the automatic `updated_at`. Research-tier. |
+
+These survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`).
+
+### Role predicates (derived, never stored)
+- **claim** = `confidence` set AND `type` ≠ `reference` — a node that ASSERTS something, with a sureness.
+- **open question** = `status: todo` AND no `confidence` — an unanswered question.
+- **reference** = `type: reference` — an external source.
+
+### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
+- **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error. To remove a `confidence` value set by mistake you must send `confidence: null` — omitting it preserves the old value (merge protection), so the node stays hidden from `/ready`. Same for clearing a stale `verified_at`.
+- **A finding is born at `review` (or `done`), never `todo`.** `todo` means "open question, not yet answered" — that's what `/ready` hands back as work to do. The instant you record a finding (you set `confidence`), give it a real status: `review` for a first-pass claim awaiting human confirmation, `done` only on explicit human say-so, and a `type: reference` source is `done` once located. Leaving a confidence-bearing node at `todo` is the same category error as the bullet above — and `/ready` filters such nodes out, so a finding stuck at `todo` silently goes missing from BOTH the work queue and the answered-knowledge view.
+- **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
+- **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes.
+- **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
+- **Findings are SEPARATE nodes**, never prose embedded in a question's body — so each finding carries its own `confidence`/`verified_at` and retrieval/filtering is per-finding and token-efficient.
+- **Completeness of retrieval FIRST, scrutinize confidence LATER.** Build the full picture, then filter by confidence at READ time — don't drop low-confidence nodes while building.
+- **Filters choose what to SHOW / SEED, never what to TRAVERSE.** Read-time filters (see [Read-side queries](#read-side-queries-e15-filters-frontier-inconsistency)) apply at the output; on `/context` a low-confidence node bridging two matching nodes is KEPT and marked `bridge:true` so connectivity stays honest.
+
+### Completion gates — run BOTH after finishing graph work
+1. **Stop at `review`, never set `done`** (§3) — `done` is the human's call.
+2. **Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
+
 ## 2. Build the graph
 
 **Materialize what you already know up front.** The graph is the artifact the user reviews — they want to see structure on the canvas, not get nodes one at a time. For plan-shaped graphs, lay down the **entire DAG** before starting the first task. For research / mapping / freeform graphs, lay down the **starting nodes and connections you already know about**, then grow the graph as you learn.
@@ -285,7 +344,7 @@ If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/r
 
 For each node, write a real markdown body — title alone is never enough. The body is what the human sees when reviewing or exploring. See section 3 for what to put in the body at each status.
 
-The example below is plan-shaped (`required for` edges for ordering). For a research / mapping shape, swap `"purpose":"required for"` for `"purpose":"related to"` (or `supports`/`contradicts` for evidence relations) and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape. (See "The universal schema (E15)" for the full `purpose` vocabulary.)
+The example below is plan-shaped (`required for` edges for ordering). For a research / mapping shape, swap `"purpose":"required for"` for `"purpose":"related to"` (or `supports`/`contradicts` for evidence relations) and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape. (See [The universal schema (E15)](#the-universal-schema-e15) for the full `purpose` vocabulary.)
 
 ```bash
 # Tasks. Body content tells the user what you intend to do, in plain markdown.
@@ -316,7 +375,7 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
 
 ### Write-side structure — author a graph that stays navigable
 
-§5 below is the READ side (how to pull context out of a graph). These four rules are the WRITE side — how to author nodes and edges so the graph is a faithful, navigable map. They matter because **write-time structure determines read quality**: the connections you author are exactly what lets a reader (or the retriever's traversal) reach a related node two hops away. A/B-validated on fresh build agents — each rule helped or was neutral, none regressed, and together they lifted blind multi-hop answer quality and cut "I can't answer from this" responses ~5× while keeping the graph *leaner*, not denser.
+§6 below is the READ side (how to pull context out of a graph). These four rules are the WRITE side — how to author nodes and edges so the graph is a faithful, navigable map. They matter because **write-time structure determines read quality**: the connections you author are exactly what lets a reader (or the retriever's traversal) reach a related node two hops away. A/B-validated on fresh build agents — each rule helped or was neutral, none regressed, and together they lifted blind multi-hop answer quality and cut "I can't answer from this" responses ~5× while keeping the graph *leaner*, not denser.
 
 1. **Author the connective tissue.** When two parts of the graph relate only *through* an intermediate concept, create that intermediate as its own **bridge node** and wire the cross-cluster `related` edges to it — rather than leaving the two ends unconnected, or faking a direct A–B edge. Bridge nodes carry the multi-hop payload: B is reached from A by stepping through the bridge. When you add or revise a node, ask *"what does this connect to that isn't already linked — and is there a missing middle concept between them?"* and model the real intermediate. A graph that only links the obvious near-neighbors loses exactly the cross-region connections that make it worth more than a flat list.
 
@@ -353,7 +412,7 @@ If `BLOCKERS > 0`, **do not start the task.** Pause and tell the user the task i
 
 Only proceed if (a) blockers is zero, or (b) the user explicitly OKs starting while blocked. Don't rely on what you remember from when you first laid out the graph — the user may have deleted, retitled, or rearranged tasks since.
 
-For readiness queries (section 4), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
+For readiness queries (section 5), `review` and `in_progress` count as not-yet-done — downstream tasks won't be classified as ready until every prerequisite is `done`.
 
 PATCH replaces the entire `content` blob (frontmatter + body). The OCC pattern below is the **only safe way to update a task**: GET first, capture `version` + `content`, then PATCH with those as `base_version` + `base_content`. The server's three-way merge then preserves any UI-managed keys (`x`/`y` positions, `color`, `background-image`) that aren't in your new content — but it does NOT shield `title`/`status`/`body`, so base your new content on what you just GET-ed, not on memory.
 
@@ -467,7 +526,7 @@ EOF
 )"
 ```
 
-Notice the PATCH body has no `x`/`y`, `color`, or `background-image` keys, but the user's drag positions, color tweaks, and chosen node image will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`, `background-image`, plus the E15 research fields `significance`, `confidence`, `verified_at` (see 'Node reserved fields' below). Edge protections: `meta.color`, `meta.curve`.
+Notice the PATCH body has no `x`/`y`, `color`, or `background-image` keys, but the user's drag positions, color tweaks, and chosen node image will survive. The server's mergeFields treats those keys as **protected from agent removal** — when the writer is an agent and the new content omits one of them, the merge preserves the current value rather than reading the omission as "remove this key". Task protections: `x`, `y`, `color`, `background-image`, plus the E15 research fields `significance`, `confidence`, `verified_at` (see 'Node reserved fields' above). Edge protections: `meta.color`, `meta.curve`.
 
 This protection only covers that fixed list. Custom frontmatter keys you drop from a rewritten content blob are still treated as removals — if you want them to survive across PATCHes, include them yourself (read existing frontmatter from `base_content`, splice in your changes, send the merged blob).
 
@@ -477,59 +536,30 @@ This protection only covers that fixed list. Custom frontmatter keys you drop fr
 
 **After everything is in `review`, stop.** Summarize in chat what you submitted and let the user review on the canvas. Don't poll the graph waiting for the human to mark things `done` — they'll use the UI. Your job ends at `review`.
 
-## The universal schema (E15): typed edges + typed node fields
+## 4. Update edge purpose or endpoints
 
-graphtask's one primitive — markdown nodes + edges + status — carries a small, server-typed vocabulary so the SAME graph serves execution plans AND deep research. Everything here is ADDITIVE and OPTIONAL: a plain task graph that never sets these fields behaves exactly as before. There is no separate "research mode" — research is just an application of this one schema.
+Change an edge's `purpose` (e.g. `related to` → `supports`, or into/out of `required for`), or repoint it to a different source/target. The server re-derives `type` from the new `purpose`; cycle detection re-runs whenever the result is `required for` (derived `dependency`). See [The universal schema (E15)](#the-universal-schema-e15) for the `purpose` vocabulary.
 
-### Edge `purpose` — the field you set on every edge
+**Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
 
-Each edge carries a `purpose` (the relationship it encodes, directed source → target). `purpose` is canonical; the server DERIVES a structural `type` from it and emits both:
+Same OCC rule as tasks (see [§3](#3-status-discipline-and-node-body-content)): GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge. There is no single-edge GET route — fetch the edge by filtering the edge list (`GET /api/graphs/$GID/edges`), which returns full edge rows (`source_id`, `target_id`, `purpose`, `meta`, `version`) suitable for `base_row`.
 
-| `purpose` | meaning (source → target) | derived `type` |
-|---|---|---|
-| `required for` | source is a **prerequisite** of target (the old `dependency`) | `dependency` — DAG, cycle-checked, walked by ready/blockers/unblocks (§4) |
-| `supports` | source is **evidence FOR** target | `related` |
-| `contradicts` | source is **evidence AGAINST** target | `related` |
-| `related to` | loose association (the **default**) | `related` |
+```bash
+announce_focus_edge "$EID"
+CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges" | jq --argjson id "$EID" '.[] | select(.id==$id)')
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
+  "${WRITE_HEADERS[@]}" \
+  -d "$(jq -nc \
+    --argjson v "$(echo "$CUR" | jq .version)" \
+    --argjson r "$CUR" \
+    '{purpose: "supports", base_version: $v, base_row: $r}')"
+```
 
-- Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the only edge *relationship* field you send (the server also accepts `meta` for edge `color`/`curve`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input. `POST /edges`, `/edges/bulk`, and `/batch` reject a write with no `purpose`; `PATCH /edges/:id` treats an omitted `purpose` as "keep the existing relationship".
-- ONLY `required for` is cycle-checked and traversed by §4's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
+(Edges use `base_row` instead of `base_content` because they have structured fields, not a content blob.)
 
-### Node reserved fields (frontmatter `meta`)
+## 5. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
 
-All optional, validated only WHEN PRESENT — no migration (they live in `meta`):
-
-| field | type | meaning |
-|---|---|---|
-| `type` | open string (≤40) | node kind. Absent = a work/knowledge node. `reference` is the one server-recognized value — an external citation/source. |
-| `significance` | number 0.0–1.0 (one-decimal convention) | how much this node matters. UNIVERSAL (plans + research). |
-| `confidence` | number 0.0–1.0 (one-decimal) | how sure we are (a finding) / source reliability (a `reference`). Research-tier. |
-| `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked. Distinct from the automatic `updated_at`. Research-tier. |
-
-These survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`).
-
-### Role predicates (derived, never stored)
-- **claim** = `confidence` set AND `type` ≠ `reference` — a node that ASSERTS something, with a sureness.
-- **open question** = `status: todo` AND no `confidence` — an unanswered question.
-- **reference** = `type: reference` — an external source.
-
-### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
-- **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error. To remove a `confidence` value set by mistake you must send `confidence: null` — omitting it preserves the old value (merge protection), so the node stays hidden from `/ready`. Same for clearing a stale `verified_at`.
-- **A finding is born at `review` (or `done`), never `todo`.** `todo` means "open question, not yet answered" — that's what `/ready` hands back as work to do. The instant you record a finding (you set `confidence`), give it a real status: `review` for a first-pass claim awaiting human confirmation, `done` only on explicit human say-so, and a `type: reference` source is `done` once located. Leaving a confidence-bearing node at `todo` is the same category error as the bullet above — and `/ready` filters such nodes out, so a finding stuck at `todo` silently goes missing from BOTH the work queue and the answered-knowledge view.
-- **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
-- **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes.
-- **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
-- **Findings are SEPARATE nodes**, never prose embedded in a question's body — so each finding carries its own `confidence`/`verified_at` and retrieval/filtering is per-finding and token-efficient.
-- **Completeness of retrieval FIRST, scrutinize confidence LATER.** Build the full picture, then filter by confidence at READ time — don't drop low-confidence nodes while building.
-- **Filters choose what to SHOW / SEED, never what to TRAVERSE.** Read-time filters (see "Read-side queries") apply at the output; on `/context` a low-confidence node bridging two matching nodes is KEPT and marked `bridge:true` so connectivity stays honest.
-
-### Completion gates — run BOTH after finishing graph work
-1. **Stop at `review`, never set `done`** (§3) — `done` is the human's call.
-2. **Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
-
-## 4. Status-aware traversal (find what to work on next, what's blocking, what gets unblocked)
-
-These queries are most natural on plan-shaped graphs where ordering matters. The **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs that use `dependency` edges — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done." **All of these follow `dependency` edges only — none traverse `related` links.** To navigate a knowledge-base graph wired with `related` edges (search → follow links), see *Search + traversal: the graph as a knowledge base* at the end of section 5.
+These queries are most natural on plan-shaped graphs where ordering matters. The **structural** ones (`subtasks`, `ancestors`, `shortest-path`, `leaves`) also work on research / mapping graphs that use `dependency` edges — useful for "what concepts does this finding rest on?" or "what's the chain from entity A to entity B?". The **status-aware** ones (`ready`, `blockers`, `unblocks`) only make sense if the graph has an ordering and a notion of "done." **All of these follow `dependency` edges only — none traverse `related` links.** To navigate a knowledge-base graph wired with `related` edges (search → follow links), see [*Search + traversal: the graph as a knowledge base*](#search--traversal-the-graph-as-a-knowledge-base) in §6.
 
 The server does the recursion — never compute readiness yourself. All three status-aware queries treat `review` and `in_progress` as "not yet done" so a downstream task only becomes ready when every prerequisite is `done`.
 
@@ -574,7 +604,7 @@ for id in $REVIEW_IDS; do
 done
 ```
 
-## 5. Search the graph (find / "what does the graph say about X")
+## 6. Search the graph (find / "what does the graph say about X")
 
 When the user asks a **content** question about the graph — "find the node about X", "what does the graph say about Y", "which task covers Z" — don't grep node bodies or answer from memory. Call the search endpoint, then rerank and synthesize from the candidates yourself. `POST /api/graphs/:gid/search` runs the exact hybrid pipeline the browser search box uses (BM25 lexical + dense vectors → RRF, plus 1-hop graph expansion) and returns a ranked candidate list.
 
@@ -633,7 +663,59 @@ done
 - *"How are A and B connected?"* → `GET /graph/shortest-path?from=A&to=B` for a **dependency** chain; for a `related`-link path, walk the `/graph` links yourself.
 - *Deep / multi-hop knowledge-base answer* → search for entry points, traverse `related` links a hop or two out, read those bodies, then synthesize — index-then-links, not one-shot retrieval.
 
-**Heads-up:** every section-4 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
+**Heads-up:** every section-5 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
+
+## 7. Error handling
+
+The API uses HTTP status codes meaningfully — handle them, don't paper over them:
+
+- **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
+- **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
+- **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤100), `description` length (≤200), or `status` value.
+- **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
+- **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 9 for valid `settings` shape.
+- **403 on any graph route** — access denied for this caller. See the "Why am I getting 401 / 403?" table near the top to triage by route + verb.
+- **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
+- **409 on a write** — three-way merge fell through (rare; server handles most conflicts silently). Retry once with the `current` row from the 409 body as your new base.
+- **410 on a `PATCH /tasks/:id`** — the task was deleted between your read and write. Refetch `GET /graph` and decide whether to recreate or skip.
+
+## 8. What you must not touch
+
+- `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
+- `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
+- `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See [Images and agent discretion](#images-and-agent-discretion--hard-rules) for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
+- The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
+- The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
+
+## 9. Per-graph appearance settings (do not touch unless asked)
+
+Each graph carries a `settings` JSONB object with optional keys:
+
+| Key | Type | Validation |
+|---|---|---|
+| `font` | string | one of `inter`, `garamond`, `roboto` |
+| `font_color` | string | `^#[0-9A-Fa-f]{6}$` |
+| `bg_color` | string | `^#[0-9A-Fa-f]{6}$` |
+
+Missing keys fall back to the viewer's app-level Defaults. PATCH merges; sending `null` for a key clears it.
+
+```bash
+# Override font + background for this graph
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+  "${WRITE_HEADERS[@]}" \
+  -d '{"settings":{"font":"garamond","bg_color":"#100F0F"}}'
+
+# Clear the per-graph font override (revert to default)
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+  "${WRITE_HEADERS[@]}" \
+  -d '{"settings":{"font":null}}'
+```
+
+Invalid keys/values return 400. There's no `POST /api/graphs/:id/settings` endpoint — `PATCH /api/graphs/:id` with a `settings` field is the only path.
+
+## Reference
+
+Reference material below — consult at point of use, not start to finish. The step sections above link in here by anchor.
 
 ## Read-side queries (E15): filters, frontier, inconsistency
 
@@ -645,7 +727,7 @@ Both accept an optional `filter` — a Mongo/Pinecone-style object over node `me
 
 ```bash
 # High-confidence, non-reference search hits only. Ranking is untouched — the
-# filter just drops non-matching candidates (you still rerank, §5).
+# filter just drops non-matching candidates (you still rerank, §6).
 curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"query":"selenium supply","filter":{"confidence":{"$gte":0.7},"type":{"$ne":"reference"}}}'
 
@@ -686,10 +768,10 @@ Guardrailed (max cycle length / count → `truncated:true`). This IS completion 
 
 ### Agent-side `purpose` traversal
 
-`GET /graph` already emits `purpose` (and derived `type`) on every link, so you can walk SIGNED relations yourself: `supports` / `contradicts` edges into/out of a node N are its evidence / counter-evidence; `required for` edges are its prerequisites (or use §4's status queries, which traverse `required for` server-side). Combine with the search-then-traverse "LLM wiki" move in §5.
+`GET /graph` already emits `purpose` (and derived `type`) on every link, so you can walk SIGNED relations yourself: `supports` / `contradicts` edges into/out of a node N are its evidence / counter-evidence; `required for` edges are its prerequisites (or use §5's status queries, which traverse `required for` server-side). Combine with the search-then-traverse "LLM wiki" move in §6.
 
 ### Which mode for which question
-- *"high-confidence answers about X"* → `/search` with a `confidence` filter, then rerank (§5).
+- *"high-confidence answers about X"* → `/search` with a `confidence` filter, then rerank (§6).
 - *"the neighborhood of X, trustworthy nodes only, without losing connectivity"* → `/context` with a filter (bridges kept).
 - *"what needs re-verifying / what's gone stale"* → `/frontier`.
 - *"does the graph contradict itself / is claim X contested"* → `/inconsistencies` (graph-wide / per-claim).
@@ -783,84 +865,6 @@ Re-running the workflow on the SAME graph next session compounds: the read-KB st
 
 **If the Workflow tool is absent**, degrade to a single-agent sequential loop with the same discipline (read the graph → do the work → write back via the batch endpoint → repeat), just without the fan-out.
 
-## 6. Update edge purpose or endpoints
-
-Change an edge's `purpose` (e.g. `related to` → `supports`, or into/out of `required for`), or repoint it to a different source/target. The server re-derives `type` from the new `purpose`; cycle detection re-runs whenever the result is `required for` (derived `dependency`). See "The universal schema (E15)" above for the `purpose` vocabulary.
-
-**Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
-
-Same OCC rule as tasks: GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge. There is no single-edge GET route — fetch the edge by filtering the edge list (`GET /api/graphs/$GID/edges`), which returns full edge rows (`source_id`, `target_id`, `purpose`, `meta`, `version`) suitable for `base_row`.
-
-```bash
-announce_focus_edge "$EID"
-CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges" | jq --argjson id "$EID" '.[] | select(.id==$id)')
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
-  "${WRITE_HEADERS[@]}" \
-  -d "$(jq -nc \
-    --argjson v "$(echo "$CUR" | jq .version)" \
-    --argjson r "$CUR" \
-    '{purpose: "supports", base_version: $v, base_row: $r}')"
-```
-
-(Edges use `base_row` instead of `base_content` because they have structured fields, not a content blob.)
-
-## 7. Error handling
-
-The API uses HTTP status codes meaningfully — handle them, don't paper over them:
-
-- **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
-- **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
-- **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤100), `description` length (≤200), or `status` value.
-- **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
-- **400 on `PATCH /graphs/:id`** with `unknown settings key` / `font must be one of …` / `… must be a 6-digit hex color` — see section 9 for valid `settings` shape.
-- **403 on any graph route** — access denied for this caller. See the "Why am I getting 401 / 403?" table near the top to triage by route + verb.
-- **404 on a task or edge** — it was likely deleted by the user. Re-fetch `GET /graph` and reconcile your local view; don't assume your cached ids are still valid.
-- **409 on a write** — three-way merge fell through (rare; server handles most conflicts silently). Retry once with the `current` row from the 409 body as your new base.
-- **410 on a `PATCH /tasks/:id`** — the task was deleted between your read and write. Refetch `GET /graph` and decide whether to recreate or skip.
-
-## 8. What you must not touch
-
-- `meta.x` and `meta.y` on tasks — node positions on the canvas. These are persisted whenever the user drags a node; if you omit them from your PATCH body the server's three-way merge keeps them intact (assuming you sent `base_version` + `base_content` per section 3). Don't include `x`/`y` in your frontmatter.
-- `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
-- `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See "Images and agent discretion" below for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
-- The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
-- The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
-
-## Presence lifecycle
-
-Your writes drop `🤖 <operator>'s Claude` into the canvas avatar bar (the operator = the token owner on authed instances; see [Agent identity](#agent-identity-do-this-once-per-session)). Two things can clear it:
-
-- **Claude Code lifecycle hooks** (set up at install time, outside this skill): a `Stop` hook departs your presence on every graph you've touched at the end of each turn, and `SessionStart` clears stale identity files. With hooks installed, the avatar blinks in on your first write and out the moment you finish responding.
-- **Server-side idle reaper** — sweeps inactive presence after ~30 minutes. The safety net if hooks aren't installed or a session ends ungracefully.
-
-You don't manage the hooks yourself. The thing you DO need to do — keep doing — is appending touched gids to `.graphtask/agent-session-graphs` after every write so the hook (if present) knows which graphs to depart from.
-
-## 9. Per-graph appearance settings (do not touch unless asked)
-
-Each graph carries a `settings` JSONB object with optional keys:
-
-| Key | Type | Validation |
-|---|---|---|
-| `font` | string | one of `inter`, `garamond`, `roboto` |
-| `font_color` | string | `^#[0-9A-Fa-f]{6}$` |
-| `bg_color` | string | `^#[0-9A-Fa-f]{6}$` |
-
-Missing keys fall back to the viewer's app-level Defaults. PATCH merges; sending `null` for a key clears it.
-
-```bash
-# Override font + background for this graph
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
-  "${WRITE_HEADERS[@]}" \
-  -d '{"settings":{"font":"garamond","bg_color":"#100F0F"}}'
-
-# Clear the per-graph font override (revert to default)
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
-  "${WRITE_HEADERS[@]}" \
-  -d '{"settings":{"font":null}}'
-```
-
-Invalid keys/values return 400. There's no `POST /api/graphs/:id/settings` endpoint — `PATCH /api/graphs/:id` with a `settings` field is the only path.
-
 ## API reference
 
 All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`GRAPHTASK_BASE_URL` env var, default `http://127.0.0.1:3000`).
@@ -886,25 +890,30 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | PATCH | `/api/graphs/:gid/tasks/:id` | `{content}` — full replace |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to its edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | DAG roots (no incoming dep edges) |
-| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start: status=todo AND no `confidence` (a confidence-bearing node is a claim/finding, not an open question) with all recursive prereqs done |
+| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start — open questions (`status:todo`, no `confidence`) with all recursive prereqs `done`; see [§5](#5-status-aware-traversal-find-what-to-work-on-next-whats-blocking-what-gets-unblocked) for the exact predicate |
 | GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
-| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See "The universal schema (E15)". |
+| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See [The universal schema (E15)](#the-universal-schema-e15). |
 | POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; each edge takes `purpose` (required) |
-| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see "Using graphtask with dynamic workflows". |
+| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see [Using graphtask with dynamic workflows](#using-graphtask-with-dynamic-workflows). |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
-| POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see "Read-side queries (E15)". For content questions, prefer this over grep — see section 5. |
-| POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see "Read-side queries (E15)". |
+| POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). For content questions, prefer this over grep — see [§6](#6-search-the-graph-find--what-does-the-graph-say-about-x). |
+| POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). |
 | POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
 | POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Same body/response, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
+| GET/POST | `/api/graphs/:gid/presence` | Live avatar-bar presence. `POST {id, name, type}` announces/refreshes (204; 400 without `id`); `GET` returns the snapshot. The browser owns this; agents normally let the install-time Stop/SessionStart hooks manage it — see [Presence lifecycle](#presence-lifecycle). **Read-gated.** |
+| DELETE | `/api/graphs/:gid/presence/:writerId` | Idempotent depart (204 even if absent). What the Stop hook calls for each touched gid at end of turn. |
+| GET/POST | `/api/graphs/:gid/selection` | Per-writer focus broadcast (the colored outline + cursor peers see on the canvas). `POST {node_ids, edge_ids, editing, cursor_anchor}` (204; 400 without `X-Writer-Id`) is what `announce_focus`/`announce_focus_edge` (§3) call — one selection per writer, a new POST replaces the prior; `GET` returns the snapshot. **Read-gated** (a viewer may publish their own). |
+| DELETE | `/api/graphs/:gid/selection/:writerId` | Clears that writer's selection; idempotent 204. What `clear_focus` (§3) and end-of-turn cleanup call (`:writerId` = your `AGENT_ID`). |
+| GET/PUT | `/api/graphs/:gid/prefs/me` | Per-(user, graph) camera-follow toggle. `GET` → `{agent_follow}` (null = unset → client default); `PUT {agent_follow: <bool>}` sets it AND your account-wide default. **Signed-in users only — 401 anonymous**; a UI preference, not an agent write. |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`Content-Type: image/png|jpeg|gif|webp|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}`; reference the URL from a task's `background-image` frontmatter to make it render on the canvas. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes; served with the stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
 
@@ -924,7 +933,7 @@ background-image: optional URL string (≤500 chars)   # UI-managed; see below
 free-form markdown body
 ```
 
-Three of the four E15 fields — `significance`, `confidence`, `verified_at` — are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). `type` is validated when present but is NOT merge-protected: a body-rewriting PATCH that omits `type` drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content. See "The universal schema (E15)" for the predicates and conventions.
+Three of the four E15 fields — `significance`, `confidence`, `verified_at` — are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). `type` is validated when present but is NOT merge-protected: a body-rewriting PATCH that omits `type` drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content. See [The universal schema (E15)](#the-universal-schema-e15) for the predicates and conventions.
 
 `background-image` holds a URL into the graph's uploads (e.g.
 `/api/graphs/:gid/uploads/:id`). The canvas renders it inside the node frame
@@ -1005,7 +1014,7 @@ the graph?"* One line of confirmation is cheaper than an unwanted upload.
 }
 ```
 
-`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set; required on writes). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is no longer accepted as input. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See "The universal schema (E15)".
+`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set; required on writes). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is no longer accepted as input. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See [The universal schema (E15)](#the-universal-schema-e15).
 
 ## Setup (only if the user asks)
 
