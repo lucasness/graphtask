@@ -1,8 +1,14 @@
 # graphtask
 
-A graph-based task manager. Tasks are nodes; relationships between them are
-edges. Each user keeps multiple separate **graphs** — pick one from the left
-sidebar, sketch tasks on the canvas, edit them in a right-side inspector.
+**graphtask turns a plan into a picture.** You sketch the things you need to do
+as boxes on a canvas and draw lines between the ones that depend on each other,
+so the shape of the work — what's blocked, what's ready, what's done — is
+something you can see and rearrange instead of a flat checklist.
+
+Under the hood it's a graph-based task manager: tasks are nodes, relationships
+between them are edges. Each user keeps multiple separate **graphs** — pick one
+from the left sidebar, sketch tasks on the canvas, edit them in a right-side
+inspector.
 
 Beyond software plans, people use graphtask for personal planning too —
 medical treatment, physical therapy, training regimens, career paths —
@@ -33,9 +39,8 @@ settings (`⋮` → Rotate) to revoke.
 The hosted instance runs with `AUTH_PROVIDER=clerk`, so the sidebar
 shows a sign-in button (email OTP). Anonymous use still works — you
 just don't get owned-graph features (My graphs / Shared with me
-bucketing, member invitations, per-graph access tier). The "Auth
-modes" subsection under "Run locally without Docker" below covers
-what changes when you sign in.
+bucketing, member invitations, per-graph access tier). See
+[Authentication](#authentication) for what changes when you sign in.
 
 ### 2. Run locally with Docker
 
@@ -106,73 +111,24 @@ from `.env` by `npm start`)
 - If neither is set, falls back to `postgresql://postgres@localhost/graphtask`.
 - `PORT` _(optional, default `3000`)_ — port the Express server binds to on
   `127.0.0.1`.
-- `AUTH_PROVIDER` _(optional, default `none`)_ — see "Auth modes" below.
+- `AUTH_PROVIDER` _(optional, default `none`)_ — see [Authentication](#authentication).
 - `GRAPHTASK_UPLOAD_MAX_BYTES` _(optional, default `5242880` = 5 MB)_ — per-image
   upload cap in raw bytes. Images are stored as BYTEA inside the same Postgres
   database (no extra object store), so this also bounds how big a single row in
   the `uploads` table can get.
 
 **The database must already exist; the schema does not.** graphtask applies
-`db/schema.sql` automatically on every boot — it's idempotent (`CREATE TABLE IF
-NOT EXISTS`, guarded `ALTER`s), so there is no manual migration step and no
-`psql -f` to run. What the app does *not* do is create the database itself: that
-has to exist before it connects, or boot fails at the first query. Create it
-with `createdb <name>`, or use the database your Postgres host already gave you
-(a managed provider like RDS / Supabase / Neon hands you one — point
-`DATABASE_URL` at it and the first boot populates the tables). That single
-prerequisite — an existing, reachable database — is the same in every
-environment; only *how* you obtain the database differs.
+`db/schema.sql` automatically and idempotently on every boot (`CREATE TABLE IF
+NOT EXISTS`, guarded `ALTER`s), so there's no manual migration step — but it
+won't create the database itself, so boot fails at the first query if it's
+missing. Create one with `createdb <name>`, or point `DATABASE_URL` at a database
+a managed provider (RDS / Supabase / Neon) already gave you, and the first boot
+populates the tables.
 
 See `.env.example` for a fully-commented template.
 
-**Auth modes**
-
-graphtask supports two deployment shapes; pick one at process start via
-`AUTH_PROVIDER`. The default is no auth, and that's the recommended mode for
-local dev and single-user self-hosted installs.
-
-| `AUTH_PROVIDER` | Required env | Behavior |
-|---|---|---|
-| `none` _(default)_ | — | No sign-in UI. Every graph id is a bearer token, exactly as before. |
-| `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. |
-
-**The access model in one paragraph.** A graph belongs to at most one
-`owner_user_id`. The owner can add `viewer` or `editor` members by
-email; rows for emails without a Clerk account yet sit in
-`pending_members` until that email signs in and auto-claims them. On
-top of that, every graph carries an `anon_role` tier (`none` / `viewer`
-/ `editor`) that decides what someone holding the URL but neither the
-owner nor a member gets — `none` returns 403, `viewer` is read-only,
-`editor` is read+write attributed anonymously. Legacy graphs
-(`owner_user_id IS NULL`) always behave as URL-bearer regardless of
-mode; flipping a no-auth deployment to Clerk doesn't retroactively
-lock them down. Agents authenticate with a `gt_*` bearer token minted
-from the in-app key-icon panel; the server discriminates them from
-Clerk session JWTs (which start with `eyJ`) by prefix-checking the
-`Authorization` header.
-
-Deeper details (sharing flows, client-side storage, live access-change
-propagation, what's out of scope) live under
-[Sharing & access model — deep dive](#sharing--access-model--deep-dive).
-
-**Setting up Clerk**
-
-1. Create a Clerk app at <https://dashboard.clerk.com> (use a separate
-   app for dev vs. prod).
-2. Enable **Email address** as the sole sign-in identifier and **Email
-   verification code** (OTP) as the verification strategy. graphtask
-   doesn't wire up any other Clerk sign-in method — leaving them
-   enabled won't break anything, but they won't appear in the modal
-   either.
-3. Copy your **Publishable key** and **Secret key** from the Clerk
-   dashboard into your `.env`:
-   ```sh
-   CLERK_PUBLISHABLE_KEY=pk_test_...   # or pk_live_... in prod
-   CLERK_SECRET_KEY=sk_test_...        # or sk_live_... in prod
-   AUTH_PROVIDER=clerk
-   ```
-4. Restart the server. The boot log should mention the Clerk adapter
-   loading; the browser's `/api/config` will report `auth_enabled: true`.
+Sign-in (the optional Clerk auth mode) is configured the same way on every run
+path — see [Authentication](#authentication).
 
 **Setup**
 
@@ -203,6 +159,53 @@ with stock Postgres) and creates it itself.
 
 Production tuning notes (open-file limits, single-process presence) live
 under [Production notes](#production-notes).
+
+---
+
+## Authentication
+
+graphtask supports two deployment shapes; pick one at process start via
+`AUTH_PROVIDER`. The default is no auth — the recommended mode for local dev and
+single-user self-hosted installs; the hosted instance runs `clerk`. Whichever run
+path you took in [Getting started](#getting-started), sign-in is configured the
+same way here.
+
+| `AUTH_PROVIDER` | Required env | Behavior |
+|---|---|---|
+| `none` _(default)_ | — | No sign-in UI. Every graph id is a bearer token, exactly as before. |
+| `clerk` | `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY` | Browser loads Clerk JS for email-OTP sign-in. Graphs created by signed-in users get an `owner_user_id`, an `anon_role` tier (`none` / `viewer` / `editor`) for URL holders, and an explicit member list. |
+
+**The access model, briefly.** With Clerk on, a graph has at most one owner who
+can add `viewer`/`editor` members by email, and every graph also carries an
+`anon_role` tier (`none` → 403, `viewer` → read-only, `editor` → read+write,
+anonymously attributed) for anyone holding just the URL. Legacy graphs
+(`owner_user_id IS NULL`) always behave as URL-bearer, so flipping a no-auth
+deployment to Clerk doesn't retroactively lock them down. Agents authenticate
+with a `gt_*` bearer token (minted from the in-app key-icon panel), which the
+server tells apart from Clerk session JWTs (`eyJ…`) by prefix-checking the
+`Authorization` header. The full model — sharing flows, pending-member
+auto-claim, client-side storage, live access-change propagation, and what's out
+of scope — lives in [Sharing & access model —
+deep dive](#sharing--access-model--deep-dive).
+
+**Setting up Clerk**
+
+1. Create a Clerk app at <https://dashboard.clerk.com> (use a separate
+   app for dev vs. prod).
+2. Enable **Email address** as the sole sign-in identifier and **Email
+   verification code** (OTP) as the verification strategy. graphtask
+   doesn't wire up any other Clerk sign-in method — leaving them
+   enabled won't break anything, but they won't appear in the modal
+   either.
+3. Copy your **Publishable key** and **Secret key** from the Clerk
+   dashboard into your `.env`:
+   ```sh
+   CLERK_PUBLISHABLE_KEY=pk_test_...   # or pk_live_... in prod
+   CLERK_SECRET_KEY=sk_test_...        # or sk_live_... in prod
+   AUTH_PROVIDER=clerk
+   ```
+4. Restart the server. The boot log should mention the Clerk adapter
+   loading; the browser's `/api/config` will report `auth_enabled: true`.
 
 ---
 
@@ -443,20 +446,10 @@ an edit overlay) always apply.
   restores.
 - Backward dependency edits are represented visually with `dir-backward`
   until save, then the server PATCH swaps source/target.
-- Hover an edge to reveal the curve handle. The handle sits *on* the rendered
-  curve at `B(t = weight)` — the bezier sample at the weight parameter. Drag
-  it freely in 2D: parallel position along the edge maps to `curve.weight`
-  via inverse-smoothstep, perpendicular distance back-solves into
-  `curve.distance` (bulge height). Weight is clamped per-edge to a dynamic
-  range derived from each node's size + a small margin, so the dot can
-  never land inside either endpoint node — the bounds intersect the static
-  `[0.10, 0.90]` range. Note: changing weight slides the bulge along the
-  edge but doesn't change *how sharply* the curve bends; that's controlled
-  by `distance` (a quadratic bezier's perpendicular peak is always at
-  parameter 0.5 with magnitude `0.5·distance`).
-- Dependency cycle detection wraps the cycle-check + INSERT/UPDATE in a
-  single Postgres transaction with a SHARE ROW EXCLUSIVE lock on `edges`,
-  so concurrent edge writers can't slip a cycle past the check.
+- Hover an edge to reveal a draggable curve handle: drag it to reshape the
+  edge's bend — parallel position along the edge sets `curve.weight`,
+  perpendicular distance sets `curve.distance` (bulge height). The exact
+  back-solve and per-edge clamping math is in [Data Model](#data-model).
 
 **Color palette**
 
@@ -592,17 +585,30 @@ uploads(
   `weight: 0.5`), `weight` is the parallel position along the source→target
   axis (`0.10..0.90`, `0.5` = midpoint). Optional `color` (validated 6-digit
   hex).
+- Curve-handle drag math (contributor detail): the hover handle sits *on* the
+  rendered curve at `B(t = weight)` — the bezier sample at the weight parameter.
+  Dragging it back-solves both fields: parallel position maps to `curve.weight`
+  via inverse-smoothstep, perpendicular distance back-solves into
+  `curve.distance`. Weight is clamped per-edge to a dynamic range derived from
+  each node's size + a small margin, so the handle can never land inside either
+  endpoint node — the bounds intersect the static `[0.10, 0.90]` range. Changing
+  weight slides the bulge along the edge but doesn't change *how sharply* the
+  curve bends; that's `distance` (a quadratic bezier's perpendicular peak is
+  always at parameter 0.5 with magnitude `0.5·distance`).
 - `dependency` edges are directed and acyclic; `related` edges can form loops.
 - Cycle detection (POST + PATCH + bulk) runs inside a single transaction
   with `LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE` so concurrent writers
   can't both pass the check.
 - Graph names are not globally unique — duplicate-name `POST` and `PATCH`
-  both succeed. The old `graphs_name_norm_uniq` index was dropped in
-  Phase B; rely on `id`, not `name`, for any lookup.
+  both succeed. The old `graphs_name_norm_uniq` index was dropped when
+  owner/member auth landed; rely on `id`, not `name`, for any lookup.
 
 #### Universal schema (E15)
 
-One backward-compatible schema serves both execution plans and deep research. Everything is additive and optional — a plain task graph that never sets these fields behaves exactly as before.
+**E15** is the internal codename for this universal-schema milestone — the work
+that made one backward-compatible schema serve both execution plans and deep
+research. Everything is additive and optional — a plain task graph that never
+sets these fields behaves exactly as before.
 
 - **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose` (the only accepted edge field on writes — a legacy `type` is no longer accepted). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
 - **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`). The three numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
@@ -662,88 +668,46 @@ before validation, so scalar YAML values do not break task saves.
 
 ### Agent design notes
 
-The HTTP API above is stable enough for an LLM agent (Claude Code, Codex,
-or anything that can run `curl`) to drive end to end. The skill install
-steps live inside [Using it with an agent](#using-it-with-an-agent) above;
-this section covers the conventions and constraints any agent integration
-should follow.
+The HTTP API is stable enough for an LLM agent (Claude Code, Codex, or anything
+that can run `curl`) to drive end to end. The **canonical agent contract** —
+recipes, the OCC pattern, and the exact endpoint predicates — lives in the
+[skill](.claude/skills/graphtask/SKILL.md); this section is a short orientation
+that points there rather than re-stating it. Install steps are in [Using it with
+an agent](#using-it-with-an-agent).
 
-**Conventions agents follow**
-
-- Persist the active graph id in `.graphtask/graph-id` (per-project, kept
-  out of git — it's bearer-token equivalent).
-- Move tasks `todo → in_progress → review`. **Never set `done`.**
-  `done` is the human's confirmation; `review` is the agent's
-  "I think this is finished, please confirm." Treat `review` as
-  not-yet-done for dependency-readiness purposes (the
-  `/tasks/ready`, `/tasks/:id/blockers`, and `/tasks/:id/unblocks`
-  endpoints already encode this).
-- Use `POST /edges/bulk` for any multi-edge import — it's transactional
-  and fails atomically with a `failedAt` index, so you never end up with
-  a half-built dependency graph.
-- If a graph id leaks, `POST /api/graphs/:id/rotate-id` invalidates it.
-
-**Search & reranking**
-
-For "find / what does the graph say about X" questions, an agent should
-call `POST /api/graphs/:gid/search`, take the top ~50 hybrid results, and
-rerank / synthesize from them in its answer — rather than grepping node
-bodies or guessing. The retriever is tuned for **recall** (the relevant
-node is almost always in the top ~50), and the agent — already an LLM
-reading the candidates against the actual query — is itself the most
-capable reranker, at no extra cost. A dedicated server-side LLM rerank is
-only worth it to sharpen the **browser UI's** top-10, where no LLM is in
-the loop; the agent path doesn't need it. The `eval/` harnesses
-(`run-eval.js`, `rewrite-ab.js`, `rerank-llm.js`, `doc2query.js`, …) score
-retrieval/rerank strategies against frozen query sets if you're tuning
-this.
-
-**Search + traversal (the graph as a knowledge base)**
-
-Search and traversal are complementary, and an agent should use both —
-especially when the graph *is* a knowledge base (nodes are concept pages,
-`related` edges are wiki-style cross-references). Search jumps to the most
-relevant nodes by content; traversal follows a node's edges to gather what
-is connected to it. The pattern mirrors Karpathy's "LLM wiki" — load an
-index, jump to an entry page, follow its links — rather than re-running
-vector RAG per question: **search for the entry node(s), then walk
-`related` links to read the connected neighborhood.** The index is
-`GET /api/graphs/:gid/graph` → `{nodes, links}` (every node minus its body,
-plus every edge with its `type`); fetch the bodies you need with
-`GET /tasks/:id`. Note the structural traversal endpoints (`/subtasks`,
-`/ancestors`, `/blockers`, `/unblocks`, `/ready`, `/leaves`) and
-`/graph/shortest-path` follow **`dependency` edges only** — a
-`related`-linked knowledge base is navigated through the `/graph` map.
-
-**Write-side structure (authoring a navigable graph)**
-
-Read quality is downstream of write-time structure, so the skill also carries
-a write-side doctrine (SKILL.md §2, "author a graph that stays navigable"),
-A/B-validated on fresh build agents: (1) **author the connective tissue** —
-when two areas relate only through an intermediate, model that intermediate as
-a real **bridge node** rather than faking a direct edge; (2) **name a node's
-neighbors in its body** (truthful, and it's what search matches to seed
-traversal); (3) treat a `related` edge as a **genuine, specific** semantic link,
-not loose topical proximity; (4) **optimize for truth, not the retriever** — a
-faithful graph is already the retrieval-optimal one, and phantom "edges to help
-search" only build a hairball that tanks precision. In the validation, the
-doctrine lifted blind mid-tier multi-hop answer quality and cut "can't answer
-from this pack" responses ~5× while keeping the graph *leaner*, not denser.
-
-**Live updates**
-
-The browser canvas re-renders within ~150 ms of any task/edge mutation
-via the `/events` SSE endpoint, so a user watching a graph sees the
-agent's edits in real time. The agent doesn't need to consume the SSE
-stream itself.
-
-**Other agents (Codex, Cursor, etc.)**
-
-The shipped skill at `.claude/skills/graphtask/SKILL.md` follows the
-open [Agent Skills](https://agentskills.io) standard. The `SKILL.md`
-file is portable; refer to your tool's docs for the install path. Any
-agent that can `curl` is a viable client — the skill is just the
-playbook.
+- **Conventions.** Persist the active graph id in `.graphtask/graph-id`
+  (per-project, git-ignored, bearer-token equivalent); move tasks `todo →
+  in_progress → review` and **never set `done`** (that's the human's
+  confirmation, and `/tasks/ready`·`/blockers`·`/unblocks` already treat
+  `review` as not-yet-done); use `POST /edges/bulk` for multi-edge imports
+  (transactional, `failedAt` index on failure); `POST /api/graphs/:id/rotate-id`
+  invalidates a leaked id. Full status discipline is in SKILL.md §3.
+- **Search.** For "what does the graph say about X", call `POST
+  /api/graphs/:gid/search`, take the top ~50, and rerank/synthesize from them —
+  the retriever is tuned for **recall** and the agent is itself the most capable
+  reranker, so the agent path needs no server-side rerank. The why, the `eval/`
+  harnesses, and the tier model are in [design/SEARCH.md](design/SEARCH.md).
+- **Search + traversal.** Search jumps to the most relevant nodes by content;
+  traversal follows their edges. When the graph *is* a knowledge base
+  (concept-page nodes, `related` cross-references), **search for the entry
+  node(s), then walk `related` links** to read the neighborhood — the index is
+  `GET /api/graphs/:gid/graph` → `{nodes, links}` (nodes minus body, edges with
+  `type`); fetch bodies with `GET /tasks/:id`. The structural endpoints
+  (`/subtasks`, `/ancestors`, `/blockers`, `/unblocks`, `/ready`, `/leaves`) and
+  `/graph/shortest-path` follow **`dependency` edges only** — a `related`-linked
+  KB is navigated through the `/graph` map.
+- **Write-side structure.** Read quality is downstream of write-time structure,
+  so the skill carries a write-side doctrine (SKILL.md §2): author real **bridge
+  nodes** instead of faking direct edges, name a node's neighbors in its body,
+  keep `related` edges genuine and specific, and **optimize for truth, not the
+  retriever**. A/B-validated to lift mid-tier multi-hop answer quality while
+  keeping the graph leaner, not denser.
+- **Live updates.** The browser canvas re-renders within ~150 ms of any
+  task/edge mutation via the `/events` SSE endpoint; the agent doesn't need to
+  consume the stream itself.
+- **Other agents (Codex, Cursor, etc.).** The skill follows the open [Agent
+  Skills](https://agentskills.io) standard and is portable; any agent that can
+  `curl` is a viable client — refer to your tool's docs for the install path.
 
 ### Views — per-graph view preference
 
@@ -787,6 +751,20 @@ corresponding card in kanban, and vice versa.
 over the avatar bar / LIVE button) that hides both the avatar bar and
 the LIVE push-button. State is `localStorage['graphtask:presence-hidden']`
 — per-user, global, applies to both views.
+
+**View registry (modular UI primitives).** The per-view branches that once
+accreted as inline `if (currentView === 'kanban') { … }` checks — toolbar button
+visibility, the global keydown switch, `peerCursorRefresh` positioning,
+`applyPeerSelectionToCy`'s card paint, the Escape handler, SSE task hooks, the
+"New" control, and `applyView` itself — now dispatch through a single `VIEWS`
+registry. Each view is one entry implementing a shared `View` interface (`enter`,
+`adjustLayout`, `updateToolbar`, `handleKeydown`, `onEscape`, `renderPeerCursors`,
+`wipePeerCards` / `paintPeerCard`, `onRemoteTaskEvent`, `createPrimaryItem`),
+resolved via `activeView()`. Adding a third view (e.g. tech tree) means adding a
+registry entry, not threading another conditional through every surface. The
+registry also documents the forward-looking extension points — a view's
+agent-follow target and applicable selection modes — for views still to land. See
+the "View registry (modular UI primitives)" block at the top of `public/app.js`.
 
 ### Frontend Model
 
@@ -852,7 +830,8 @@ the client (a) refetches the graph with selection preservation, (b) animates
 the camera to the affected node, and (c) for UPDATE events, opens the side
 panel showing the new content. The "who is editing this" visual cue comes
 from the peer-selection classes (writer's color outline + dashed border)
-when the agent broadcasts its current task — see Multi-peer presence below.
+when the agent broadcasts its current task — see [Multi-peer
+presence](#multi-peer-presence).
 Agent-follow is suppressed if the user `pointerdown`/`keydown`/`wheel`d in
 the last 2 seconds, so manual work isn't yanked around. `loadIntoEditor`
 sets a 200ms suppression window on the autosave scheduler so the synthetic
@@ -891,22 +870,22 @@ Agents (`type: 'agent'`) skip the 60s idle filter so a long-thinking agent
 keeps its marker visible until its Stop hook DELETEs presence at end of
 turn.
 
-OCC: agents must PATCH with `base_version` + `base_content` so the
-server's three-way merge protects UI-managed frontmatter keys (`x`/`y`
-positions, `color`, `curve`) the agent didn't include. Without OCC fields
-the PATCH falls back to blind replace and silently wipes those keys. See
-the [skill](.claude/skills/graphtask/SKILL.md) for the canonical
-`work_on_task` / `announce_focus_edge` helpers.
+Agents writing through this presence layer must use OCC (PATCH with
+`base_version` + `base_content`) so concurrent UI-managed keys survive a
+body-rewriting PATCH. The canonical agent-facing OCC contract — the
+`work_on_task` / `announce_focus_edge` helpers and the exact protected-key list
+— is owned by the [skill](.claude/skills/graphtask/SKILL.md); the server-side
+three-way-merge mechanics are in [Notable Decisions](#notable-decisions).
 
-Agent-vs-agent same-field conflicts use **owner-agent precedence**: the
-agent whose `owner_user_id` matches `graphs.owner_user_id` wins. If both
-or neither agents are the graph owner's, falls through to last-write-wins.
-Human-vs-agent rule unchanged: human always wins.
+Agent-vs-agent same-field conflicts use **owner-agent precedence**: the agent
+whose `owner_user_id` matches `graphs.owner_user_id` wins; if both or neither are
+the graph owner's, it falls through to last-write-wins. Human-vs-agent is
+unchanged — human always wins.
 
 ### Sharing & access model — deep dive
 
-Extends the "Auth modes" + access-model paragraph under
-[Run locally without Docker](#3-run-locally-without-docker).
+Extends the [Authentication](#authentication) section — the auth modes table and
+the access-model summary.
 
 **Sharing flows**
 
@@ -972,8 +951,9 @@ Wipe these to reset client state without touching the database.
   URL doesn't carry a gid.
 - `graphtask:recent` — JSON array (capped at 20) of recently visited
   graphs: `{id, name, last_visited_at, created}`. Used for the
-  signed-out sidebar bucketing (Phase A behavior) and the
-  `created: true` flag is the input to the auto-claim flow above.
+  signed-out sidebar bucketing, and the `created: true` flag is the
+  input to the auto-claim flow (see *Anon creates a graph, then signs in
+  later* under Sharing flows).
 - `graphtask:hide-private-warn` — flag remembering that the user
   dismissed the "this graph is private; share with care" first-write
   toast.
@@ -1026,7 +1006,7 @@ tab, the worst case is a manual reload — never a stale-write-against-
 revoked-access leak, because every API write is gated server-side by
 `requireGraph` regardless of what the browser thinks.
 
-**Out of scope for Phase B**
+**Out of scope (auth)**
 
 These were intentionally left off the auth scope to keep the surface
 small. Don't expect them to work:
@@ -1212,526 +1192,67 @@ graphs / tasks / edges are untouched.
 
 ### Roadmap
 
-The canonical "what's next" list — what's shipped, what's planned, and
-the aspirational reach items live here so contributors don't re-litigate
-the same choices.
-
-#### Status at a glance
-
-Completion checklist — the detailed entries below carry the full context.
+What's shipped, what's planned, and the aspirational reach items — so
+contributors don't re-litigate the same choices. This list is the single source
+of truth for status; the full running plan, decisions, and dependencies live in
+the project graph (`safqkahqnftyef4j`). The knowledge-base search architecture
+and benchmarks have their own design doc: [design/SEARCH.md](design/SEARCH.md).
 
 **Shipped**
 
 - [x] **Kanban view** — first multi-view lens; status columns, drag-to-PATCH,
   per-user view preference. (`public/app.js`)
 - [x] **Optimistic concurrency (OCC) + three-way merge** — `version` /
-  `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`.
+  `last_modified_by` on tasks·edges·graphs, merge in `src/merge.js`. (See
+  [Notable Decisions](#notable-decisions).)
 - [x] **Modular UI primitives** — `VIEWS` registry + `View` interface; per-view
-  branching now dispatches through `activeView()`. (`public/app.js`)
-- [x] **Find / search bar (Cmd/Ctrl+F)** — in-app search bar, This-graph/All-graphs
-  toggle, `?node=` jump (`public/app.js`).
-- [x] **Knowledge-base search (hybrid + graph)** — lexical(BM25)+dense(pgvector)→RRF→optional
-  rerank→graph expansion; per-graph + cross-graph endpoints; embedding indexer +
-  boot warmup (`src/search/`, `src/routes/search.js`, `searchAll.js`).
+  branching now dispatches through `activeView()`. (`public/app.js`; see [View
+  registry](#views--per-graph-view-preference).)
+- [x] **Find / search bar (Cmd/Ctrl+F)** — in-app search bar, This-graph /
+  All-graphs toggle, `?node=` jump (`public/app.js`).
+- [x] **Knowledge-base search (hybrid + graph)** —
+  lexical(BM25)+dense(pgvector)→RRF→optional rerank→graph expansion; per-graph +
+  cross-graph endpoints; embedding indexer + boot warmup (`src/search/`,
+  `src/routes/search.js`, `searchAll.js`). Architecture + benchmarks in
+  [design/SEARCH.md](design/SEARCH.md).
 
 **Planned — not started**
 
-- [ ] **Future views** — alternate lenses on the same `tasks`/`edges` data,
-  added one at a time after the modular primitives refactor:
-  - [ ] **Tech tree** — Civ-style layered DAG, read-only.
-  - [ ] **Table view**
-  - [ ] **Calendar view**
-- [ ] **Responsive layout system** — kill hardcoded px; mobile bottom-sheet
-  panel + avatar-bar reflow.
-- [ ] **Configurable custom fields** — graph-declared typed task fields.
-- [ ] **Custom ordering** — per-graph, per-view sort/grouping (needs custom fields).
+- [ ] **Future views** — alternate lenses on the same `tasks`/`edges` data, added
+  one at a time now that the modular primitives are in place: **tech tree**
+  (Civ-style layered DAG, read-only), **table view**, **calendar view**.
+- [ ] **Responsive layout system** — turn the ad-hoc `position: fixed` px-tuning
+  into flex/grid primitives, fluid sizing (`clamp()` / `rem` / `vw`), and a small
+  breakpoint set. Mobile work is scoped to the right side panel (pull up as a
+  bottom sheet instead of sliding in from the right) and the avatar bar (reflow
+  when the panel is open); the left sidebar already works on mobile.
+- [ ] **Configurable custom fields** — graph-declared typed task fields
+  (`priority`, `assignee`, `due_date`, …); definitions live on the graph row,
+  values in task `meta`. Surfaces in the inspector, the kanban group-by, and
+  future views.
+- [ ] **Custom ordering** — per-graph, per-view sort/grouping (depends on custom
+  fields): weighted traversal in graph view, shared drag-to-reorder per kanban
+  column, table/calendar field selection.
 
 **Reach — aspirational, unscheduled**
 
-- [ ] **Autonomous multimodal ingestion → KB graph** — agent builds a concept
-  graph from pasted sources; the ingestion half of KB search. (Future; not
-  the current search work.)
-- [ ] **Subagent fanout** — parallel subagents claiming ready tasks.
-- [ ] **True pause/play** — server holds the next PATCH while paused.
-- [ ] **Upload orphan reaper** — sweep unreferenced `uploads` rows.
-
-#### Planned
-
-- **Multi-view: same data, different lenses.** *(Kanban ✅ shipped · tech tree + future views ⬜ planned)* Same `tasks` + `edges`
-  rows, multiple rendering modes. The graph-DAG view (current) stays
-  the canonical edit surface; new views are alternate lenses that read
-  the same data and translate edits where they make sense.
-
-  **Shipped:**
-  - [x] **Kanban** — tasks grouped into columns by `status` (todo /
-    in_progress / review / done). Cards show title + body excerpt; drag
-    between columns issues a PATCH that flips `status` (OCC three-way
-    merge handles concurrent drags). Edges hidden; the graph view stays
-    the place to wire dependencies. Selected via the View dropdown in
-    graph settings (Appearance → View); preference is per-user, per-graph,
-    client-only (`localStorage['graphtask:view:<gid>']`) — two
-    collaborators on the same graph can be in different views. See
-    *Views — per-graph view preference* above.
-
-  **Planned views:**
-  - [ ] **Tech tree** — Civilization-style layered DAG. Tasks ordered into
-    rows by topological depth (recursive prereq distance); edges drawn
-    between rows. Layout is computed, so the view is primarily
-    read-only — click a node to jump back to graph view with that node
-    selected.
-  - [ ] **Future views** — table view, calendar view, etc. — added one at
-    a time once a second view shakes out the per-view abstractions
-    (see *Modular UI primitives* below).
-
-- **Modular UI primitives.** ✅ The inline `if (currentView === 'kanban') { … }`
-  branches that had accreted across the codebase — toolbar button visibility,
-  the global keydown switch, `peerCursorRefresh` positioning,
-  `applyPeerSelectionToCy`'s card paint, the Escape handler, SSE task hooks,
-  the "New" control, and `applyView` itself — now dispatch through a single
-  `VIEWS` registry. Each view is one entry implementing a shared `View`
-  interface (`enter`, `adjustLayout`, `updateToolbar`, `handleKeydown`,
-  `onEscape`, `renderPeerCursors`, `wipePeerCards` / `paintPeerCard`,
-  `onRemoteTaskEvent`, `createPrimaryItem`), resolved via `activeView()`.
-  Adding a third view (tech tree) now means adding a registry entry, not
-  threading another conditional through every surface. The registry also
-  documents the forward-looking extension points — a view's agent-follow
-  target and applicable selection modes — for the views still to land. See
-  the "View registry (modular UI primitives)" block at the top of
-  `public/app.js`.
-
-- **Responsive layout system.** ⬜ Most of the canvas chrome
-  (`#presence-bar`, `.push-button`, `#panel`, peer-cursor placement,
-  modal widths) is currently positioned with hardcoded pixel
-  offsets — `top: 104px`, `right: 12px`, `width: 40px`, etc. — tuned
-  by eye for a desktop viewport. As soon as the viewport gets
-  narrower, taller, or denser, the row alignments we manually
-  calibrated (avatar bar ↔ status label ↔ MY GRAPHS ↔ Title) start
-  drifting. Turn the ad-hoc px-tuning into a system so the layout
-  holds across phones, tablets, and varied desktop sizes without
-  re-tuning each element.
-
-  What "a system" means here:
-  - **Flex / grid primitives** for groupings like the top-right
-    "avatar bar + push-button" stack, instead of separate fixed-
-    positioned elements that each compute their own `right`.
-  - **Fluid sizing**: `clamp()`, `min()`, `rem`, `vw`/`vh` for
-    dimensions that should scale with viewport, replacing the
-    hardcoded px on widths and gaps.
-  - **Breakpoint strategy**: a small set of media-query layouts
-    (mobile portrait, tablet, desktop) where the shape of the UI
-    actually changes — e.g., sidebar collapses to a drawer below
-    768px, side panel becomes a bottom sheet on phones.
-  - **Container queries** for elements that should reflow based on
-    their container rather than the viewport (e.g., the side panel
-    when the user resizes it).
-  - **Extend the design tokens** so every gap/padding/margin uses
-    `--space-*` rather than raw pixels. Same for the few remaining
-    raw font-size px (status label is 7px, should be a token).
-  - **Audit pass**: every `position: fixed` + `top:` / `right:` /
-    `width: <px>` rule gets either reworked into a layout primitive
-    or annotated with a comment explaining why pixel-perfect is the
-    right choice for that element.
-
-  This is ongoing work, not a single PR — every UI change going
-  forward should use the system rather than adding new hardcoded
-  positions.
-
-  **Current mobile state (iPhone-sized viewport).** Most of the app
-  holds up better than expected at phone width — the work below is
-  scoped to the specific things that don't:
-
-  - **Left sidebar (graphs list)** — open/close already works fine on
-    mobile, no changes needed.
-  - **Right side panel (node inspector)** — takes up way too much of
-    the viewport when it opens, leaving almost no canvas visible. On
-    mobile it should pull up from the **bottom** instead of sliding in
-    from the right: occupy the bottom ~40% of the viewport by default,
-    draggable up to read more, draggable down, dismissable. The top
-    section always keeps some of the graph visible behind it.
-  - **Avatar bar (top-right)** — bleeds over the right side panel on
-    mobile, doesn't seem to respect the panel's bounds the way it does
-    on desktop. Needs to either reflow when the panel is open or move
-    out of that corner entirely on small viewports.
-
-- **Configurable custom fields on graphs.** ⬜ Today every task carries the
-  same fixed frontmatter (title, status, optional description / color /
-  position). A "custom fields" system would let a graph owner declare
-  additional typed fields — `priority: number`, `assignee: string`,
-  `due_date: date`, etc. — that every task in that graph then carries.
-  Field definitions live on the graph row; task `meta` carries the
-  values. Surfaces in the inspector (extra form rows), in the kanban
-  group-by picker, and in future views (table columns, calendar dates).
-
-- **Custom ordering.** ⬜ Once custom fields exist, ordering follows. Per
-  graph, **per view**, persist a sort/grouping strategy:
-
-  - **Graph view** — order traversal by a custom numeric field (e.g.
-    `Priority`). Weights nodes for "find the highest-priority unblocked
-    task" queries; lets shortest-path / dependency-walking endpoints
-    optimize for total weight instead of edge count.
-  - **Kanban view** — drag-to-reorder within a column. Default to
-    `updated_at DESC` (current). Once dragged, save an explicit per-column
-    order so all viewers of the same graph see the same kanban layout.
-    Effectively each column gets its own ordered list, shared across
-    collaborators (unlike the per-user *view* preference, which is
-    intentionally personal).
-  - **Other views** — table sort columns, calendar date field
-    selection, etc. — all reduce to "which field on which view".
-
-  This is a big feature stack: custom fields first, then per-view
-  ordering on top. Cross-cuts schema (graph-level field defs, task
-  meta), API (validation per field type, ordering reads/writes), and
-  every view's render pipeline. Worth doing once the multi-view
-  infrastructure is exercised across two or three views and the
-  shape of "view-specific config" becomes clear.
-
-- **Find / search bar (Cmd/Ctrl+F) — the front door to KB search.** ✅
-  Previously, pressing Cmd/Ctrl+F triggered the *browser's* native find — which
-  reported "0/0" even when the word was plainly on screen, because Cytoscape
-  paints node labels onto a `<canvas>` and the browser only searches the DOM
-  text layer. That dead-end is now replaced with our own search bar that drives
-  the hybrid + graph search below. *(Shipped as graph task #172, the UI layer;
-  built on #171, the search backend.)*
-
-  - **Interception.** Intercepts the hotkey the same way Cmd/Ctrl+K
-    opens graph settings (`public/app.js` global keydown handler, Cmd+K
-    branch ~line 8637). A sibling branch for `e.key === 'f'`
-    `preventDefault()`s the native find and calls `openSearchBar()` (~line
-    8646). No conflict with the bare `f` graph hotkey (zoom-to-fit,
-    `handleGraphKeydown`) — that one carries no modifier.
-
-  - **Cmd+F just shows a text input bar.** Pressing **Enter triggers our
-    search mechanism** — the lexical (BM25) + vector (hybrid) + graph
-    pipeline in *Knowledge-base search* below. Enter *runs* the search; it
-    is not a live filter.
-
-  - **Results.** A ranked list from the search backend; ↑/↓ (or Enter /
-    Shift+Enter) walk the results; the active result selects + centers its
-    node on the graph (`cy`). Esc closes the bar and restores prior
-    selection.
-
-  - **Optional instant preview.** While typing, *before* Enter, we may show
-    a zero-latency local preview over the current graph's already-loaded
-    nodes — lexical substring over **title / description / body**, tiered by
-    field (title hits first, then description, then body; within a tier
-    order by match frequency, newest-first tie-break; a node ranks by its
-    strongest field only). This local leg is the same matcher the backend's
-    BM25 stage formalizes — the Enter-triggered query is cross-graph,
-    hybrid, and graph-expanded.
-
-- **Knowledge-base search across graphs.** ✅ *(retrieval core shipped — hybrid
-  + graph expansion + rerank + cross-graph + metadata filter + boot warmup;
-  HippoRAG/PPR expansion, a GPU `bge-reranker` default, and autonomous ingestion
-  remain future)* Each node body is a piece
-  of markdown that evolves with the work, so a long-lived graph
-  already functions as a notebook — but today the only way to find
-  "the node about X" is to know the gid and `GET` it. Add a search
-  layer so graphs become a queryable knowledge base, both for humans
-  ("where did I write about cookie storage?") and agents ("read what
-  this user already knows about auth before planning").
-
-  **Architecture — decided (tracked as graph task #171).** Build our own
-  hybrid + graph search on Postgres, taking the best concepts from the
-  field rather than adopting any one framework. Postgres *is* best-in-class
-  at our scale — on one condition: don't use vanilla full-text.
-
-  - **Retrieval recipe (this drives accuracy; it's store-agnostic).**
-    Lexical (BM25) + dense (vector) candidate generation, top ~100 each →
-    fuse with **Reciprocal Rank Fusion (RRF, k=60)** (rank-based, no score
-    normalization) → *(optional)* **cross-encoder rerank** the top 20–50 →
-    **graph expansion**: seed from the hits, then traverse our existing
-    `edges` (k-hop, or Personalized PageRank à la HippoRAG) for multi-hop
-    concepts. Get recall@50 solid *before* layering the reranker — a
-    reranker can only reorder what retrieval already found (it can't fix a
-    retrieval miss; **graph expansion** can). Rerank is **off by default** for
-    our flows (see *How search is used* below); graph expansion is the
-    higher-value next layer.
-  - **Storage (Postgres-native — free + self-hostable).**
-    - **Dense:** `pgvector` (HNSW). Matches/beats Qdrant/Milvus under ~50M
-      vectors; our graphs are orders smaller. Embed `tasks.content` on the
-      existing `updated_at` trigger.
-    - **Lexical:** real BM25, **NOT `ts_rank`.** Built-in FTS has no IDF and
-      no document-length normalization — adequate, not best. Use **ParadeDB
-      `pg_search`** (embeds Tantivy, a Rust Lucene; Elasticsearch-equivalent
-      BM25 as a native index) or VectorChord-bm25.
-    - **Rerank:** a self-hosted cross-encoder (`bge-reranker-v2-m3` /
-      `Qwen3-Reranker`) — the single biggest accuracy lever (reranking alone
-      ~3× nDCG@10 on hard benches; ~48% end-to-end retrieval lift), ~zero
-      marginal cost.
-  - **Why this is the *best* path, not just the easy one.** Dedicated
-    engines (Qdrant / Milvus / Elasticsearch / Neo4j) only pull ahead past
-    50–100M vectors or when horizontal scale is needed — task-graphs won't
-    hit that, and the DB is rarely even the bottleneck (embedding latency
-    dominates). And our unfair advantage: **our data is already a graph**
-    (authored nodes + edges), so we skip the expensive LLM graph-*extraction*
-    step every framework below pays for. The relatedness they compute, we
-    already have for free.
-  - **UI.** Cmd/Ctrl+F is the front door (see *Find / search bar* above):
-    the bar takes a query, **Enter runs this pipeline.**
-  - **Scope.** Per-graph search (`POST /api/graphs/:gid/search`, read-gated)
-    plus cross-graph "search my graphs" (`POST /api/search`, ✅ shipped): one
-    pipeline run over every graph the signed-in user **owns or is a member
-    of** — the same set the sidebar lists. The ownership WHERE rides into
-    every leg (corpus load, ANN chunk scan via `graph_id = ANY` +
-    `hnsw.iterative_scan=strict_order`, edge expansion), so nodes never leak
-    across owners; anonymous callers get a 401. Results carry `graphId` +
-    `title` and a `graphs` name map. In the bar, the **"All graphs" scope
-    toggle** lights up when signed in; cross-graph hits wear a graph chip,
-    and committing one switches graphs in-app, focuses the node (the same
-    `?node=<id>` deep-link mechanism shareable URLs use), and applies the
-    match-type highlight.
-  - **Indexing — both sides get embedded.** Cosine similarity needs vectors
-    on the query *and* the content, so node **content is embedded at write
-    time** (`tasks.content` → a `pgvector` column, on the `updated_at`
-    trigger; hash the content to skip re-embedding unchanged nodes) and the
-    **query is embedded at search time**. The lexical (BM25/substring) leg
-    needs *no* embeddings — only the vector leg does. That asymmetry is what
-    makes the tiers below possible.
-
-  - **How search is used — two flows, and why the *list* matters more than
-    rank #1.**
-    1. **Human (Cmd/Ctrl+F).** The bar opens a **results dropdown**. ↑/↓ walk
-       the list; as the active result changes, its node is **focused on the
-       graph** and the **side panel opens** — the same mechanism as selecting a
-       node or watching an agent — but keyboard focus stays in the dropdown.
-       **Enter / click commits:** the dropdown closes, the node becomes the
-       active selection, and the matched span is highlighted **by how it was
-       found** — a **lexical** title/keyword hit highlights the matched *word*;
-       a **dense** hit highlights the matched *chunk*, and the markdown viewer
-       **scrolls that chunk into view** (bodies are long; the winning chunk may
-       sit near the bottom). The highlight is **transient** (fades after focus)
-       so it guides without nagging.
-    2. **Agent.** An agent calls the search skill, gets the ranked list, and
-       picks using its own context — no UI, no highlight. It just needs the
-       right node **present** in the results.
-
-    **Consequence for ranking — we optimize recall@k, not rank-1.** Neither
-    flow needs the best answer at **#1**; it only needs to be **in the visible
-    list (top ~10–20)** — the human scrolls to it, the agent reads the list.
-    Measured on a real graph: **no-rerank recall@20 ≈ 0.885 ≈ rerank
-    recall@10 ≈ 0.905** — i.e. *showing a slightly longer list matches what the
-    reranker buys, for free and ~30× faster.* The reranker mostly improves
-    **rank-1 (MRR 0.74→0.90)**, which these flows don't need. That is **why
-    Tier-2 rerank is off by default** (next section). A self-hoster whose flow
-    *does* need #1 precision can flip it on.
-
-  **Deployment & self-host tiers — search is progressive enhancement.**
-  Search degrades cleanly by available compute: it runs on a laptop with zero
-  ML and scales up to a GPU. Each tier is an opt-in config flag; the floor
-  needs no models at all, so self-hosters turn on only what their hardware
-  supports.
-
-  - **Tier 0 — Lexical** *(always on)* — BM25 / substring find. Needs only
-    Postgres. Runs on any box. This is the Cmd+F floor.
-  - **+ Graph expansion** *(always on)* — expand hits across `edges`. SQL
-    only, **no model** — so it layers onto any tier for free.
-  - **Tier 1 — Semantic** *(opt-in)* — vector search via `pgvector`. Needs an
-    **embedding model at *both* write time (to index content) and query
-    time**. Floor: a small CPU model (e5-small ~118M, ~1–2 GB RAM), or an
-    embedding API / Modal. No model configured → this tier stays off and
-    lexical still works.
-  - **Tier 2 — Rerank** *(opt-in, **OFF by default** — set `RERANK_BACKEND`)* —
-    cross-encoder precision. It only **reorders what retrieval already found** —
-    it lifts the *ranking* (the best answer to the top), not *recall* (graph
-    expansion does that). It's the **precision lever**; graph expansion is the
-    recall lever.
-
-    **The CPU path is viable after all — with a small model, for the agent
-    flow.** Two measurements (#198):
-
-    *Model + truncation sweep (`eval/rerank-bench.js`, #198):* two levers stack —
-    **document length dominates latency** (2000→512 chars ≈ 3–8× faster, since
-    it's compute-bound) and **TinyBERT-L-2 is ~4× lighter than MiniLM-L-2** at
-    tied accuracy. The winner is **`ms-marco-TinyBERT-L-2-v2` @ q8, docs capped
-    at 512 chars** — it reranks the top-20 in **~62 ms on ONE CPU core** vs
-    ~940 ms for MiniLM-L-2 @ 2000 chars, a ~15× speedup at the same accuracy.
-    That's the local default. MiniLM-L-2 is a slightly-stronger, ~4× slower
-    fallback; the big `bge-reranker-v2-m3` is the GPU/Modal `http` track.
-
-    *Real pipeline (hybrid-at-50, `eval/hybrid-ab.js` — runs the shipped
-    defaults; override with the same `RERANK_*` env the app reads):* on the
-    **production** config — lexical(top-50)+dense(top-50)→RRF — rerank is a big
-    precision win, and reranking the **whole fused list** (`topM=50`, the code
-    default) beats top-20: same precision, more recall, ~same cost. End-to-end
-    per-query latency, one core:
-
-    | config | precision@1 | nDCG@10 | MRR | recall@10 | recall@20 | latency p50 |
-    |---|---|---|---|---|---|---|
-    | rerank off | 0.60 | 0.762 | 0.762 | 0.823 | 0.871 | **25 ms** |
-    | TinyBERT-L-2, topM=20 | 0.875 | 0.883 | 0.923 | 0.859 | 0.871 | ~100 ms |
-    | **TinyBERT-L-2, topM=50** | **0.875** | 0.883 | 0.921 | **0.871** | **0.892** | **~90 ms** |
-    | **topM=50 + graphExpand** | **0.875** | **0.891** | 0.918 | **0.880** | **0.960** | ~185 ms |
-
-    Keep **`RERANK_TOPM=50`** (the default): top-20 can only reorder fused
-    positions 1–20, so it strands relevant docs in 21–50; top-50 lifts them
-    (recall@20 0.871→0.892) at no measurable extra cost on this corpus. And
-    **graphExpand is NOT a no-op with rerank on** — the earlier "expansion
-    changed nothing" result was an artifact of the top-20 rerank window
-    (expanded docs landed past position 20, where rerank couldn't lift them).
-    With topM=50 the pair is the best config measured: recall@20 0.960,
-    nDCG@10 0.891, ~185 ms p50 / ~250 ms p95 end-to-end on ONE core.
-    Latency is compute-bound, so more vCPUs scale it further. One real cost
-    remains: the **first search after boot** pays lazy ONNX model load
-    (~1.4 s) — the server now fires a warmup search at boot so users never
-    see it. Rerank stays **off by default** (our flows are recall-first), but
-    at ~90–185 ms it's cheap to flip on for the **agent / best-single-answer**
-    path. On our English notes the tiny local model matched bge-reranker-v2-m3
-    on quality at a fraction of the cost; bge's edge only shows on
-    harder/multilingual corpora. Tables + method in graph #198; earlier GPU
-    A/B in #196.
-
-  **How the two deployments differ:**
-  - **Hosted (Wafer / fly.io):** Postgres (pgvector + BM25) runs on the Wafer.
-    **Embeddings default to a local in-process model** — the eval found a small
-    local model *ties* a big GPU one on accuracy **and** is faster per query, so
-    Tier 1 needs no GPU (graph task #193). **Modal** (serverless GPU,
-    scale-to-zero, ~free at our volume) is reserved for the jobs that genuinely
-    need it: the optional Tier-2 **reranker** (where the GPU is required — see
-    above) and bulk re-index acceleration. Full topology + measured costs in
-    graph tasks #173 / #193 / #196.
-  - **Self-hosting:** the model backend is **pluggable** — choose by what you
-    have. Run Tier 0 + Graph with *zero* models (fully local, no GPU); flip
-    on Tier 1 by pointing at any embedding endpoint (a local
-    `sentence-transformers` / ONNX model, or an API); flip on Tier 2 only if
-    you have the CPU/GPU headroom for a cross-encoder. Bigger models + GPU =
-    more accuracy; small CPU models = lighter but still useful. Use the eval
-    harness (below) to measure exactly what accuracy and latency a given
-    stack buys you before committing.
-
-  **References — best-of concepts to borrow (not adopt wholesale).**
-  - `safishamsi`'s [`graphify`](https://github.com/safishamsi/graphify)
-    (Karpathy-*inspired*, not by Karpathy) — turns a folder into a queryable
-    concept graph with **no embeddings/vectors**. A linear pipeline
-    (`detect → extract → build_graph → cluster → analyze → report →
-    export`) builds a `graph.json`: nodes are entities/concepts, edges are
-    **confidence-tagged** (`EXTRACTED` = stated in source like an import or
-    call; `INFERRED` = deduced, e.g. call-graph 2nd pass or co-occurrence;
-    `AMBIGUOUS` = flagged for review). Concepts come from tree-sitter ASTs
-    (code), LLM extraction (docs/papers), vision (images); **Leiden**
-    community detection clusters them and emits per-cluster wiki articles +
-    "god nodes" (highest-degree hubs). SHA256 cache rebuilds only changed
-    files. Query time = keyword-match seed nodes → BFS the subgraph → hand
-    only that to the LLM (~1,700 vs ~123,000 raw tokens). *The takeaway for
-    us: relatedness encoded as explicit typed/confidence-tagged edges —
-    which we already author by hand.*
-  - Microsoft [`graphrag`](https://github.com/microsoft/graphrag) — local
-    search (seed entities → fan out k-hops) vs global search (community
-    summaries). The seed-then-traverse pattern is exactly our graph leg.
-  - [Neo4j GraphRAG](https://neo4j.com/blog/developer/enhancing-hybrid-retrieval-graphrag-python-package/)
-    `HybridCypherRetriever` — vector + full-text → Cypher traversal; the
-    canonical "hybrid + graph" shape we're rebuilding in Postgres.
-  - [LightRAG](https://github.com/hkuds/lightrag) (dual-level: entity +
-    theme), **HippoRAG** (Personalized PageRank traversal), Microsoft
-    **LazyGraphRAG** (defer summarization to query time), and the
-    [HybridRAG](https://arxiv.org/pdf/2408.04948) paper (KG + vector beats
-    either alone) — the efficiency + fusion ideas worth lifting.
-
-  This entry is the **retrieval** half of the KB story; its **ingestion**
-  counterpart (autonomously *building* a KB graph from sources) is a separate
-  future feature — see *Autonomous multimodal ingestion* under Reach. This
-  search work does **not** depend on it; we're building the search engine
-  over graphs that already exist.
-
-  Pull this into active work once one of: (a) graphs we use daily
-  cross the size where manual recall stops working, (b) an agent
-  workflow asks the question "what does this graph already say
-  about X" often enough that a search endpoint pays for itself.
-
-#### Reach
-
-Aspirational — interesting if we get to them, but we may never. Not
-actively planned; pull into Planned only if user feedback or a
-concrete need surfaces.
-
-- **Autonomous multimodal ingestion → KB graph.** ⬜ The **ingestion** half
-  of the knowledge-base story (the retrieval half is *Knowledge-base search*
-  under Planned). graphify ingests a *folder of mixed inputs* — code
-  (tree-sitter ASTs), docs/papers (LLM concept + relationship extraction),
-  and images (vision extraction) — and normalizes them into one node/edge
-  graph. Our equivalent: extend the `graphtask` agent skill so an agent (in
-  Claude Code) can be handed **a pile of links / files / pasted sources** and
-  *autonomously research and build a knowledge-base graph* — fetch each
-  source, extract the concepts and their relationships, create nodes (with
-  bodies) and typed edges, and keep growing the graph as it reads. The agent
-  skill already creates nodes/edges via the REST API today; the gap is a
-  guided "ingest these sources → concept graph" workflow.
-
-  **When we build this, teach the agent skill these construction habits**
-  (lifted from graphify — *not added to the skill yet, to avoid confusing the
-  agent before the feature exists*):
-  - **Provenance on edges** — when drawing a `related` edge, the connected
-    nodes' bodies say whether the connection is *sourced* (cite it) or
-    *inferred* (say so). The node confirmation ladder (claim → being checked
-    → sourced → human-confirmed), applied to edges. Don't draw hunches as
-    facts.
-  - **Hub nodes** — for a large concept map, an explicit index/hub node per
-    major theme (graphify's high-degree "god nodes"), so the graph stays
-    navigable instead of a flat mesh.
-  - **Relationships are edges, not prose** — and one concept per node.
-  - *Not* a construction concern: community detection / centrality ranking
-    (Leiden, PageRank) — those are query-time jobs for the search layer, not
-    something the ingesting agent hand-computes.
-
-  Explicitly **out of scope for the current search work** — we're building
-  the search engine over graphs that already exist; ingestion comes later.
-
-- **Subagent fanout.** ⬜ Today one agent token = one Claude Code session
-  walking the graph sequentially. Future: spawn N subagents in parallel,
-  each picking up a different ready task. Builds on existing
-  infrastructure (multi-agent presence, owner-aware follow filter,
-  owner-agent OCC precedence, `announce_focus` from SKILL.md) plus a
-  coordination layer that hands out tasks.
-
-  Note: Claude Code's `Agent` tool already works against graphtask
-  *today* — subagents inherit the parent's `.graphtask/agent-session.json`
-  and share its `writer_id`, so all writes go through correctly. The
-  data layer is safe. The caveat is visual telemetry: one avatar in
-  the bar regardless of N subagents, the peer cursor flips between
-  whichever subagent most-recently called `announce_focus`, and the
-  camera-follow toggle jumps between unrelated tasks. With 2-3
-  subagents this reads as "fast-paced"; with 7 it'd be chaotic.
-  Concurrent PATCHes to the *same task* by two subagents fall through
-  to last-write-wins (the owner-agent OCC precedence relies on
-  distinct writer_ids), but in practice subagents work on different
-  tasks so this is rare.
-
-  If we ever build this out, the pieces are:
-  - **Coordination layer** — hand out ready tasks and prevent two
-    subagents from claiming the same one. Could be a server-side
-    `claim` endpoint, or rely on `/tasks/ready` polling + race on
-    first-PATCH-to-`in_progress`.
-  - **Spawn mechanism** — currently a user has to manually start N
-    Claude Code sessions each with its own `gt_*` token. Could be an
-    in-app "spawn subagents" action that mints transient tokens and
-    shells out.
-  - **Per-subagent identity beyond `writer_id`** — so the avatar bar
-    shows "Worker A", "Worker B" instead of one generic robot. Pure
-    polish: nothing breaks without it (see the note above). Would
-    require the parent agent to mint a fresh UUID + name per subagent
-    and pass them through the subagent's environment so the per-task
-    session file picks them up.
-
-- **Pause/play that actually pauses the agent.** ⬜ Today the toggle is
-  local-only — it just stops the viewer's camera from following.
-  Future: use the broadcasted `announce_focus` from the SKILL.md
-  helpers as the ack point. When paused, the server holds the next
-  PATCH from that writer until resumed, giving the human a chance to
-  intercept ("wait, don't touch that edge"). Reach because the local-
-  follow toggle covers most of the perceived need — true pause is a
-  nice-to-have, not a daily pain.
-
-- **Upload orphan reaper.** ⬜ Node background images go through
-  `/api/graphs/:gid/uploads`; today the only cleanup is the cascade on graph
-  delete. If a user replaces or removes a node's `background-image` (or
-  deletes the node entirely), the old `uploads` row sticks around. Per-graph
-  storage grows monotonically until the graph itself is deleted.
-
-  The pragmatic fix is a periodic reaper (pg_cron job or a server-side
-  interval): for each graph, find `uploads` rows whose `id` isn't referenced
-  by any `tasks.content` in that graph, and `DELETE` them. Eventually-
-  consistent, no inline coupling between task PATCH and upload lifecycle,
-  no race with a user who's mid-paste-of-the-same-bytes.
-
-  Worth doing once we see actual storage growth from real use; until then,
-  the cascade-on-graph-delete is the only sweep the system has, and that's
-  fine.
+- [ ] **Autonomous multimodal ingestion → KB graph** — the *ingestion* half of
+  the KB story (retrieval is shipped): an agent is handed a pile of
+  links/files/pasted sources and autonomously builds a concept graph (fetch,
+  extract concepts + relationships, create nodes + typed edges). Construction
+  habits to teach the skill *when built* (provenance on edges, hub nodes, one
+  concept per node) are tracked in the project graph; does **not** depend on the
+  search work.
+- [ ] **Subagent fanout** — parallel subagents claiming ready tasks. The `Agent`
+  tool already works today (subagents inherit the parent's
+  `.graphtask/agent-session.json` and share its `writer_id`, so writes are safe;
+  same-task concurrent PATCHes fall to last-write-wins). The gap is a
+  coordination layer (hand out ready tasks, prevent double-claims) and
+  per-subagent avatar identity.
+- [ ] **True pause/play** — today the toggle is local-only (stops the viewer's
+  camera). Future: use the broadcast `announce_focus` as an ack point so the
+  server holds the next PATCH from that writer until resumed.
+- [ ] **Upload orphan reaper** — periodic sweep (pg_cron / server interval) of
+  `uploads` rows no longer referenced by any `tasks.content` in the graph. Today
+  only the graph-delete cascade reaps uploads, so per-graph storage grows
+  monotonically. (See [Production notes](#production-notes).)
