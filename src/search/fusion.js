@@ -31,7 +31,7 @@ function keyOf(c) {
 export function rrf(lists, opts = {}) {
   const k = opts.k ?? DEFAULT_RRF_K;
   const weights = opts.weights;
-  const acc = new Map(); // key -> { cand, score, order }
+  const acc = new Map(); // key -> { cand, score, order, sources }
   let order = 0;
   lists.forEach((list, li) => {
     const w = weights ? (weights[li] ?? 1) : 1;
@@ -42,10 +42,11 @@ export function rrf(lists, opts = {}) {
       const existing = acc.get(key);
       if (existing) {
         existing.score += contribution;
+        existing.sources.add(cand.source);
         // Keep the richest representative: prefer one that carries a snippet.
         if (!existing.cand.snippet && cand.snippet) existing.cand = cand;
       } else {
-        acc.set(key, { cand, score: contribution, order: order++ });
+        acc.set(key, { cand, score: contribution, order: order++, sources: new Set([cand.source]) });
       }
     });
   });
@@ -69,9 +70,10 @@ export function merge(lists, opts = {}) {
       const contribution = w * (Number(cand.score) || 0);
       if (existing) {
         existing.score += contribution;
+        existing.sources.add(cand.source);
         if (!existing.cand.snippet && cand.snippet) existing.cand = cand;
       } else {
-        acc.set(key, { cand, score: contribution, order: order++ });
+        acc.set(key, { cand, score: contribution, order: order++, sources: new Set([cand.source]) });
       }
     }
   });
@@ -98,14 +100,23 @@ export function concat(lists) {
 
 /** Sort the accumulator by fused score desc, breaking ties by first-seen order
  *  (a stable sort then preserves single-list ordering exactly), and stamp the
- *  combined score + fusion source onto fresh Candidate objects. */
+ *  combined score + fusion source onto fresh Candidate objects.
+ *
+ *  `source` stays a single retriever name (the richest representative — see
+ *  the snippet preference above) for back-compat with callers that expect
+ *  one stage name. But when a candidate was retrieved by more than one
+ *  retriever, picking just one silently erases that a second leg agreed —
+ *  e.g. every node both lexical AND dense found ends up tagged 'lexical',
+ *  making dense look like it contributed nothing even when it shaped the
+ *  rank. `meta.sources` carries the full, deduped list of contributing
+ *  retrievers so callers can tell agreement from single-leg-only hits. */
 function finalize(acc, mode) {
   const rows = [...acc.values()];
   rows.sort((a, b) => (b.score - a.score) || (a.order - b.order));
-  return rows.map(({ cand, score }) =>
+  return rows.map(({ cand, score, sources }) =>
     makeCandidate(cand.taskId, score, cand.source, {
       ...(cand.snippet ? { snippet: cand.snippet } : {}),
-      meta: { ...(cand.meta || {}), fusedBy: mode },
+      meta: { ...(cand.meta || {}), fusedBy: mode, sources: [...sources].sort() },
     }),
   );
 }

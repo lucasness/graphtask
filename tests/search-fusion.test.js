@@ -48,6 +48,20 @@ describe('rrf', () => {
     const out = rrf([[without], [withSnip]], { k: 60 });
     expect(out[0].snippet).toEqual({ text: 'hi', ranges: [] });
   });
+
+  it('records every contributing retriever in meta.sources, even when one is hidden behind the snippet-bearing source', () => {
+    const lexical = [c(1, 0, 'lexical', { snippet: { text: 'hi', ranges: [] } })];
+    const dense = [c(1, 0, 'dense')];
+    const out = rrf([lexical, dense], { k: 60 });
+    expect(out[0].source).toBe('lexical');
+    expect(out[0].meta.sources).toEqual(['dense', 'lexical']);
+  });
+
+  it('a candidate found by only one retriever has a single-element meta.sources', () => {
+    const out = rrf([[c(1, 0, 'lexical')], [c(2, 0, 'dense')]], { k: 60 });
+    expect(out.find((x) => x.taskId === 1).meta.sources).toEqual(['lexical']);
+    expect(out.find((x) => x.taskId === 2).meta.sources).toEqual(['dense']);
+  });
 });
 
 describe('merge', () => {
@@ -57,6 +71,13 @@ describe('merge', () => {
     const out = merge([a, b]);
     expect(out[0].taskId).toBe(1);
     expect(out[0].score).toBeCloseTo(0.9, 10);
+  });
+
+  it('also records meta.sources for shared docs', () => {
+    const a = [c(1, 0.5, 'lexical')];
+    const b = [c(1, 0.4, 'dense')];
+    const out = merge([a, b]);
+    expect(out[0].meta.sources).toEqual(['dense', 'lexical']);
   });
 });
 
