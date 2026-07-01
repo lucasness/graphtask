@@ -628,7 +628,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/graphs` | List graphs, ordered by `updated_at DESC` |
-| POST | `/api/graphs` | Body: `{name, description?}` |
+| POST | `/api/graphs` | Body: `{name, description?, allow_anonymous?}`. Owner = the authenticated caller. **Orphan guard:** on an accounts-enabled instance an *unauthenticated* create is refused `401` (would be an owner-less graph, invisible in "My graphs") unless `allow_anonymous:true` is sent. No-auth instances + authenticated callers are unaffected. |
 | GET | `/api/graphs/:id` | Fetch one graph |
 | PATCH | `/api/graphs/:id` | Body: any of `{name, description}`; bumps `updated_at` |
 | DELETE | `/api/graphs/:id` | Cascades to tasks and edges |

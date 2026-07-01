@@ -213,41 +213,59 @@ describe('Graph CRUD', () => {
     it('claim transfers a legacy graph to a signed-in user', async () => {
       // Need a signed-in caller for this — use the test header adapter so the
       // claim attributes to a real users row.
-      const { _setAdapterForTests } = await import('../src/auth/index.js');
+      const authIdx = await import('../src/auth/index.js');
       const { makeHeaderAuthAdapter } = await import('./__support__/test_auth.js');
-      _setAdapterForTests(makeHeaderAuthAdapter());
-      const pool = (await import('./setup.js')).getTestPool();
-      await pool.query(
-        `INSERT INTO users (provider, provider_user_id, email, display_name)
-         VALUES ('test-header', 'claimant', 'claimant@test.local', 'claimant')`,
-      );
-      const created = await request(app).post('/api/graphs').send({ name: 'legacy' });
-      const gid = created.body.id;
-      expect(created.body.owner_user_id).toBeNull();
+      authIdx._setAdapterForTests(makeHeaderAuthAdapter());
+      try {
+        const pool = (await import('./setup.js')).getTestPool();
+        await pool.query(
+          `INSERT INTO users (provider, provider_user_id, email, display_name)
+           VALUES ('test-header', 'claimant', 'claimant@test.local', 'claimant')`,
+        );
+        // With accounts enabled (header adapter installed), an owner-less
+        // "legacy" graph is only born via the explicit opt-in — that's exactly
+        // this scenario (a signed-out create later claimed on sign-in).
+        const created = await request(app)
+          .post('/api/graphs')
+          .send({ name: 'legacy', allow_anonymous: true });
+        const gid = created.body.id;
+        expect(created.body.owner_user_id).toBeNull();
 
-      const claim1 = await request(app)
-        .post(`/api/graphs/${gid}/claim`)
-        .set('X-Test-User-Id', 'claimant');
-      expect(claim1.status).toBe(200);
-      expect(claim1.body.claimed).toBe(true);
-      expect(claim1.body.graph.owner_user_id).toBeTruthy();
+        const claim1 = await request(app)
+          .post(`/api/graphs/${gid}/claim`)
+          .set('X-Test-User-Id', 'claimant');
+        expect(claim1.status).toBe(200);
+        expect(claim1.body.claimed).toBe(true);
+        expect(claim1.body.graph.owner_user_id).toBeTruthy();
 
-      // Idempotent for the same claimant.
-      const claim2 = await request(app)
-        .post(`/api/graphs/${gid}/claim`)
-        .set('X-Test-User-Id', 'claimant');
-      expect(claim2.status).toBe(200);
-      expect(claim2.body.already_owner).toBe(true);
+        // Idempotent for the same claimant.
+        const claim2 = await request(app)
+          .post(`/api/graphs/${gid}/claim`)
+          .set('X-Test-User-Id', 'claimant');
+        expect(claim2.status).toBe(200);
+        expect(claim2.body.already_owner).toBe(true);
 
-      // A second user tries → 403.
-      await pool.query(
-        `INSERT INTO users (provider, provider_user_id, email, display_name)
-         VALUES ('test-header', 'other', 'other@test.local', 'other')`,
-      );
-      const claim3 = await request(app)
-        .post(`/api/graphs/${gid}/claim`)
-        .set('X-Test-User-Id', 'other');
-      expect(claim3.status).toBe(403);
+        // A second user tries → 403.
+        await pool.query(
+          `INSERT INTO users (provider, provider_user_id, email, display_name)
+           VALUES ('test-header', 'other', 'other@test.local', 'other')`,
+        );
+        const claim3 = await request(app)
+          .post(`/api/graphs/${gid}/claim`)
+          .set('X-Test-User-Id', 'other');
+        expect(claim3.status).toBe(403);
+      } finally {
+        // Restore the anonymous (none) adapter so later anon-create tests in
+        // this file don't inherit authEnabled()===true and trip the orphan
+        // guard on POST /api/graphs. (The swap is a module-global singleton.)
+        authIdx._resetAdapterCacheForTests();
+        authIdx._setAdapterForTests({
+          provider: 'none',
+          middlewares: () => [],
+          verify: async () => null,
+          publishableKey: () => null,
+        });
+      }
     });
 
     it('claim refuses an unauthed request with 401', async () => {

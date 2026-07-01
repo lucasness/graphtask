@@ -6375,7 +6375,11 @@ function ensureActiveGraph() {
       const res = await fetch('/api/graphs', {
         method: 'POST',
         headers: writeHeaders(),
-        body: JSON.stringify({ name }),
+        // allow_anonymous acknowledges the server's orphan guard: a signed-out
+        // user genuinely may create an owner-less graph here (it's marked
+        // created:true and auto-claimed on sign-in). Ignored server-side when
+        // the request is authenticated — the real owner always wins.
+        body: JSON.stringify({ name, allow_anonymous: true }),
       });
       if (res.ok) { created = await res.json(); break; }
       if (res.status !== 409) throw new Error('failed to create graph');
@@ -6521,7 +6525,10 @@ function promptNewGraphName() {
         const res = await fetch('/api/graphs', {
           method: 'POST',
           headers: writeHeaders(),
-          body: JSON.stringify({ name: trimmed }),
+          // allow_anonymous: see the lazy-create call above — signed-out users
+          // may make an owner-less graph (auto-claimed on sign-in); the server
+          // ignores this flag when the request is authenticated.
+          body: JSON.stringify({ name: trimmed, allow_anonymous: true }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));

@@ -25,6 +25,15 @@ export async function getAdapter() {
   return cached;
 }
 
+// Whether this deployment has accounts enabled — i.e. any provider other than
+// `none`. Reads the currently-installed adapter (set at boot by getAdapter, or
+// swapped in by tests), so it stays correct under test adapter swaps. Returns
+// false before any adapter is cached. Synchronous on purpose: hot-path callers
+// (e.g. the POST /api/graphs orphan guard) shouldn't await.
+export function authEnabled() {
+  return !!cached && cached.provider !== 'none';
+}
+
 // Test-only: drop the cached adapter so a different AUTH_PROVIDER env can be
 // picked up. Production never calls this.
 export function _resetAdapterCacheForTests() {

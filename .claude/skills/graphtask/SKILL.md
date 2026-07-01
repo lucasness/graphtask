@@ -105,6 +105,8 @@ Legacy graphs (`owner_user_id IS NULL`, created before Phase B or on a no-auth i
 
 Because of that, **never go anonymous silently.** If `GRAPHTASK_AGENT_TOKEN` is unset on an auth-enabled instance, before your first write tell the user, plainly: *you can keep working anonymously, but a token saves your work to your account (and shows it in your sidebar) — here's how to mint one.* Then let them choose — wait for a token if they want one, or proceed anonymously if they'd rather just get going. Anonymous is a fully supported path; the only rule is that it's the user's **informed** choice, not a default you slid into. (On a no-auth instance there's no token concept — anonymous is the only mode, so no nudge is needed.)
 
+> **The server enforces this, so a silent orphan is now impossible.** On an accounts-enabled instance, an *unauthenticated* `POST /api/graphs` is **refused with `401`** ("refusing to create a graph with no owner") unless the body carries `allow_anonymous: true`. A bare token-less create no longer returns a misleading `201` — it fails loudly and tells you to send the token or opt in explicitly. If the user has genuinely chosen anonymous, send `{"name": ..., "allow_anonymous": true}`. With a token set (identity block below) you never hit this — your graphs land owned.
+
 To attribute writes, the user generates a token from the in-app key-icon panel (Settings → Agent tokens) and exports it as `GRAPHTASK_AGENT_TOKEN`; the identity block below picks it up automatically. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
 
 ### Why am I getting 401 / 403?

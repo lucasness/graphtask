@@ -2,6 +2,7 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 import { requireGraph } from '../auth/require.js';
+import { authEnabled } from '../auth/index.js';
 import { canEdit, canManage } from '../auth/access.js';
 import { broadcastGraphEvent } from '../sse.js';
 
@@ -73,6 +74,26 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  // Orphan guard. On an accounts-enabled instance, silently creating an
+  // owner-less graph for an unauthenticated caller is a footgun: it returns
+  // 201 but the graph has owner_user_id = NULL, so it never shows in the
+  // caller's "My graphs" and is reachable only by URL — easy to think you
+  // saved work you actually orphaned. Refuse unless the caller either
+  // authenticates (agent token / session) or explicitly opts in with
+  // `allow_anonymous: true`. No-auth instances (authEnabled() === false) and
+  // authenticated callers are unaffected. See auth-model.md.
+  const allowAnonymous = req.body?.allow_anonymous === true;
+  if (!req.user && authEnabled() && !allowAnonymous) {
+    return res.status(401).json({
+      error: 'refusing to create a graph with no owner',
+      hint:
+        'This instance has accounts enabled, but this request is unauthenticated — ' +
+        'the graph would have no owner and never appear in your "My graphs". Send an ' +
+        'agent token (Authorization: Bearer gt_…) to save it to your account, or pass ' +
+        '{"allow_anonymous": true} to intentionally create an owner-less, URL-only graph.',
+    });
+  }
+
   const { name, description } = req.body;
   const nameErr = validateName(name);
   if (nameErr) return res.status(400).json({ error: nameErr });

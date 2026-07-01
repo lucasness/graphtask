@@ -117,6 +117,15 @@ Translated into the three inputs every access decision reads:
 - **`member.role`** — an explicit per-person grant: `viewer` / `editor`,
   layered on top of the general tier. (= "Share with bob@…".)
 
+> **Creating a graph — the orphan guard.** `owner_user_id` is stamped at
+> creation from the authenticated caller. On an **accounts-enabled** instance an
+> *unauthenticated* `POST /api/graphs` is **refused (`401`)** rather than
+> silently creating an owner-less graph the caller can never find in "My
+> graphs" — unless it opts in with `{"allow_anonymous": true}` (what the web UI
+> sends for a signed-out user, who then auto-claims the graph on sign-in).
+> Authenticated callers and no-auth instances are unaffected. Enforced in
+> `src/routes/graphs.js`, gated on `authEnabled()` (`src/auth/index.js`).
+
 And the three **capability levels** those inputs resolve to
 (`src/auth/access.js`):
 
