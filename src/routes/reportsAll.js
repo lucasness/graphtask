@@ -22,6 +22,10 @@ import pool from '../db.js';
 const router = Router();
 
 router.get('/', async (req, res, next) => {
+  // Never let the browser serve a cached rail: a report generated out-of-band
+  // (agent/workflow) must appear on the next reader-mode entry, not after a hard
+  // refresh. Heuristic HTTP caching of this GET was surfacing a stale empty list.
+  res.set('Cache-Control', 'no-store');
   if (!req.user) return res.json([]);
   try {
     const { rows } = await pool.query(

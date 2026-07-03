@@ -24,6 +24,8 @@ const router = Router({ mergeParams: true });
 // even on a rail-opened graph they don't control (E16.14, FIXED #6).
 router.get('/', async (req, res) => {
   const { gid } = req.params;
+  // Fresh every time — a regenerated report must show without a hard refresh.
+  res.set('Cache-Control', 'no-store');
   const r = await pool.query('SELECT * FROM reports WHERE graph_id = $1', [gid]);
   if (r.rows.length === 0) return res.status(404).json({ error: 'no report yet' });
   res.json({ ...r.rows[0], viewer_can_edit: canEdit(req.user, req.graph, req.graphMember) });
@@ -38,6 +40,7 @@ router.get('/', async (req, res) => {
 // PATCH like rename), so any change since generation counts as stale — intended.
 router.get('/meta', async (req, res) => {
   const { gid } = req.params;
+  res.set('Cache-Control', 'no-store');
   const r = await pool.query(
     'SELECT title, generated_at, updated_at, source_graph_version FROM reports WHERE graph_id = $1',
     [gid],
