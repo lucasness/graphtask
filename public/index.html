@@ -38,6 +38,14 @@
   <aside id="sidebar">
     <div id="sidebar-header">
       <button id="sidebar-new-btn" class="sb-new-btn" title="Create a new graph">New Graph</button>
+      <!-- Reader-mode toggle (E16.3). Client-only view flip between the graph
+           canvas and the report reader; both glyphs live in the DOM and CSS
+           shows whichever matches body.view-reader (same two-glyph pattern as
+           #presence-eye — a single-<i> pure-CSS Phosphor swap won't work). -->
+      <button id="sidebar-reader-btn" class="sb-icon-btn" title="Reader mode" aria-label="Toggle reader mode" aria-pressed="false">
+        <i class="ph ph-book reader-icon-closed" aria-hidden="true"></i>
+        <i class="ph ph-book-open reader-icon-open" aria-hidden="true"></i>
+      </button>
       <button id="sidebar-collapse-btn" class="sb-icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">
         <i class="ph ph-arrow-line-left" aria-hidden="true"></i>
       </button>
@@ -46,6 +54,11 @@
       <i class="ph ph-arrow-line-right" aria-hidden="true"></i>
     </button>
     <button id="sidebar-new-btn-collapsed" class="sb-icon-btn sb-collapsed-only" title="Create a new graph" aria-label="Create a new graph">+</button>
+    <!-- Reader toggle stays reachable when the header hides on collapse. -->
+    <button id="sidebar-reader-btn-collapsed" class="sb-icon-btn sb-collapsed-only" title="Reader mode" aria-label="Toggle reader mode" aria-pressed="false">
+      <i class="ph ph-book reader-icon-closed" aria-hidden="true"></i>
+      <i class="ph ph-book-open reader-icon-open" aria-hidden="true"></i>
+    </button>
     <div id="sidebar-list"></div>
     <div id="sidebar-empty" class="hidden">
       <p>No graphs yet</p>
@@ -120,6 +133,24 @@
         </button>
       </div>
       <div class="kb-column-cards" id="kb-cards-done"></div>
+    </div>
+  </div>
+
+  <!-- Reader view container (E16.3). Same canvas region as #cy/#kanban;
+       applyView() toggles which is visible. Client-only: rendering a report
+       here performs zero writes to the graph. The body is rendered through a
+       Toast UI Viewer (built-in sanitizer) — never via innerHTML. -->
+  <div id="reader" class="hidden">
+    <div id="reader-article">
+      <div id="reader-report-header" class="hidden">
+        <h1 id="reader-title"></h1>
+        <p id="reader-desc"></p>
+        <div id="reader-meta"></div>
+      </div>
+      <div id="reader-body"></div>
+      <div id="reader-empty" class="hidden">
+        <p>No report yet — ask your agent to generate one.</p>
+      </div>
     </div>
   </div>
 

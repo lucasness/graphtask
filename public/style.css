@@ -625,6 +625,80 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   display: none;
 }
 
+/* Reader view (E16.3) occupies the same canvas region as #cy/#kanban;
+   applyView() flips `.hidden`. A calm long-form reading column: the report
+   body renders through a Toast UI Viewer into #reader-body. Client-only —
+   nothing here writes to the graph. */
+#reader {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-w);
+  width: calc(100vw - var(--sidebar-w));
+  height: 100vh;
+  background: var(--canvas-bg);
+  overflow-y: auto;
+  box-sizing: border-box;
+  /* 80px top clears the presence chrome, matching #kanban's clearance. */
+  padding: 80px 32px;
+}
+#reader.hidden { display: none; }
+#reader-article {
+  max-width: 68ch;
+  margin: 0 auto;
+}
+#reader-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  color: var(--tx);
+  margin: 0 0 8px;
+}
+#reader-desc {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--tx-2);
+  margin: 0 0 6px;
+}
+#reader-desc:empty { display: none; }
+#reader-meta {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--tx-3);
+  padding-bottom: 16px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+#reader-body .toastui-editor-contents {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+}
+/* Empty-state cue: same serif register as the canvas empty state. */
+#reader-empty {
+  text-align: center;
+  padding-top: 25vh;
+  font-family: var(--font-display);
+  font-size: var(--text-heading);
+  letter-spacing: -0.02em;
+  color: var(--tx-2);
+}
+/* Reader has no create/fit/tidy actions — hide the bottom toolbar wholesale
+   (heavier gate than kanban's per-button hiding: nothing in it applies). */
+body.view-reader #bottom-bar { display: none; }
+/* Book toggle: both glyphs live in the DOM; show whichever matches the
+   current mode (the #presence-eye two-glyph pattern). Ember tint marks the
+   active tool, outline-only per the design system. */
+#sidebar .reader-icon-open { display: none; }
+body.view-reader #sidebar .reader-icon-open { display: inline; }
+body.view-reader #sidebar .reader-icon-closed { display: none; }
+body.view-reader #sidebar-reader-btn,
+body.view-reader #sidebar-reader-btn-collapsed { color: var(--color-ember-orange); }
+@media (max-width: 768px) {
+  #reader { padding: 72px 16px; }
+}
+
 /* Left sidebar */
 #sidebar {
   /* Slow, expressive sidebar transitions per the mymind motion spec.
@@ -694,7 +768,13 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
 /* Collapsed-only buttons are rendered in DOM at all times so their listeners
    stay bound; they're hidden until #sidebar enters .collapsed. */
 #sidebar-expand-btn,
-#sidebar-new-btn-collapsed { display: none; }
+#sidebar-new-btn-collapsed,
+#sidebar-reader-btn-collapsed { display: none; }
+#sidebar.collapsed #sidebar-reader-btn-collapsed {
+  display: inline-flex;
+  align-self: center;
+  margin-bottom: 6px;
+}
 #sidebar.collapsed #sidebar-expand-btn {
   display: inline-flex;
   align-self: center;

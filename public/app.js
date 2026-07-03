@@ -1240,6 +1240,19 @@ function setViewPref(gid, mode) {
   if (mode !== 'graph' && mode !== 'kanban') return;
   try { localStorage.setItem(VIEW_KEY_PREFIX + gid, mode); } catch {}
 }
+// Reader mode (E16.3). GLOBAL flag, not per-graph — reader is a cross-graph
+// reading mode (the report rail spans graphs, E16.5), so it survives graph
+// switches until the user flips back. Deliberately NOT stored in getViewPref
+// (whose values stay 'graph'|'kanban'): the per-graph pref remembers which
+// canvas view to return TO when reader turns off. Client-only; toggling
+// reader performs zero writes to the graph.
+const READER_MODE_KEY = 'graphtask:reader';
+function readerModeOn() {
+  try { return localStorage.getItem(READER_MODE_KEY) === '1'; } catch { return false; }
+}
+function setReaderModeFlag(on) {
+  try { localStorage.setItem(READER_MODE_KEY, on ? '1' : '0'); } catch {}
+}
 // --- View registry (modular UI primitives) -------------------------------
 // Each rendering lens (graph DAG, kanban, and future tech-tree/table/etc.)
 // is described by one entry in VIEWS implementing the shared View interface
@@ -1355,8 +1368,15 @@ const VIEWS = {
     id: 'graph',
     containerId: 'cy',
     bodyClass: 'view-graph',
-    // Cytoscape stays mounted; nothing to render on (re-)entry.
-    enter() {},
+    // Cytoscape stays mounted; nothing to render on (re-)entry — except when
+    // returning from reader: the sidebar may have collapsed/expanded while
+    // #cy was display:none, so cytoscape measured a stale (or zero) viewport.
+    // rAF + cy.resize is the setSidebarCollapsed idiom.
+    enter(prev) {
+      if (prev === 'reader' && typeof cy !== 'undefined' && cy) {
+        requestAnimationFrame(() => { try { cy.resize(); } catch {} });
+      }
+    },
     // Graph view never shifts the kanban; ensure any leftover shift clears.
     adjustLayout() { clearKanbanShift(); },
     updateToolbar() { updateGraphToolbar(); },
@@ -1446,7 +1466,127 @@ const VIEWS = {
       createKanbanTask((col && col.dataset.status) || 'todo');
     },
   },
+  reader: {
+    id: 'reader',
+    containerId: 'reader',
+    bodyClass: 'view-reader',
+    // Always re-render on entry: the report may have been (re)generated while
+    // another view was active. renderReader is async + token-guarded.
+    enter() { renderReader(); },
+    // Reader never shifts for the panel and has no toolbar/peer/create
+    // surfaces — every interface method below is a deliberate no-op so
+    // peer-cursor + agent-follow dispatch stays off absent cy nodes while
+    // the reader is visible. It is a pure read surface: no method here may
+    // ever write to the graph.
+    adjustLayout() {},
+    updateToolbar() { updateReaderToolbar(); },
+    handleKeydown() {},
+    onEscape() {},
+    renderPeerCursors() {},
+    wipePeerCards() {},
+    paintPeerCard() {},
+    onRemoteTaskEvent() {},
+    focusOnTask() {},
+    createPrimaryItem() {},
+  },
 };
+
+// --- Reader mode rendering (E16.3) ---------------------------------------
+// The report body renders through a dedicated Toast UI Viewer — NOT the
+// global richEditor (autosave-bound; reusing it would fight setMarkdown /
+// theme recreate and trip the _editorSaveSuppressedUntil loop-guard) and
+// never via template-string innerHTML (the Viewer's bundled sanitizer is the
+// XSS gate; there is no marked()/DOMPurify helper in this client).
+let readerViewer = null;
+// Guards stale async renders: a fast graph-switch or double-toggle while a
+// fetch is in flight must not paint an outdated report over the new one.
+let readerRenderToken = 0;
+
+function destroyReaderViewer() {
+  if (readerViewer) {
+    try { readerViewer.destroy(); } catch {}
+    readerViewer = null;
+  }
+  const el = document.getElementById('reader-body');
+  if (el) el.innerHTML = '';
+}
+
+function readerEmptyState(message) {
+  destroyReaderViewer();
+  const header = document.getElementById('reader-report-header');
+  if (header) header.classList.add('hidden');
+  const empty = document.getElementById('reader-empty');
+  if (empty) {
+    empty.querySelector('p').textContent = message;
+    empty.classList.remove('hidden');
+  }
+}
+
+async function renderReader() {
+  const token = ++readerRenderToken;
+  if (activeGraphId == null) {
+    readerEmptyState('No graph selected.');
+    return;
+  }
+  let res;
+  try {
+    res = await fetch(`${apiBase()}/report`);
+  } catch {
+    readerEmptyState('Could not load the report — check your connection.');
+    return;
+  }
+  // A newer render started, or the user already left reader mode.
+  if (token !== readerRenderToken || currentView !== 'reader') return;
+  if (res.status === 404) {
+    readerEmptyState('No report yet — ask your agent to generate one.');
+    return;
+  }
+  if (!res.ok) {
+    readerEmptyState(res.status === 403
+      ? 'You don’t have access to this report.'
+      : 'Could not load the report.');
+    return;
+  }
+  const report = await res.json();
+  if (token !== readerRenderToken || currentView !== 'reader') return;
+  // Reports are stored as pure markdown (title/description are columns), but
+  // strip a leading YAML fence defensively in case a generator embedded one.
+  const { body } = parseFrontmatter(report.body || '');
+  if (!body.trim()) {
+    readerEmptyState('No report yet — ask your agent to generate one.');
+    return;
+  }
+  const empty = document.getElementById('reader-empty');
+  if (empty) empty.classList.add('hidden');
+  const header = document.getElementById('reader-report-header');
+  if (header) {
+    header.classList.remove('hidden');
+    // textContent only — the header fields never pass through a sanitizer.
+    document.getElementById('reader-title').textContent = report.title || '';
+    document.getElementById('reader-desc').textContent = report.description || '';
+    const dated = report.updated_at || report.generated_at;
+    document.getElementById('reader-meta').textContent = dated
+      ? `Updated ${formatUtc(dated)}` : '';
+  }
+  destroyReaderViewer();
+  readerViewer = toastui.Editor.factory({
+    el: document.getElementById('reader-body'),
+    viewer: true,
+    initialValue: body,
+    usageStatistics: false,
+    theme: appSettings.theme === 'dark' ? 'dark' : 'default',
+  });
+}
+
+// Reader shows no bottom-toolbar chrome; hiding is CSS-gated off
+// body.view-reader, so there's nothing to repaint here.
+function updateReaderToolbar() {}
+
+// Viewer theme is baked at construction (same constraint as the rich
+// editor); re-render rebuilds it under the new theme when reader is active.
+function recreateReaderViewerForTheme() {
+  if (currentView === 'reader') renderReader();
+}
 
 function apiBase() {
   if (activeGraphId == null) {
@@ -2361,6 +2501,8 @@ function setSettingTheme(theme) {
   // Toast UI Editor theme is baked in at construction; recreate it so the
   // markdown editor's surface matches the new theme.
   recreateRichEditorForTheme();
+  // Same constraint for the reader's Viewer (no-op unless reader is active).
+  recreateReaderViewerForTheme();
 }
 
 // Toast UI's addImageBlobHook callback. Receives a Blob (the pasted /
@@ -5955,6 +6097,10 @@ function openGraphEditModal(graph) {
   const viewCleanup = wirePicker(document.getElementById('graph-modal-view'), {
     initial: getViewPref(graph.id),
     onChange: (v) => {
+      // Picking graph/kanban here is an explicit exit from reader mode — clear
+      // the global flag or the next graph-switch would snap back to reader.
+      // The book toggle is the only path that sets the flag to '1'.
+      setReaderModeFlag(false);
       setViewPref(graph.id, v);
       applyView(v);
     },
@@ -6577,7 +6723,10 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   invalidateSearchDocs();
   if (isSearchBarOpen()) closeSearchBar({ restore: false });
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
-  applyView(getViewPref(id));
+  // Reader is a global cross-graph mode: while it's on, graph switches (and
+  // boot, which funnels through here) stay in reader; the per-graph view
+  // pref is what reader returns to when toggled off.
+  applyView(readerModeOn() ? 'reader' : getViewPref(id));
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
   renderSidebar();
   if (cy) cy.elements().remove();
@@ -9488,6 +9637,22 @@ document.addEventListener('DOMContentLoaded', () => {
   if (expandBtn) expandBtn.addEventListener('click', () => setSidebarCollapsed(false));
   if (newBtn) newBtn.addEventListener('click', () => { createGraphFromUI(); });
   if (newBtnCollapsed) newBtnCollapsed.addEventListener('click', () => { createGraphFromUI(); });
+  // Reader-mode book toggle (E16.3): flips between reader and the graph's own
+  // view pref. Client-only — the click writes localStorage and repaints, never
+  // the graph. Icon swap is CSS-driven off body.view-reader.
+  const readerBtns = [
+    document.getElementById('sidebar-reader-btn'),
+    document.getElementById('sidebar-reader-btn-collapsed'),
+  ].filter(Boolean);
+  function setReaderMode(on) {
+    setReaderModeFlag(on);
+    readerBtns.forEach((b) => b.setAttribute('aria-pressed', on ? 'true' : 'false'));
+    applyView(on ? 'reader' : getViewPref(activeGraphId));
+  }
+  readerBtns.forEach((b) => b.addEventListener('click', () => {
+    setReaderMode(!document.body.classList.contains('view-reader'));
+  }));
+  if (readerModeOn()) readerBtns.forEach((b) => b.setAttribute('aria-pressed', 'true'));
   if (appSettingsBtn) appSettingsBtn.addEventListener('click', () => {
     if (isSidebarCollapsed()) setSidebarCollapsed(false);
     openSettings();
