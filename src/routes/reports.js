@@ -48,6 +48,10 @@ router.get('/meta', async (req, res) => {
     generated_at: row.generated_at,
     updated_at: row.updated_at,
     source_graph_version: row.source_graph_version,
+    // The graph's last-change timestamp — the staleness BASELINE. Returned
+    // alongside the report timestamps so a client can compute staleness itself
+    // (report older than the graph) without guessing (E16.12).
+    graph_updated_at: graphUpdatedAt,
     stale,
   });
 });
