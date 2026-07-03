@@ -1575,6 +1575,10 @@ function destroyReaderViewer() {
   if (readerTocObserver) { try { readerTocObserver.disconnect(); } catch {} readerTocObserver = null; }
   const toc = document.getElementById('reader-toc');
   if (toc) { toc.innerHTML = ''; toc.classList.add('hidden'); }
+  // Tear down citations too (E16 footnotes): clear the References list + tooltip.
+  const refs = document.getElementById('reader-references');
+  if (refs) { refs.innerHTML = ''; refs.classList.add('hidden'); }
+  hideCiteTooltip();
 }
 
 // Build the Contents rail from the rendered report (E16.17). Extracts h2–h4 via
@@ -1626,6 +1630,176 @@ function buildReaderToc(markdown) {
     for (const [id, link] of links) link.classList.toggle('active', id === activeId);
   }, { root: document.getElementById('reader'), rootMargin: '0px 0px -75% 0px', threshold: 0 });
   for (let i = 0; i < n; i++) readerTocObserver.observe(headings[i]);
+}
+
+// --- Reader citations (E16 footnotes) ------------------------------------
+// The generator emits [[cite:<id>]] markers; we turn each into a small numbered
+// superscript (hover → node title/description, click → open the node in the
+// graph) and build a numbered References list. Numbering is assigned by
+// window.ReaderCite in first-appearance order, so it re-derives on every render.
+// Pure DOM + one read fetch for node metadata — no graph write.
+async function buildReaderCitations(markdown, gid) {
+  const refsEl = document.getElementById('reader-references');
+  const bodyEl = document.getElementById('reader-body');
+  const clear = () => { if (refsEl) { refsEl.innerHTML = ''; refsEl.classList.add('hidden'); } };
+  if (!bodyEl || !window.ReaderCite) { clear(); return; }
+  const nums = window.ReaderCite.numberMap(markdown);
+  if (nums.size === 0) { clear(); return; }
+  // One read call for the cited nodes' titles/descriptions (tooltips + list).
+  let nodeMap = new Map();
+  try {
+    const res = await fetch(`/api/graphs/${encodeURIComponent(gid)}/graph`, { cache: 'no-store' });
+    if (res.ok) {
+      const g = await res.json();
+      for (const nd of g.nodes || []) {
+        nodeMap.set(String(nd.id), {
+          title: nd.title ?? nd.meta?.title ?? '',
+          description: nd.description ?? nd.meta?.description ?? '',
+        });
+      }
+    }
+  } catch {}
+  // The user may have left reader mode or switched reports while fetching.
+  if (currentView !== 'reader' || readerReportGid !== gid) return;
+  const re = new RegExp(window.ReaderCite.CITE_MARKER_SOURCE, 'g');
+  transformCitesInDom(bodyEl, re, nums, gid);
+  buildReferencesList(nums, nodeMap, gid);
+  wireCiteInteractions(bodyEl, nodeMap, gid);
+}
+
+// Replace [[cite:...]] text (outside code blocks) with superscript cite links.
+function transformCitesInDom(root, re, nums, gid) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const hits = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    re.lastIndex = 0;
+    if (re.test(node.nodeValue) && !(node.parentElement && node.parentElement.closest('pre, code'))) {
+      hits.push(node);
+    }
+  }
+  for (const textNode of hits) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    re.lastIndex = 0;
+    const text = textNode.nodeValue;
+    while ((m = re.exec(text))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const ids = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+      const sup = document.createElement('sup');
+      sup.className = 'reader-cite';
+      ids.forEach((id, i) => {
+        if (i > 0) sup.appendChild(document.createTextNode(','));
+        const a = document.createElement('a');
+        a.className = 'cite-ref';
+        a.dataset.nodeId = id;
+        a.dataset.gid = gid;
+        a.textContent = String(nums.get(id) ?? '?');
+        sup.appendChild(a);
+      });
+      frag.appendChild(sup);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+// The numbered References list at the foot of the report. <ol> auto-numbers in
+// the same order the citation numbers were assigned.
+function buildReferencesList(nums, nodeMap, gid) {
+  const refsEl = document.getElementById('reader-references');
+  if (!refsEl) return;
+  refsEl.innerHTML = '';
+  const h = document.createElement('h2');
+  h.textContent = 'References';
+  refsEl.appendChild(h);
+  const ol = document.createElement('ol');
+  // Iterate in citation-number order.
+  const ordered = [...nums.entries()].sort((a, b) => a[1] - b[1]);
+  for (const [id] of ordered) {
+    const li = document.createElement('li');
+    li.id = `reader-ref-${nums.get(id)}`;
+    const meta = nodeMap.get(id);
+    const a = document.createElement('a');
+    a.className = 'cite-ref-link';
+    a.href = `/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.appendChild(document.createTextNode(meta?.title || `Node #${id}`)); // XSS-safe
+    li.appendChild(a);
+    if (meta?.description) li.appendChild(document.createTextNode(` — ${meta.description}`));
+    ol.appendChild(li);
+  }
+  refsEl.appendChild(ol);
+  refsEl.classList.remove('hidden');
+}
+
+// Hover tooltip + click-through for the inline cite superscripts. A cite click
+// opens the SAME graph in a NEW TAB in graph mode with the node selected
+// (/g/:gid?node=:id forces graph view on load — see switchActiveGraph).
+function wireCiteInteractions(bodyEl, nodeMap, gid) {
+  for (const a of bodyEl.querySelectorAll('a.cite-ref')) {
+    const id = a.dataset.nodeId;
+    const meta = nodeMap.get(id);
+    a.tabIndex = 0;
+    a.setAttribute('role', 'link');
+    a.title = meta?.title || `Node #${id}`; // native fallback
+    a.addEventListener('mouseenter', () => showCiteTooltip(a, id, meta));
+    a.addEventListener('mouseleave', hideCiteTooltip);
+    a.addEventListener('focus', () => showCiteTooltip(a, id, meta));
+    a.addEventListener('blur', hideCiteTooltip);
+    const open = () => window.open(`/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`, '_blank', 'noopener');
+    a.addEventListener('click', (e) => { e.preventDefault(); open(); });
+    a.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
+  }
+}
+
+function ensureCiteTooltip() {
+  let tip = document.getElementById('reader-cite-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'reader-cite-tooltip';
+    tip.className = 'hidden';
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function showCiteTooltip(anchor, id, meta) {
+  const tip = ensureCiteTooltip();
+  tip.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'cite-tip-title';
+  title.textContent = meta?.title || `Node #${id}`; // textContent — XSS-safe
+  tip.appendChild(title);
+  if (meta?.description) {
+    const desc = document.createElement('div');
+    desc.className = 'cite-tip-desc';
+    desc.textContent = meta.description;
+    tip.appendChild(desc);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'cite-tip-hint';
+  hint.textContent = 'Click to open in the graph →';
+  tip.appendChild(hint);
+  tip.classList.remove('hidden');
+  // Position below the superscript, clamped to the viewport; flip above if needed.
+  const r = anchor.getBoundingClientRect();
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - tw - 8);
+  if (left < 8) left = 8;
+  let top = r.bottom + 6;
+  if (top + th > window.innerHeight - 8) top = r.top - th - 6;
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function hideCiteTooltip() {
+  const tip = document.getElementById('reader-cite-tooltip');
+  if (tip) tip.classList.add('hidden');
 }
 
 function readerEmptyState(message) {
@@ -1737,6 +1911,7 @@ async function renderReaderBody(gid) {
   currentReport = report;
   updateStalenessBanner();
   buildReaderToc(body);
+  buildReaderCitations(body, gid);
   return 'ok';
 }
 
@@ -6983,8 +7158,11 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
   // Reader is a global cross-graph mode: while it's on, graph switches (and
   // boot, which funnels through here) stay in reader; the per-graph view
-  // pref is what reader returns to when toggled off.
-  applyView(readerModeOn() ? 'reader' : getViewPref(id));
+  // pref is what reader returns to when toggled off. EXCEPTION: a ?node= deep
+  // link (e.g. a citation click's new tab) is inherently a graph action — force
+  // graph view so the selected node is visible even if the shared reader flag
+  // is on. The flag itself is untouched, so other tabs stay in reader.
+  applyView(_pendingNodeFocus ? 'graph' : (readerModeOn() ? 'reader' : getViewPref(id)));
   if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
   renderSidebar();
   if (cy) cy.elements().remove();

@@ -771,6 +771,84 @@ body.view-reader #reader-list { display: block; }
 @media (max-width: 1279px) {
   #reader-toc { display: none !important; }
 }
+/* Inline citation footnotes (E16). Small raised ember numbers, click-through. */
+.reader-cite { font-size: 0; white-space: nowrap; }
+.reader-cite .cite-ref {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 0;
+  vertical-align: super;
+  color: var(--color-ember-orange);
+  cursor: pointer;
+  text-decoration: none;
+  padding: 0 1px;
+}
+.reader-cite .cite-ref:hover,
+.reader-cite .cite-ref:focus-visible { text-decoration: underline; outline: none; }
+.reader-cite sub, .reader-cite sup { font-size: 11px; }
+/* Hover card for a citation: node title + description + open hint. */
+#reader-cite-tooltip {
+  position: fixed;
+  z-index: 30;
+  max-width: 320px;
+  padding: 10px 12px;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+}
+#reader-cite-tooltip.hidden { display: none; }
+#reader-cite-tooltip .cite-tip-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tx);
+  margin-bottom: 4px;
+}
+#reader-cite-tooltip .cite-tip-desc {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--tx-2);
+  margin-bottom: 6px;
+}
+#reader-cite-tooltip .cite-tip-hint {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--color-ember-orange);
+}
+/* Numbered References list at the foot of the report. */
+#reader-references {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+#reader-references.hidden { display: none; }
+#reader-references h2 {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--tx);
+  margin: 0 0 12px;
+}
+#reader-references ol {
+  margin: 0;
+  padding-left: 22px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--tx-2);
+}
+#reader-references li { margin-bottom: 6px; }
+#reader-references .cite-ref-link {
+  color: var(--color-cobalt-link);
+  text-decoration: none;
+  font-weight: 500;
+}
+#reader-references .cite-ref-link:hover { text-decoration: underline; }
 /* Amber staleness dot on a rail row whose report is out of date. Distinct from
    the active row's orange .sb-dot — this marks content freshness, not selection. */
 #reader-list .sb-item.stale .sb-dot {

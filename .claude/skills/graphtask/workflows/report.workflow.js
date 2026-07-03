@@ -58,6 +58,12 @@ const MAX_ROUNDS = 2; // completeness critic → re-draft rounds
 // forbids writes, so no drafter can wander into a mutation.
 const READ = `Read the graphtask graph "${gid}" at ${base} (token in $GRAPHTASK_AGENT_TOKEN; read-only). Use ONLY read endpoints (GET /graph, GET /tasks/:id, the read-gated POST /search|/context|/frontier|/inconsistencies). Never write.`;
 
+// Citation convention. Drafters cite NODES with a stable [[cite:<id>]] marker
+// instead of spelling out ("Title," #id) or pasting URLs/paths; the reader turns
+// those markers into small numbered footnotes (hover shows the node, click opens
+// it). Clean markers are what make the footnote system work.
+const CITE = `CITATIONS — IMPORTANT: when you reference a graph node in prose, cite it with a marker [[cite:<numeric node id>]] placed immediately after the claim it supports — e.g. "PF is a load-capacity problem, not a balance problem[[cite:3171]]." Do NOT spell the node's title or "#id" out inline as prose (write "loading beats balance[[cite:3171]]", NOT 'the node "PF is a load problem" (#3171)'). Never paste raw URLs or file paths, and never invent a citation. For an external source (paper, guideline), cite its type:reference node's id. Multiple sources back to back: [[cite:3171]][[cite:3200]]. These markers render as small numbered footnotes, so keep them clean.`;
+
 // The structured index the map agent returns, so `source_graph_version` and the
 // coverage checks below are real values, not free text.
 const INDEX_SCHEMA = {
@@ -82,8 +88,8 @@ const SECTION_SCHEMA = {
   type: 'object',
   required: ['title', 'description', 'sections'],
   properties: {
-    title: { type: 'string', description: 'report title, <=100 chars' },
-    description: { type: 'string', description: 'one-line summary, <=200 chars' },
+    title: { type: 'string', description: "the finished report's title, <=100 chars — a real headline a reader sees; do NOT append 'Outline' or 'Report Outline'" },
+    description: { type: 'string', description: "one-line summary of the report for a reader, <=200 chars — do NOT mention the raw graph id or the word 'outline'" },
     sections: {
       type: 'array',
       items: {
@@ -130,7 +136,7 @@ const index = await agent(
 //    Sources appendix (type:reference). Blind drafters fan out over these.
 phase('Outline');
 const plan = await agent(
-  `${READ}\nFrom this INDEX, produce a status-aware OUTLINE for the report${audience ? ` for a "${audience}" audience` : ''}${focus ? `, focused on "${focus}"` : ''}.\nINDEX:\n${JSON.stringify(index)}\nDefault sections when the material is there: an exec summary; one per theme/component; Decisions from high-significance nodes; Done from status:done; In review from status:review; Open questions from todo + /ready; Contested from the /inconsistencies tensions; a Sources appendix from type:reference. Drop any section with no material. Give each section a stable id, a heading, a one-line brief, and the seed task ids / search terms its drafter should pull.`,
+  `${READ}\nFrom this INDEX, produce a status-aware OUTLINE for the report${audience ? ` for a "${audience}" audience` : ''}${focus ? `, focused on "${focus}"` : ''}.\nINDEX:\n${JSON.stringify(index)}\nDefault sections when the material is there: an exec summary; one per theme/component; Decisions from high-significance nodes; Done from status:done; In review from status:review; Open questions from todo + /ready; Contested from the /inconsistencies tensions; a Sources appendix from type:reference. Drop any section with no material. Give each section a stable id, a heading, a one-line brief, and the seed task ids / search terms its drafter should pull. NOTE: \`title\` and \`description\` are for the FINISHED report a human reads — give a real report headline (never ending in "Outline"/"Report Outline"), and a reader-facing one-line summary that does NOT mention the raw graph id or the word "outline".`,
   { label: 'outline', phase: 'Outline', schema: SECTION_SCHEMA },
 );
 
@@ -142,7 +148,7 @@ const sections = plan?.sections ?? [];
 // nodes via GET /tasks/:id, cites inline, and invents nothing.
 function draftSection(sec, note) {
   return agent(
-    `${READ}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources — cite node titles / sources inline and invent nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn just the section's markdown, starting with "## ${sec.heading}".`,
+    `${READ}\n${CITE}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources, citing with [[cite:<id>]] markers (see CITATIONS above) and inventing nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn just the section's markdown, starting with "## ${sec.heading}".`,
     { label: `draft:${sec.id}${note ? ':redraft' : ''}`, phase: 'Draft' },
   ).catch(() => `## ${sec.heading}\n\n_Section draft unavailable._`);
 }
@@ -189,7 +195,7 @@ let review = { coverage_ok: false, coverage: 0 };
 phase('Critic');
 for (let round = 0; round < MAX_ROUNDS; round++) {
   review = await agent(
-    `${READ}\nYou are the COMPLETENESS CRITIC for this report over graph "${gid}". Check it against the INDEX: is every high-significance node and theme covered? every status:done deliverable present? every /inconsistencies tension surfaced? any claim NOT grounded in a real node body or source?\nINDEX:\n${JSON.stringify(index)}\nREPORT:\n${markdown}\nReturn {coverage_ok, coverage (0..1), gaps: [section ids], fixes: [{id, note}]}. Set coverage_ok true only when nothing load-bearing is missing and nothing is ungrounded.`,
+    `${READ}\n${CITE}\nYou are the COMPLETENESS CRITIC for this report over graph "${gid}". Check it against the INDEX: is every high-significance node and theme covered? every status:done deliverable present? every /inconsistencies tension surfaced? any claim NOT grounded in a real node body or source? A claim followed by a [[cite:<id>]] marker IS grounded — that is the correct citation form, so do NOT ask a drafter to spell out the node title or #id inline; only flag a claim that has NO citation and isn't supported by a node body, or one whose cited node does not actually support it.\nINDEX:\n${JSON.stringify(index)}\nREPORT:\n${markdown}\nReturn {coverage_ok, coverage (0..1), gaps: [section ids], fixes: [{id, note}]}. Set coverage_ok true only when nothing load-bearing is missing and nothing is ungrounded.`,
     { label: `critic#${round}`, phase: 'Critic', schema: CRITIC_SCHEMA },
   ).catch(() => ({ coverage_ok: true, coverage: 1 }));
   const fixes = review?.fixes ?? [];

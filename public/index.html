@@ -162,6 +162,9 @@
            graph_updated_at vs the report's generated_at — no extra fetch. -->
       <div id="reader-stale-banner" class="hidden"></div>
       <div id="reader-body"></div>
+      <!-- Numbered footnote list (E16 citations), built from the [[cite:<id>]]
+           markers in the report — one entry per cited node, click-through. -->
+      <section id="reader-references" class="hidden"></section>
       <div id="reader-empty" class="hidden">
         <p>No report yet — ask your agent to generate one.</p>
       </div>
@@ -715,6 +718,12 @@
   <script type="module">
     import * as ReaderToc from '/reader-toc.js';
     window.ReaderToc = ReaderToc;
+  </script>
+  <!-- Reader citation parser (E16 footnotes): app.js reads window.ReaderCite to
+       turn [[cite:<id>]] markers into numbered footnotes. -->
+  <script type="module">
+    import * as ReaderCite from '/reader-cite.js';
+    window.ReaderCite = ReaderCite;
   </script>
   <script src="/app.js"></script>
 <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9fb48c35da61281b',t:'MTc3ODcwNTU1NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
