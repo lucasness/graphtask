@@ -13,15 +13,20 @@
 // graph_change notify for a subscribed graph_id regardless of `kind`.
 import { Router } from 'express';
 import pool from '../db.js';
+import { canEdit } from '../auth/access.js';
 
 const router = Router({ mergeParams: true });
 
 // GET the report. 404 when none — the reader turns that into its empty state.
+// `viewer_can_edit` mirrors GET /api/graphs/:id (canEdit off the mount-loaded
+// req.graph/req.graphMember): the reader uses it to gate the "ask your agent to
+// generate/update" CTA per-report, so a read-only/anon viewer sees plain copy
+// even on a rail-opened graph they don't control (E16.14, FIXED #6).
 router.get('/', async (req, res) => {
   const { gid } = req.params;
   const r = await pool.query('SELECT * FROM reports WHERE graph_id = $1', [gid]);
   if (r.rows.length === 0) return res.status(404).json({ error: 'no report yet' });
-  res.json(r.rows[0]);
+  res.json({ ...r.rows[0], viewer_can_edit: canEdit(req.user, req.graph, req.graphMember) });
 });
 
 // GET /meta — a cheap, body-less existence + staleness probe (E16.6). Read-gated

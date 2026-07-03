@@ -1522,10 +1522,24 @@ let currentReport = null;
 // staleness check compares a report's generated_at against its graph's
 // updated_at with NO extra per-report GET /meta call from the client (E16.6).
 const reportGraphMeta = new Map();
+// Whether the viewer can edit the shown report's graph (server-computed
+// viewer_can_edit, mirroring GET /api/graphs/:id). Gates the "ask your agent
+// to generate/update" CTA so a read-only/anon viewer sees plain copy (E16.14,
+// FIXED #6). Defaults true for back-compat when the field is absent.
+let currentReportCanEdit = true;
+
+// Empty-state copy: only an editor can trigger generation, so only they get the
+// CTA; read-only / anon viewers see a plain "No report yet." (E16.14).
+function noReportMessage(canEdit) {
+  return canEdit
+    ? 'No report yet — ask your agent to generate one.'
+    : 'No report yet.';
+}
 
 // Show the staleness banner iff the currently-shown report predates its graph's
 // last change. graph_updated_at comes from the rail data, so it resolves only
 // once the rail has loaded; renderReaderList calls this again when it arrives.
+// The "ask your agent to regenerate" CTA appears only for editors (E16.14).
 // Pure DOM — no fetch, no graph write.
 function updateStalenessBanner() {
   const banner = document.getElementById('reader-stale-banner');
@@ -1535,9 +1549,10 @@ function updateStalenessBanner() {
   const stale = graphUpdatedAt && generatedAt
     && new Date(generatedAt).getTime() < new Date(graphUpdatedAt).getTime();
   if (stale) {
-    banner.textContent =
-      `Generated from the graph as of ${formatUtc(generatedAt)} — the graph has `
-      + 'changed since, so this report may be out of date.';
+    const asOf = `Generated from the graph as of ${formatUtc(generatedAt)} — the graph has changed since`;
+    banner.textContent = currentReportCanEdit
+      ? `${asOf}. Ask your agent to regenerate it.`
+      : `${asOf}, so this report may be out of date.`;
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
@@ -1608,12 +1623,19 @@ async function renderReaderBody(gid) {
   }
   // A newer render started, or the user already left reader mode.
   if (token !== readerRenderToken || currentView !== 'reader') return 'stale';
-  // 404 = no report yet (or graph not readable — the mount guard 404s too);
-  // 403 = readable graph but report access denied. Both trigger the fallback.
-  if (res.status === 404 || res.status === 403) {
-    readerEmptyState(res.status === 403
-      ? 'You don’t have access to this report.'
-      : 'No report yet — ask your agent to generate one.');
+  // 403 = readable graph but report access denied. Distinct from the 404 empty
+  // state so a viewer isn't told to "ask your agent to generate one".
+  if (res.status === 403) {
+    readerEmptyState('You don’t have access to this report.');
+    return 'unreadable';
+  }
+  // 404 = no report yet (or graph not readable — the mount guard 404s too). The
+  // CTA is capability-aware: a 404 implies the ACTIVE graph (a rail-opened graph
+  // always has a report), so fall back to the active graph's viewer_can_edit.
+  if (res.status === 404) {
+    currentReportCanEdit = readerReportGid === activeGraphId
+      ? (currentGraph?.viewer_can_edit !== false) : false;
+    readerEmptyState(noReportMessage(currentReportCanEdit));
     return 'unreadable';
   }
   if (!res.ok) {
@@ -1622,11 +1644,14 @@ async function renderReaderBody(gid) {
   }
   const report = await res.json();
   if (token !== readerRenderToken || currentView !== 'reader') return 'stale';
+  // Server-computed capability for THIS report's graph (works for rail-opened
+  // graphs too, where currentGraph is a different, active graph).
+  currentReportCanEdit = report.viewer_can_edit !== false;
   // Reports are stored as pure markdown (title/description are columns), but
   // strip a leading YAML fence defensively in case a generator embedded one.
   const { body } = parseFrontmatter(report.body || '');
   if (!body.trim()) {
-    readerEmptyState('No report yet — ask your agent to generate one.');
+    readerEmptyState(noReportMessage(currentReportCanEdit));
     return 'empty';
   }
   const empty = document.getElementById('reader-empty');

@@ -209,3 +209,47 @@ describe('report meta probe (GET /api/graphs/:gid/report/meta)', () => {
     expect((await request(app).get(metaUrl(gid))).body.source_graph_version).toBe(99);
   });
 });
+
+// E16.14 — the reader's degraded states hang off a per-report capability signal
+// and the same read/edit gating requireGraphForMethod enforces.
+describe('report capability + write gating (E16.14)', () => {
+  it('GET /report includes viewer_can_edit — true for owner/editor, false for a viewer', async () => {
+    const owner = await makeUser('cap-owner');
+    const editor = await makeUser('cap-editor');
+    const viewer = await makeUser('cap-viewer');
+    const gid = await makeOwnedGraph(owner.id, 'none');
+    await addMember(gid, editor.id, 'editor');
+    await addMember(gid, viewer.id, 'viewer');
+    await request(app).put(url(gid)).set('X-Test-User-Id', 'cap-owner').send({ title: 'R' });
+
+    expect((await request(app).get(url(gid)).set('X-Test-User-Id', 'cap-owner')).body.viewer_can_edit).toBe(true);
+    expect((await request(app).get(url(gid)).set('X-Test-User-Id', 'cap-editor')).body.viewer_can_edit).toBe(true);
+    expect((await request(app).get(url(gid)).set('X-Test-User-Id', 'cap-viewer')).body.viewer_can_edit).toBe(false);
+  });
+
+  it('DELETE is edit-gated: a viewer gets 403, anon gets 403, an editor gets 204', async () => {
+    const owner = await makeUser('del-owner');
+    const editor = await makeUser('del-editor');
+    const viewer = await makeUser('del-viewer');
+    const gid = await makeOwnedGraph(owner.id, 'none');
+    await addMember(gid, editor.id, 'editor');
+    await addMember(gid, viewer.id, 'viewer');
+    await request(app).put(url(gid)).set('X-Test-User-Id', 'del-owner').send({ title: 'R' });
+
+    expect((await request(app).delete(url(gid)).set('X-Test-User-Id', 'del-viewer')).status).toBe(403);
+    expect((await request(app).delete(url(gid))).status).toBe(403); // anon on a restricted graph
+    expect((await request(app).delete(url(gid)).set('X-Test-User-Id', 'del-editor')).status).toBe(204);
+  });
+
+  it('an anon viewer of a PUBLIC graph can GET the report (viewer_can_edit:false) but cannot PUT/DELETE', async () => {
+    const owner = await makeUser('pub-owner');
+    const gid = await makeOwnedGraph(owner.id, 'viewer'); // anon_role viewer → public read
+    await request(app).put(url(gid)).set('X-Test-User-Id', 'pub-owner').send({ title: 'R', body: '# hi' });
+
+    const anonGet = await request(app).get(url(gid)); // no auth header
+    expect(anonGet.status).toBe(200);
+    expect(anonGet.body.viewer_can_edit).toBe(false); // reader shows plain copy, no CTA
+    expect((await request(app).put(url(gid)).send({ title: 'x' })).status).toBe(403);
+    expect((await request(app).delete(url(gid))).status).toBe(403);
+  });
+});
