@@ -1501,6 +1501,20 @@ let readerViewer = null;
 // Guards stale async renders: a fast graph-switch or double-toggle while a
 // fetch is in flight must not paint an outdated report over the new one.
 let readerRenderToken = 0;
+// The graph_id whose report the Viewer currently shows. In reader mode this can
+// differ from activeGraphId: clicking a cross-graph rail row (E16.5) loads
+// another graph's report WITHOUT repointing the active graph.
+let readerReportGid = null;
+// Persists the last report the viewer opened so re-entering reader mode reopens
+// it (a client-only preference, not a server graphPref — FIXED #4).
+const READER_LAST_REPORT_KEY = 'graphtask:reader:lastReport';
+function readerLastReport() {
+  try { return localStorage.getItem(READER_LAST_REPORT_KEY) || null; } catch { return null; }
+}
+function setReaderLastReport(gid) {
+  if (gid == null) return;
+  try { localStorage.setItem(READER_LAST_REPORT_KEY, String(gid)); } catch {}
+}
 
 function destroyReaderViewer() {
   if (readerViewer) {
@@ -1522,39 +1536,67 @@ function readerEmptyState(message) {
   }
 }
 
+// Entering reader mode: paint the cross-graph rail, then pick which report to
+// show. Default = the last report the viewer opened (if still readable), else
+// the active graph's report. All reads, no writes (FIXED #4).
 async function renderReader() {
+  renderReaderList();
+  const last = readerLastReport();
+  if (last && last !== activeGraphId) {
+    readerReportGid = last;
+    const result = await renderReaderBody(last);
+    // The remembered report is gone or no longer readable — fall back to the
+    // active graph's report so reader mode never opens on a dead pointer.
+    if (result === 'unreadable' && activeGraphId != null) {
+      readerReportGid = activeGraphId;
+      await renderReaderBody(activeGraphId);
+    }
+  } else {
+    readerReportGid = activeGraphId;
+    await renderReaderBody(activeGraphId);
+  }
+  markReaderRowActive(readerReportGid);
+}
+
+// Renders ONE graph's report into the Viewer. Returns a status the caller uses
+// for fallbacks: 'ok' | 'unreadable' (403/404 — no report or no access) |
+// 'empty' | 'error' | 'stale'. A pure read: only GET /report fires, never a
+// graph write, presence join, or SSE re-subscribe.
+async function renderReaderBody(gid) {
   const token = ++readerRenderToken;
-  if (activeGraphId == null) {
+  if (gid == null) {
     readerEmptyState('No graph selected.');
-    return;
+    return 'unreadable';
   }
   let res;
   try {
-    res = await fetch(`${apiBase()}/report`);
+    res = await fetch(`/api/graphs/${encodeURIComponent(gid)}/report`);
   } catch {
     readerEmptyState('Could not load the report — check your connection.');
-    return;
+    return 'error';
   }
   // A newer render started, or the user already left reader mode.
-  if (token !== readerRenderToken || currentView !== 'reader') return;
-  if (res.status === 404) {
-    readerEmptyState('No report yet — ask your agent to generate one.');
-    return;
-  }
-  if (!res.ok) {
+  if (token !== readerRenderToken || currentView !== 'reader') return 'stale';
+  // 404 = no report yet (or graph not readable — the mount guard 404s too);
+  // 403 = readable graph but report access denied. Both trigger the fallback.
+  if (res.status === 404 || res.status === 403) {
     readerEmptyState(res.status === 403
       ? 'You don’t have access to this report.'
-      : 'Could not load the report.');
-    return;
+      : 'No report yet — ask your agent to generate one.');
+    return 'unreadable';
+  }
+  if (!res.ok) {
+    readerEmptyState('Could not load the report.');
+    return 'error';
   }
   const report = await res.json();
-  if (token !== readerRenderToken || currentView !== 'reader') return;
+  if (token !== readerRenderToken || currentView !== 'reader') return 'stale';
   // Reports are stored as pure markdown (title/description are columns), but
   // strip a leading YAML fence defensively in case a generator embedded one.
   const { body } = parseFrontmatter(report.body || '');
   if (!body.trim()) {
     readerEmptyState('No report yet — ask your agent to generate one.');
-    return;
+    return 'empty';
   }
   const empty = document.getElementById('reader-empty');
   if (empty) empty.classList.add('hidden');
@@ -1576,16 +1618,99 @@ async function renderReader() {
     usageStatistics: false,
     theme: appSettings.theme === 'dark' ? 'dark' : 'default',
   });
+  return 'ok';
+}
+
+// The cross-graph report rail (E16.5). Fetched once on entering reader mode.
+// The server scopes to owned + member graphs that HAVE a report — the same set
+// as the sidebar graph list — so this can never surface a graph the viewer
+// can't already see. Anonymous → [] (no rail).
+async function renderReaderList() {
+  const list = document.getElementById('reader-list');
+  if (!list) return;
+  // Mirror renderSidebar's authPending guard so the rail doesn't flash a wrong
+  // state before Clerk + /api/config resolve the viewer identity.
+  const authPending = gtAuth.enabled && (
+    !gtAuth.ready || (gtAuth.user && !gtAuth.viewerUserId)
+  );
+  if (authPending) { list.innerHTML = ''; return; }
+  let reports;
+  try {
+    const res = await fetch('/api/reports');
+    if (!res.ok) { list.innerHTML = ''; return; }
+    reports = await res.json();
+  } catch { list.innerHTML = ''; return; }
+  // Bailed out of reader mode while the fetch was in flight.
+  if (currentView !== 'reader') return;
+  list.innerHTML = '';
+  if (!Array.isArray(reports) || reports.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'reader-list-empty';
+    empty.textContent = 'No reports yet across your graphs.';
+    list.appendChild(empty);
+    return;
+  }
+  list.appendChild(makeSectionHeader('Reports'));
+  for (const r of reports) list.appendChild(makeReportItem(r));
+  markReaderRowActive(readerReportGid);
+}
+
+// One rail row = one graph's report. Mirrors makeSidebarItem's DOM (XSS-safe
+// createTextNode, .sb-dot/.sb-name/.sb-meta) but clicking is a pure read.
+function makeReportItem(report) {
+  const item = document.createElement('div');
+  item.className = 'sb-item' + (report.graph_id === readerReportGid ? ' active' : '');
+  item.dataset.graphId = String(report.graph_id);
+  if (report.description) item.title = report.description;
+
+  const dot = document.createElement('span');
+  dot.className = 'sb-dot';
+  item.appendChild(dot);
+
+  const name = document.createElement('div');
+  name.className = 'sb-name';
+  // The row title is the graph's name — the report IS the graph's report.
+  name.appendChild(document.createTextNode(report.graph_name || report.title || 'Untitled'));
+  item.appendChild(name);
+
+  const meta = document.createElement('div');
+  meta.className = 'sb-meta';
+  meta.textContent = report.updated_at ? relativeTime(report.updated_at) : '';
+  item.appendChild(meta);
+
+  item.addEventListener('click', () => openReportFromRail(report.graph_id));
+  return item;
+}
+
+// Rail row click: load THIS graph's report into the Viewer. Deliberately does
+// NOT switchActiveGraph, open the graph's presence, or re-subscribe SSE — only
+// a GET /report fires (FIXED #4). Persist the choice for next entry.
+function openReportFromRail(gid) {
+  readerReportGid = gid;
+  setReaderLastReport(gid);
+  markReaderRowActive(gid);
+  renderReaderBody(gid);
+}
+
+// Highlight the rail row whose report is currently shown (orange .active dot).
+function markReaderRowActive(gid) {
+  const list = document.getElementById('reader-list');
+  if (!list) return;
+  for (const el of list.querySelectorAll('.sb-item')) {
+    el.classList.toggle('active', el.dataset.graphId === String(gid));
+  }
 }
 
 // Reader shows no bottom-toolbar chrome; hiding is CSS-gated off
 // body.view-reader, so there's nothing to repaint here.
 function updateReaderToolbar() {}
 
-// Viewer theme is baked at construction (same constraint as the rich
-// editor); re-render rebuilds it under the new theme when reader is active.
+// Viewer theme is baked at construction (same constraint as the rich editor);
+// re-render rebuilds it under the new theme. Re-render the CURRENTLY shown
+// report (not the default) so a theme switch never yanks the reader off the
+// report the viewer opened from the rail.
 function recreateReaderViewerForTheme() {
-  if (currentView === 'reader') renderReader();
+  if (currentView === 'reader') renderReaderBody(readerReportGid ?? activeGraphId);
 }
 
 function apiBase() {

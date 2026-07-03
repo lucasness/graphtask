@@ -60,6 +60,12 @@
       <i class="ph ph-book-open reader-icon-open" aria-hidden="true"></i>
     </button>
     <div id="sidebar-list"></div>
+    <!-- Reader-mode left rail (E16.5): in reader mode the graph list is swapped
+         for a cross-graph report browser — one row per graph (owned + member)
+         that has a report. CSS gates the swap off body.view-reader. Rendered by
+         renderReaderList(); rows load a report into the Viewer without
+         repointing the active graph. -->
+    <div id="reader-list"></div>
     <div id="sidebar-empty" class="hidden">
       <p>No graphs yet</p>
     </div>

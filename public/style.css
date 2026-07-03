@@ -695,6 +695,21 @@ body.view-reader #sidebar .reader-icon-open { display: inline; }
 body.view-reader #sidebar .reader-icon-closed { display: none; }
 body.view-reader #sidebar-reader-btn,
 body.view-reader #sidebar-reader-btn-collapsed { color: var(--color-ember-orange); }
+/* Reader-mode left rail (E16.5): swap the graph list for the report list. The
+   rail reuses .sb-item/.sb-section/.sb-meta so it matches the sidebar exactly;
+   only the container swap lives here. Collapse hides it like #sidebar-list. */
+#reader-list { display: none; }
+body.view-reader #sidebar-list,
+body.view-reader #sidebar-empty { display: none; }
+body.view-reader #reader-list { display: block; }
+#sidebar.collapsed #reader-list { display: none; }
+.reader-list-empty {
+  padding: 10px 14px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tx-3);
+}
 @media (max-width: 768px) {
   #reader { padding: 72px 16px; }
 }

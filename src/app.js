@@ -15,6 +15,7 @@ import uploadsRouter from './routes/uploads.js';
 import reportsRouter from './routes/reports.js';
 import searchRouter from './routes/search.js';
 import searchAllRouter from './routes/searchAll.js';
+import reportsAllRouter from './routes/reportsAll.js';
 import contextRouter from './routes/context.js';
 import frontierRouter from './routes/frontier.js';
 import inconsistencyRouter from './routes/inconsistency.js';
@@ -106,6 +107,11 @@ app.use('/api/graphs/:gid/search', requireGraph('read'), searchRouter);
 // Cross-graph search has no :gid to guard — it derives its own scope (owned +
 // member graphs) from req.user inside the handler, and 401s anonymous callers.
 app.use('/api/search', searchAllRouter);
+// Cross-graph report rail (E16.5): like the graph LIST, it derives its own
+// scope (owned + member graphs that have a report) from req.user and returns []
+// for anonymous callers — no :gid to guard, and no 401 (an anon viewer simply
+// owns nothing, exactly as the sidebar shows them).
+app.use('/api/reports', reportsAllRouter);
 // Context-pack (#457/E13): one-call k-hop neighborhood WITH bodies. Reads the
 // graph + reuses the pooled search model; read-scoped like /search even though
 // it's a POST (the query/seeds ride in the body).
