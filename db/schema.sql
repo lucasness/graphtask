@@ -119,7 +119,12 @@ CREATE OR REPLACE FUNCTION bump_graph_updated_at() RETURNS TRIGGER AS $$
 DECLARE
   gid TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
 BEGIN
-  UPDATE graphs SET updated_at = NOW() WHERE id = gid;
+  -- Bump both updated_at and version on any task/edge change so `version` is a
+  -- real "graph activity" counter (E16 report source_graph_version reads it).
+  -- OCC-safe: the graphs PATCH path treats a version mismatch as a 3-way field
+  -- MERGE (graphs.js), not a reject — and a content change never touches the
+  -- graph-row fields (name/description/settings), so the merge is a no-op.
+  UPDATE graphs SET updated_at = NOW(), version = version + 1 WHERE id = gid;
   PERFORM pg_notify(
     'graph_change',
     json_build_object(
