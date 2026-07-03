@@ -561,6 +561,18 @@ uploads(
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_by_user UUID REFERENCES users(id) ON DELETE SET NULL
 )
+
+reports(
+  graph_id TEXT PRIMARY KEY REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  title TEXT NOT NULL,                       -- ≤ 200 chars
+  description TEXT,                          -- nullable, ≤ 500 chars
+  body TEXT NOT NULL DEFAULT '',             -- the report markdown
+  source_graph_version INTEGER,              -- graphs.version at generation (staleness key)
+  run_id TEXT,                               -- workflow-run attribution
+  meta JSONB NOT NULL DEFAULT '{}',
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
 ```
 
 - `graphs.id` is an opaque 16-char string (`a-z` + `2-9`, omitting `0/1/i/l/o`)
@@ -574,6 +586,16 @@ uploads(
   INSERT/UPDATE/DELETE. The same trigger calls
   `pg_notify('graph_change', { graph_id, kind, op, id })` so SSE subscribers
   can push live updates to viewers.
+- `reports` is the graph's ONE canonical human-readable report (E16), keyed by
+  `graph_id` (one row per graph; `PUT` replaces it in place). It lives OUTSIDE
+  the tasks/edges model and carries its OWN notify trigger that emits
+  `pg_notify('graph_change', { kind: 'report' })` but — unlike the tasks/edges
+  trigger — never bumps `graphs.updated_at`/`version`. So generating or updating
+  a report has ZERO impact on the graph, which keeps staleness meaningful: the
+  reader flags a report as out of date when its `generated_at` predates
+  `graphs.updated_at`. Reports inherit their graph's visibility (reads gated
+  `read`, writes gated `edit`) and are never git-committed — they're DB state,
+  not repo files, so report generation stays outside `save-project`.
 - Task `content` is canonical: the server parses frontmatter, validates it,
   and stores a synchronized structured copy in `tasks.meta`.
 - Task metadata: `title`, `status`, optional `description`, optional `color`,
@@ -660,6 +682,9 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`image/png\|jpeg\|gif\|webp\|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}` — reference the URL from a task's `background-image` frontmatter to render the image inside the node frame. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes, served with stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
+| GET / PUT / DELETE | `/api/graphs/:gid/report` | The graph's ONE canonical report (E16), stored outside tasks/edges so writes never bump `graphs.updated_at`. **GET** (read) returns the report plus `viewer_can_edit`; **PUT** (edit) upserts and replaces it in place (one per graph, idempotent); **DELETE** (edit) removes it. A viewer/anon can read but not write. |
+| GET | `/api/graphs/:gid/report/meta` | Body-less existence + staleness probe (read). Returns `{exists:false}` or `{exists:true, title, generated_at, updated_at, source_graph_version, graph_updated_at, stale}`, where `stale` means the report's `generated_at` predates the graph's last change. GET (not HEAD — HEAD would classify as `edit` and 403 a viewer). |
+| GET | `/api/reports` | Cross-graph report list for the reader's rail: the graphs the caller owns or is a member of that have a report (scope-SQL-as-ACL, mirroring `/api/search`). Metadata only, no bodies; anonymous → `[]` (never 401). |
 | GET | `/api/config` | `{auth_enabled, provider, publishable_key, viewer_user_id}`; the SPA reads this on boot to decide whether to load Clerk |
 | GET / POST / DELETE | `/api/graphs/:gid/members` (+ `/pending/:email`) | Owner-managed sharing; pending rows auto-claim on the invitee's first sign-in |
 | GET / POST / DELETE | `/api/me/agent_tokens` | Mint / list / revoke `gt_*` bearer tokens for agent attribution |

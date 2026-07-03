@@ -277,6 +277,16 @@ Padding 10px 20px. Label: Inter 500, 15px, letter-spacing -0.01em, color `--colo
 
 Floats top-center. `--color-pure-white` background, 1px `--color-mist` border, 100px pill, Inter 500 13px, `--color-graphite-nav`, `--shadow-sm`.
 
+### Reader Mode (E16)
+**Role:** A calm long-form reading lens over a graph's report
+
+Reader mode is a **client-only third canvas view**, toggled from the sidebar header with a Phosphor `ph-book` / `ph-book-open` glyph (the two-glyph ember-tint swap used by the presence eye). It occupies the same region as `#cy` / `#kanban` — `applyView()` flips which is visible — and its on/off state lives in `localStorage` (not a server graph pref like kanban). Toggling and reading perform **zero graph writes**; the report renders through the same Toast UI Viewer (bundled sanitizer) the node editor uses, never via `innerHTML`.
+
+- **Reading column.** A single centered measure, `max-width: 68ch`, over `--color-canvas-white`, 80px top clearance for the presence chrome. Title in Playfair Display, description + "Updated MM/DD/YY" meta in DM Sans / Inter greys, a hairline `--color-mist` rule under the header.
+- **Contents rail.** An auto table of contents (h2–h4) fixed in the left margin with scroll-spy — the entry nearest the top takes an ember left-border + ember text (the active-tool treatment); other entries sit in `--color-steel`. Hidden below ~1280px (reading-first) and when a report has fewer than two headings.
+- **Staleness banner.** When the graph changed after the report was generated, a low-key amber note (ember left-border on `--color-blush-tint`) sits above the body. Copy is capability-aware: an editor is invited to regenerate; a read-only / anon viewer sees a plain "may be out of date". Same rule governs the empty state ("No report yet" — with the "ask your agent to generate one" CTA only for editors).
+- **Cross-graph rail.** In reader mode the sidebar's graph list is swapped for a report browser — one row per graph (owned or member) that has a report, reusing the `.sb-item` row with an amber `.sb-dot` on stale reports. Clicking a row loads that report without repointing the active graph.
+
 ## Do's and Don'ts
 
 ### Do
