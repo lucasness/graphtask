@@ -481,6 +481,76 @@ CREATE TABLE IF NOT EXISTS uploads (
 );
 CREATE INDEX IF NOT EXISTS uploads_graph_id_idx ON uploads(graph_id);
 
+-- Graph-scoped human-readable report (E16). ONE canonical row per graph
+-- (graph_id PRIMARY KEY), living OUTSIDE the tasks/edges model so generating or
+-- updating a report has ZERO impact on the graph. The report is a point-in-time
+-- synthesis of the graph, not a mirror of it: `source_graph_version` records the
+-- graph version it was built from so the reader can surface staleness instead of
+-- silently drifting. title/description/timestamps are promoted to columns so the
+-- cross-graph list + staleness probe render WITHOUT loading the markdown `body`.
+-- Referential integrity is DB-enforced: PRIMARY KEY forbids duplicate reports,
+-- and the FK (ON DELETE CASCADE, ON UPDATE CASCADE) forbids orphans and follows
+-- a rotate-id. Cleanup between tests rides `TRUNCATE graphs ... CASCADE`.
+CREATE TABLE IF NOT EXISTS reports (
+  graph_id TEXT PRIMARY KEY REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  body TEXT NOT NULL DEFAULT '',
+  source_graph_version INTEGER,
+  run_id TEXT,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT report_title_required CHECK (length(trim(title)) > 0),
+  CONSTRAINT report_title_length CHECK (length(title) <= 200),
+  CONSTRAINT report_description_length CHECK (description IS NULL OR length(description) <= 500),
+  CONSTRAINT report_meta_object CHECK (jsonb_typeof(meta) = 'object')
+);
+
+-- Idempotent re-add of the meta CHECK + FK for DBs where `reports` predates
+-- these constraints (schema.sql re-runs every boot; CREATE TABLE IF NOT EXISTS
+-- never alters an existing table). Mirrors the tasks/edges FK migration above.
+DO $$ BEGIN
+  ALTER TABLE reports DROP CONSTRAINT IF EXISTS report_meta_object;
+  ALTER TABLE reports ADD CONSTRAINT report_meta_object
+    CHECK (jsonb_typeof(meta) = 'object');
+
+  ALTER TABLE reports DROP CONSTRAINT IF EXISTS reports_graph_id_fkey;
+  ALTER TABLE reports
+    ADD CONSTRAINT reports_graph_id_fkey
+    FOREIGN KEY (graph_id) REFERENCES graphs(id)
+    ON DELETE CASCADE ON UPDATE CASCADE;
+END $$;
+
+-- Report change notifier. Emits on the SAME `graph_change` channel the SSE
+-- layer already listens on, tagged kind:'report' so a reader-mode client can
+-- live-refresh — but CRUCIALLY it does NOT touch graphs.updated_at/version the
+-- way bump_graph_updated_at() does for tasks/edges. That isolation is the
+-- load-bearing half of "zero impact": a report write must never masquerade as a
+-- graph edit (which would reorder the sidebar, ordered by updated_at DESC, and
+-- disturb graph OCC). `id` is the graph_id — a report's identity IS its graph.
+CREATE OR REPLACE FUNCTION notify_report_change() RETURNS TRIGGER AS $$
+DECLARE
+  gid TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
+BEGIN
+  PERFORM pg_notify(
+    'graph_change',
+    json_build_object(
+      'graph_id', gid,
+      'kind', 'report',
+      'op', TG_OP,
+      'id', gid
+    )::text
+  );
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS notify_on_report_change ON reports;
+CREATE TRIGGER notify_on_report_change
+  AFTER INSERT OR UPDATE OR DELETE ON reports
+  FOR EACH ROW EXECUTE FUNCTION notify_report_change();
+
 -- Dense-retrieval chunk store for semantic search (graph task #190, P2.2).
 -- One node → many title-prefixed passages (see src/search/chunking.js); each
 -- carries its embedding for ANN search, then results collapse back to nodes by
