@@ -724,6 +724,53 @@ body.view-reader #reader-list { display: block; }
   color: var(--tx-2);
 }
 #reader-stale-banner.hidden { display: none; }
+/* Auto Contents rail (E16.17): a fixed sticky TOC in the reader's left margin,
+   between the sidebar and the centered 68ch column. Shown only where the margin
+   has room (wide viewports); reading-first below that. */
+#reader-toc {
+  position: fixed;
+  top: 100px;
+  left: calc(var(--sidebar-w) + 24px);
+  width: 190px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  z-index: 5;
+}
+#reader-toc.hidden { display: none; }
+#reader-toc .reader-toc-title {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-3);
+  margin-bottom: 8px;
+  padding-left: 10px;
+}
+#reader-toc a {
+  display: block;
+  padding: 3px 0 3px 10px;
+  border-left: 2px solid transparent;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--tx-2);
+  text-decoration: none;
+  cursor: pointer;
+}
+#reader-toc a.lvl-3 { padding-left: 22px; }
+#reader-toc a.lvl-4 { padding-left: 34px; }
+#reader-toc a:hover { color: var(--tx); }
+#reader-toc a.active {
+  color: var(--color-ember-orange);
+  border-left-color: var(--color-ember-orange);
+}
+/* Headings clear the fixed presence chrome when the TOC scrolls to them. */
+#reader-body h2, #reader-body h3, #reader-body h4 { scroll-margin-top: 96px; }
+/* No room for a left rail on narrow viewports — hide it regardless of JS state. */
+@media (max-width: 1279px) {
+  #reader-toc { display: none !important; }
+}
 /* Amber staleness dot on a rail row whose report is out of date. Distinct from
    the active row's orange .sb-dot — this marks content freshness, not selection. */
 #reader-list .sb-item.stale .sb-dot {

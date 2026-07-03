@@ -147,6 +147,10 @@
        here performs zero writes to the graph. The body is rendered through a
        Toast UI Viewer (built-in sanitizer) — never via innerHTML. -->
   <div id="reader" class="hidden">
+    <!-- Auto Contents rail (E16.17): built from the rendered report's h2–h4,
+         with scroll-spy. Sits in the left margin; hidden on narrow viewports
+         and when a report has fewer than two headings. Client-only. -->
+    <nav id="reader-toc" class="hidden" aria-label="Report contents"></nav>
     <div id="reader-article">
       <div id="reader-report-header" class="hidden">
         <h1 id="reader-title"></h1>
@@ -705,6 +709,12 @@
   <script type="module">
     import * as KbSearch from '/search-kb.js';
     window.KbSearch = KbSearch;
+  </script>
+  <!-- Reader TOC extractor (E16.17) — same shared pure-module pattern: app.js
+       reads window.ReaderToc to build the reader's Contents rail. -->
+  <script type="module">
+    import * as ReaderToc from '/reader-toc.js';
+    window.ReaderToc = ReaderToc;
   </script>
   <script src="/app.js"></script>
 <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9fb48c35da61281b',t:'MTc3ODcwNTU1NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>

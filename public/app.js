@@ -1501,6 +1501,10 @@ let readerViewer = null;
 // Guards stale async renders: a fast graph-switch or double-toggle while a
 // fetch is in flight must not paint an outdated report over the new one.
 let readerRenderToken = 0;
+// IntersectionObserver backing the reader TOC scroll-spy (E16.17). Torn down
+// with the Viewer so re-renders (theme switch, live SSE refresh) never stack
+// observers.
+let readerTocObserver = null;
 // The graph_id whose report the Viewer currently shows. In reader mode this can
 // differ from activeGraphId: clicking a cross-graph rail row (E16.5) loads
 // another graph's report WITHOUT repointing the active graph.
@@ -1566,6 +1570,62 @@ function destroyReaderViewer() {
   }
   const el = document.getElementById('reader-body');
   if (el) el.innerHTML = '';
+  // Tear down the TOC + scroll-spy alongside the Viewer so a re-render rebuilds
+  // exactly one (E16.17).
+  if (readerTocObserver) { try { readerTocObserver.disconnect(); } catch {} readerTocObserver = null; }
+  const toc = document.getElementById('reader-toc');
+  if (toc) { toc.innerHTML = ''; toc.classList.add('hidden'); }
+}
+
+// Build the Contents rail from the rendered report (E16.17). Extracts h2–h4 via
+// the shared pure helper (window.ReaderToc), assigns those ids to the Viewer's
+// rendered headings in document order, and wires an IntersectionObserver that
+// highlights the entry nearest the top. Idempotent — destroyReaderViewer has
+// already cleared any prior rail/observer. Client-only; no fetch, no graph write.
+function buildReaderToc(markdown) {
+  const toc = document.getElementById('reader-toc');
+  const bodyEl = document.getElementById('reader-body');
+  if (!toc || !bodyEl) return;
+  const items = window.ReaderToc?.extractToc?.(markdown) || [];
+  const headings = Array.from(bodyEl.querySelectorAll('h2, h3, h4'));
+  // Fewer than two headings → no rail (matches the source design's guard).
+  if (items.length < 2 || headings.length === 0) {
+    toc.classList.add('hidden');
+    return;
+  }
+  const n = Math.min(items.length, headings.length);
+  const title = document.createElement('div');
+  title.className = 'reader-toc-title';
+  title.textContent = 'Contents';
+  toc.appendChild(title);
+  const links = new Map();
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    const h = headings[i];
+    h.id = it.id;
+    const a = document.createElement('a');
+    a.href = `#${it.id}`;
+    a.className = `lvl-${it.level}`;
+    a.appendChild(document.createTextNode(it.text)); // textContent — XSS-safe
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    toc.appendChild(a);
+    links.set(it.id, a);
+  }
+  toc.classList.remove('hidden');
+  // Scroll-spy: mark the entry for the heading currently nearest the top of the
+  // reader scroll container.
+  readerTocObserver = new IntersectionObserver((entries) => {
+    const visible = entries
+      .filter((en) => en.isIntersecting)
+      .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+    if (!visible[0]) return;
+    const activeId = visible[0].target.id;
+    for (const [id, link] of links) link.classList.toggle('active', id === activeId);
+  }, { root: document.getElementById('reader'), rootMargin: '0px 0px -75% 0px', threshold: 0 });
+  for (let i = 0; i < n; i++) readerTocObserver.observe(headings[i]);
 }
 
 function readerEmptyState(message) {
@@ -1676,6 +1736,7 @@ async function renderReaderBody(gid) {
   });
   currentReport = report;
   updateStalenessBanner();
+  buildReaderToc(body);
   return 'ok';
 }
 
