@@ -412,6 +412,8 @@ The body content should always justify the current status. What "justify" means 
 | `review` | You (when you think it's done) | Self-contained synthesis ready for the human. Execution nodes: what you did, files changed, how to verify. Research / mapping nodes: the synthesized finding with sources and reasoning. **This is what the human reads to confirm.** |
 | `done` | **Only the human** | Their confirmation that they accept the node. **Never write this yourself unless the user explicitly asks you to** ("mark X as done", "finish X off"). That permission applies to *that node only* — don't infer permission for siblings, parents, or the rest of the graph. |
 
+A **report** is the whole-graph analogue of a node's `review` body — that same review-tier synthesis for the ENTIRE graph, long-form markdown a human reads instead of clicking every node. It's a separate artifact (the report API — see the API reference) — **never** a graph node — so it inherits the same `review`/`done` discipline: you draft it, the human owns whether it's canonical, and you never produce or overwrite one on your own initiative (§8).
+
 **Read before you write, and send OCC fields.** Always GET the task right before you PATCH it AND include `base_version` + `base_content` in the PATCH body. Without those, the server falls back to "blind replace" and your write silently overwrites any UI-managed frontmatter keys (positions `x`/`y`, `color`, `background-image`) that exist on the row but aren't in your new content. With OCC fields the server runs a three-way merge that preserves the fixed list of protected keys you didn't touch. **The merge only protects that fixed key list, though — `title`/`status`/`body` are writer-wins.** Because the OCC dance sends the content you just fetched as `base_content`, base == current, so the merge can't detect a concurrent human edit to those fields: whatever you PATCH overwrites them. So GET first, READ the returned title/body/status, fold any human changes into your new content, and only then PATCH — never rewrite from memory.
 
 **Keep related task bodies in sync.** When work on one task surfaces information that affects another (e.g., you find that the schema migration also needs a new index, which is a different task), update *that* task's body to reflect the new finding. The graph is a living context document, not a one-shot plan. Each task body should be accurate to the current state of the work.
@@ -676,6 +678,7 @@ done
 - *"What's connected / related to node N?"* → **traverse** N's `related` links from the `/graph` map (above).
 - *"How are A and B connected?"* → `GET /graph/shortest-path?from=A&to=B` for a **dependency** chain; for a `related`-link path, walk the `/graph` links yourself.
 - *Deep / multi-hop knowledge-base answer* → search for entry points, traverse `related` links a hop or two out, read those bodies, then synthesize — index-then-links, not one-shot retrieval.
+- *"Write me a report / brief / summary of the whole graph"* → the same index→entry→traverse→synthesize move applied graph-wide: `GET /graph` is the index, then walk it section by section (by subtree / status / `related` cluster), read the node bodies, and synthesize. Search-as-KB over the whole map, not new machinery — emit long-form markdown and `PUT` it to the report API (§8, API reference).
 
 **Heads-up:** every section-5 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
 
@@ -699,6 +702,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - `meta.curve` and `meta.color` on edges, and `meta.color` on tasks — those are user UI concerns. Same rule: leave them out of your PATCH; the merge preserves them.
 - `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See [Images and agent discretion](#images-and-agent-discretion--hard-rules) for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
+- **Reports** — never generate a report, and never overwrite an existing one, on your own initiative. Generate only when the user explicitly asks ("write me a report / brief / summary of this graph"). When a report already exists and you've just finished a body of work on the graph, you MAY *ask* whether to update it — but asking is the ceiling: regenerating without a yes is the same category error as writing `done` yourself. The report is a separate artifact (`PUT /api/graphs/:gid/report`), never a graph node, so it never touches the graph.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
 
 ## 9. Per-graph appearance settings (do not touch unless asked)
@@ -803,6 +807,8 @@ This section applies only when the harness running this skill ALSO exposes a dyn
 **The pattern.** A graph node DEFINES a unit of work → a workflow EXECUTES its fan-out and RETURNS structured results → the main loop DISTILLS those back into the node (flip status, write the synthesis into the body) and freezes any heavy artifact to disk. The graph is the source of truth; a workflow's journals are transient scaffolding.
 
 **When to reach for a workflow** (from inside a node): the node's work is many independent, agent-shaped sub-tasks that benefit from structure and verification — an eval/test suite (N runs × arms × answer→judge), a multi-source research sweep, a large audit or migration, multi-perspective analysis. Build the workflow once; parameterize it per run.
+
+**Generating a report (E16) — inline vs workflow.** A human-readable report of the whole graph is search-as-KB (§6) run graph-wide, not new machinery. Start cheap: `GET /graph` for the structure (no bodies). For a **tiny** graph, one inline pass suffices — read the map, pull the node bodies you need, draft the whole report in one go, and `PUT /api/graphs/:gid/report` with the Bearer token (writes 403 / orphan without `Authorization: Bearer $GRAPHTASK_AGENT_TOKEN`). For a **large** graph, escalate to the `report.workflow.js` generator (map → draft sections in parallel → stitch → completeness critic) that RETURNS the markdown for the main loop to `PUT`. NEVER generate on your own initiative (§8); one report per graph, and PUT replaces it.
 
 **When NOT to.**
 
@@ -930,6 +936,8 @@ All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`
 | GET/PUT | `/api/graphs/:gid/prefs/me` | Per-(user, graph) camera-follow toggle. `GET` → `{agent_follow}` (null = unset → client default); `PUT {agent_follow: <bool>}` sets it AND your account-wide default. **Signed-in users only — 401 anonymous**; a UI preference, not an agent write. |
 | POST | `/api/graphs/:gid/uploads` | Raw image bytes (`Content-Type: image/png|jpeg|gif|webp|svg+xml`, 5 MB cap). Returns `{id, url, content_type, byte_size}`; reference the URL from a task's `background-image` frontmatter to make it render on the canvas. |
 | GET | `/api/graphs/:gid/uploads/:id` | Image bytes; served with the stored content-type, immutable cache headers, and `X-Content-Type-Options: nosniff`. |
+| GET | `/api/graphs/:gid/report` | The graph's ONE human-readable report (E16). `200` with `{title, description, body, meta, generated_at, updated_at, source_graph_version, run_id}`, or `404 {error:'no report yet'}`. **Read-gated** — a viewer/anon may read it. |
+| PUT | `/api/graphs/:gid/report` | Upsert the report (one per graph; PUT idempotently REPLACES). Body `{title (req, ≤200), description? (≤500), body (markdown), source_graph_version?, run_id?, meta?}`. **Edit-gated** — needs edit access + Bearer token. `generated_at` is preserved across updates; `run_id` preserved when omitted. Writing a report has ZERO impact on the graph (its own table + notify — never bumps `updated_at`/`version`). |
 
 ### Markdown frontmatter shape
 
