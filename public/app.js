@@ -8014,6 +8014,24 @@ function openGraphEventStream(id) {
       handleSelectionEvent(payload);
       return;
     }
+    // A report write (kind:'report') is graph-adjacent, NOT a graph edit: the
+    // notify_report_change trigger never bumps graphs.updated_at/version, so the
+    // canvas must stay untouched. In reader mode, refresh the rail so the active
+    // graph's row timestamp updates; and ONLY if the shown body IS the active
+    // graph's report (not one opened from the rail) re-render that body live.
+    // Never call renderReader() here — it re-picks the default report and would
+    // yank the view off a rail-opened report. Return early so this frame never
+    // arms the coalesce timer or reaches refreshFromEvent (the canvas refetch).
+    if (payload && payload.kind === 'report') {
+      if (currentView === 'reader') {
+        if (typeof renderReaderList === 'function') renderReaderList();
+        if (readerReportGid === activeGraphId
+            && typeof renderReaderBody === 'function') {
+          renderReaderBody(activeGraphId);
+        }
+      }
+      return;
+    }
     _graphEventLastPayload = payload;
     // Coalesce bursts (e.g. a bulk-edges insert fires N notifications).
     if (_graphEventTimer) clearTimeout(_graphEventTimer);
