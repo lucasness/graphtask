@@ -1,8 +1,8 @@
 // /api/graphs/:gid/report — the graph's ONE canonical human-readable report
-// (E16). Mounted under requireGraphForMethod, so GET needs `read` and PUT needs
-// `edit` (FIXED #5): a viewer/anon can READ a report but not write it, and an
-// editor-member/anon_role:'editor' CAN regenerate (edit, not owner-only manage).
-// `req.graph` is already loaded by the mount guard.
+// (E16). Mounted under requireGraphForMethod, so GET needs `read` and PUT and
+// DELETE need `edit` (FIXED #5): a viewer/anon can READ a report but not write
+// or remove it, and an editor-member/anon_role:'editor' CAN regenerate (edit,
+// not owner-only manage). `req.graph` is already loaded by the mount guard.
 //
 // The report lives in its own `reports` table (one row per graph, graph_id PK)
 // whose notify trigger fires kind:'report' WITHOUT bumping graphs.updated_at /
@@ -76,6 +76,16 @@ router.put('/', async (req, res) => {
     [gid, title, description, body, sourceGraphVersion, runId, JSON.stringify(meta)],
   );
   res.json(r.rows[0]);
+});
+
+// DELETE the report. 204 on success; 404 when there is none — same "no report
+// yet" shape as GET, so a repeat DELETE reports nothing-to-delete honestly.
+// The E16.1 trigger emits the kind:'report' DELETE notify for live readers.
+router.delete('/', async (req, res) => {
+  const { gid } = req.params;
+  const r = await pool.query('DELETE FROM reports WHERE graph_id = $1 RETURNING graph_id', [gid]);
+  if (r.rows.length === 0) return res.status(404).json({ error: 'no report yet' });
+  res.status(204).end();
 });
 
 export default router;
