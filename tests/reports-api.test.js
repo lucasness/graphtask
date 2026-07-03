@@ -141,3 +141,71 @@ describe('report API (GET/PUT /api/graphs/:gid/report)', () => {
     expect(await counts()).toEqual(c0);
   });
 });
+
+// E16.6 — GET /report/meta: a body-less existence + staleness probe.
+describe('report meta probe (GET /api/graphs/:gid/report/meta)', () => {
+  const metaUrl = (gid) => `/api/graphs/${gid}/report/meta`;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const bumpTask = (gid, t) => pool.query(
+    `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, $3::jsonb) RETURNING id`,
+    [gid, `---\ntitle: ${t}\nstatus: todo\n---\n`, JSON.stringify({ title: t, status: 'todo' })],
+  );
+
+  it('returns {exists:false} (200) when the graph has no report', async () => {
+    const gid = await makeLegacyGraph();
+    const res = await request(app).get(metaUrl(gid));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ exists: false });
+  });
+
+  it('returns exists:true with title, timestamps, source_graph_version, a stale boolean, and NO body', async () => {
+    const gid = await makeLegacyGraph();
+    await sleep(5);
+    await request(app).put(url(gid)).send({ title: 'R', body: 'x', source_graph_version: 12 });
+    const res = await request(app).get(metaUrl(gid));
+    expect(res.status).toBe(200);
+    expect(res.body.exists).toBe(true);
+    expect(res.body.title).toBe('R');
+    expect(res.body.source_graph_version).toBe(12);
+    expect(typeof res.body.stale).toBe('boolean');
+    expect(res.body).not.toHaveProperty('body');
+  });
+
+  it('stale is false for a fresh report, flips true after a graph edit, and a bare report write does NOT clear it', async () => {
+    const gid = await makeLegacyGraph();
+    await sleep(5);
+    await request(app).put(url(gid)).send({ title: 'R', body: 'x' });
+    // Report generated AFTER graph creation, no graph edits since → not stale.
+    expect((await request(app).get(metaUrl(gid))).body.stale).toBe(false);
+
+    // A graph edit: a task insert bumps graphs.updated_at via the trigger.
+    await sleep(5);
+    await bumpTask(gid, 'A');
+    expect((await request(app).get(metaUrl(gid))).body.stale).toBe(true);
+
+    // A bare report write preserves generated_at and never touches graphs.updated_at,
+    // so staleness must persist — a re-PUT of the same body is not a regeneration.
+    await request(app).put(url(gid)).send({ title: 'R2', body: 'y' });
+    expect((await request(app).get(metaUrl(gid))).body.stale).toBe(true);
+  });
+
+  it('is read-gated (a viewer-member gets 200); HEAD would be edit-gated, which is why the probe is GET /meta', async () => {
+    const owner = await makeUser('meta-owner');
+    const viewer = await makeUser('meta-viewer');
+    const gid = await makeOwnedGraph(owner.id, 'none');
+    await addMember(gid, viewer.id, 'viewer');
+    await request(app).put(url(gid)).set('X-Test-User-Id', 'meta-owner').send({ title: 'R' });
+
+    expect((await request(app).get(metaUrl(gid)).set('X-Test-User-Id', 'meta-viewer')).status).toBe(200);
+    // HEAD classifies as edit under requireGraphForMethod, so a viewer can't use it —
+    // exactly why the staleness probe is a GET, not a HEAD.
+    expect((await request(app).head(url(gid)).set('X-Test-User-Id', 'meta-viewer')).status).toBe(403);
+  });
+
+  it('source_graph_version round-trips through PUT into both GET / and GET /meta', async () => {
+    const gid = await makeLegacyGraph();
+    await request(app).put(url(gid)).send({ title: 'R', source_graph_version: 99 });
+    expect((await request(app).get(url(gid))).body.source_graph_version).toBe(99);
+    expect((await request(app).get(metaUrl(gid))).body.source_graph_version).toBe(99);
+  });
+});

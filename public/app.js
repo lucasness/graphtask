@@ -1515,6 +1515,34 @@ function setReaderLastReport(gid) {
   if (gid == null) return;
   try { localStorage.setItem(READER_LAST_REPORT_KEY, String(gid)); } catch {}
 }
+// The report object currently shown (its generated_at drives the staleness
+// banner, E16.6). Null when the reader shows an empty/error state.
+let currentReport = null;
+// graph_id -> graph_updated_at, populated from the /api/reports rail rows. The
+// staleness check compares a report's generated_at against its graph's
+// updated_at with NO extra per-report GET /meta call from the client (E16.6).
+const reportGraphMeta = new Map();
+
+// Show the staleness banner iff the currently-shown report predates its graph's
+// last change. graph_updated_at comes from the rail data, so it resolves only
+// once the rail has loaded; renderReaderList calls this again when it arrives.
+// Pure DOM — no fetch, no graph write.
+function updateStalenessBanner() {
+  const banner = document.getElementById('reader-stale-banner');
+  if (!banner) return;
+  const graphUpdatedAt = readerReportGid != null ? reportGraphMeta.get(readerReportGid) : null;
+  const generatedAt = currentReport?.generated_at;
+  const stale = graphUpdatedAt && generatedAt
+    && new Date(generatedAt).getTime() < new Date(graphUpdatedAt).getTime();
+  if (stale) {
+    banner.textContent =
+      `Generated from the graph as of ${formatUtc(generatedAt)} — the graph has `
+      + 'changed since, so this report may be out of date.';
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+}
 
 function destroyReaderViewer() {
   if (readerViewer) {
@@ -1527,6 +1555,9 @@ function destroyReaderViewer() {
 
 function readerEmptyState(message) {
   destroyReaderViewer();
+  currentReport = null;
+  const banner = document.getElementById('reader-stale-banner');
+  if (banner) banner.classList.add('hidden');
   const header = document.getElementById('reader-report-header');
   if (header) header.classList.add('hidden');
   const empty = document.getElementById('reader-empty');
@@ -1618,6 +1649,8 @@ async function renderReaderBody(gid) {
     usageStatistics: false,
     theme: appSettings.theme === 'dark' ? 'dark' : 'default',
   });
+  currentReport = report;
+  updateStalenessBanner();
   return 'ok';
 }
 
@@ -1643,23 +1676,37 @@ async function renderReaderList() {
   // Bailed out of reader mode while the fetch was in flight.
   if (currentView !== 'reader') return;
   list.innerHTML = '';
+  // Refresh the graph_id -> graph_updated_at map that drives staleness, then
+  // (re)evaluate the shown report's banner now that this data is available.
+  reportGraphMeta.clear();
   if (!Array.isArray(reports) || reports.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'reader-list-empty';
     empty.textContent = 'No reports yet across your graphs.';
     list.appendChild(empty);
+    updateStalenessBanner();
     return;
+  }
+  for (const r of reports) {
+    if (r.graph_id != null) reportGraphMeta.set(r.graph_id, r.graph_updated_at);
   }
   list.appendChild(makeSectionHeader('Reports'));
   for (const r of reports) list.appendChild(makeReportItem(r));
   markReaderRowActive(readerReportGid);
+  updateStalenessBanner();
 }
 
 // One rail row = one graph's report. Mirrors makeSidebarItem's DOM (XSS-safe
 // createTextNode, .sb-dot/.sb-name/.sb-meta) but clicking is a pure read.
 function makeReportItem(report) {
+  // Stale when the graph changed after the report was generated. The rail row
+  // already carries both timestamps, so this needs no extra fetch (E16.6).
+  const stale = report.generated_at && report.graph_updated_at
+    && new Date(report.generated_at).getTime() < new Date(report.graph_updated_at).getTime();
   const item = document.createElement('div');
-  item.className = 'sb-item' + (report.graph_id === readerReportGid ? ' active' : '');
+  item.className = 'sb-item'
+    + (report.graph_id === readerReportGid ? ' active' : '')
+    + (stale ? ' stale' : '');
   item.dataset.graphId = String(report.graph_id);
   if (report.description) item.title = report.description;
 

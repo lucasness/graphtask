@@ -710,6 +710,26 @@ body.view-reader #reader-list { display: block; }
   line-height: 1.5;
   color: var(--tx-3);
 }
+/* Staleness banner (E16.6): a calm, non-alarming amber note above the report
+   body when the graph has changed since the report was generated. */
+#reader-stale-banner {
+  margin: 0 0 24px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--color-ember-orange);
+  background: var(--color-blush-tint);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--tx-2);
+}
+#reader-stale-banner.hidden { display: none; }
+/* Amber staleness dot on a rail row whose report is out of date. Distinct from
+   the active row's orange .sb-dot — this marks content freshness, not selection. */
+#reader-list .sb-item.stale .sb-dot {
+  background: var(--color-ember-orange);
+  box-shadow: 0 0 0 2px var(--color-blush-tint);
+}
 @media (max-width: 768px) {
   #reader { padding: 72px 16px; }
 }

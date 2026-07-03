@@ -24,6 +24,34 @@ router.get('/', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// GET /meta — a cheap, body-less existence + staleness probe (E16.6). Read-gated
+// by the mount (GET→read), so a viewer can poll it. It exists as GET, NOT HEAD:
+// requireGraphForMethod maps every non-GET method to `edit`, so a HEAD would
+// 403 a viewer. `exists:false` (200) when there's no report; otherwise `stale`
+// is computed off the already-loaded req.graph — no extra query. Staleness proxy
+// is graphs.updated_at, which ANY graph write bumps (task/edge trigger OR a plain
+// PATCH like rename), so any change since generation counts as stale — intended.
+router.get('/meta', async (req, res) => {
+  const { gid } = req.params;
+  const r = await pool.query(
+    'SELECT title, generated_at, updated_at, source_graph_version FROM reports WHERE graph_id = $1',
+    [gid],
+  );
+  if (r.rows.length === 0) return res.json({ exists: false });
+  const row = r.rows[0];
+  const graphUpdatedAt = req.graph?.updated_at ?? null;
+  const stale = graphUpdatedAt != null
+    && new Date(row.generated_at).getTime() < new Date(graphUpdatedAt).getTime();
+  res.json({
+    exists: true,
+    title: row.title,
+    generated_at: row.generated_at,
+    updated_at: row.updated_at,
+    source_graph_version: row.source_graph_version,
+    stale,
+  });
+});
+
 // PUT (upsert) the report. Validates then upserts in one statement; generated_at
 // is set only on INSERT (omitted from the UPDATE SET so it's preserved), and
 // run_id is COALESCE'd so a later PUT that omits it keeps the original run's id.

@@ -153,6 +153,10 @@
         <p id="reader-desc"></p>
         <div id="reader-meta"></div>
       </div>
+      <!-- Staleness banner (E16.6): shown only when the graph changed after the
+           report was generated. Plain text, client-computed from the rail row's
+           graph_updated_at vs the report's generated_at — no extra fetch. -->
+      <div id="reader-stale-banner" class="hidden"></div>
       <div id="reader-body"></div>
       <div id="reader-empty" class="hidden">
         <p>No report yet — ask your agent to generate one.</p>
