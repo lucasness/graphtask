@@ -12,6 +12,7 @@ import meRouter from './routes/me.js';
 import graphPrefsRouter from './routes/graphPrefs.js';
 import selectionRouter from './routes/selection.js';
 import uploadsRouter from './routes/uploads.js';
+import reportsRouter from './routes/reports.js';
 import searchRouter from './routes/search.js';
 import searchAllRouter from './routes/searchAll.js';
 import contextRouter from './routes/context.js';
@@ -115,6 +116,10 @@ app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
 app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);
 app.use('/api/graphs/:gid/uploads', requireGraphForMethod, uploadsRouter);
+// The graph's human-readable report (E16). A write surface (GET=read report,
+// PUT=upsert report), so the method-pick guard: a viewer/anon reads, an editor
+// writes. The report lives outside tasks/edges, so this never mutates the graph.
+app.use('/api/graphs/:gid/report', requireGraphForMethod, reportsRouter);
 app.use('/api/graphs/:gid/members', membersRouter);
 app.use('/api/me', meRouter);
 
