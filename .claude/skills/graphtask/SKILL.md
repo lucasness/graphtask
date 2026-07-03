@@ -889,6 +889,27 @@ Re-running the workflow on the SAME graph next session compounds: the read-KB st
 
 **If the Workflow tool is absent**, degrade to a single-agent sequential loop with the same discipline (read the graph → do the work → write back via the batch endpoint → repeat), just without the fan-out.
 
+### Example: a report-generation workflow (E15 schema)
+
+A concrete, parameterized report generator ships at **`.claude/skills/graphtask/workflows/report.workflow.js`** (run it with `Workflow({ scriptPath: ".../report.workflow.js", args: { gid, base, focus?, audience? } })`). It is the report-shaped sibling of the deep-research workflow, but with the OPPOSITE data-flow: research is **write-amplifying** (returns `{nodes,edges}` → the main loop POSTs `/batch`, writing INTO the graph); this one is **read-over-graph, write-once-beside-it** (returns `{title, description, markdown, source_graph_version, coverage}` → the main loop does ONE `PUT /api/graphs/:gid/report`, writing NOTHING into the graph — no report node, no tasks, no edges). It implements the report-as-KB shape (§6) run graph-wide:
+
+**index/read (structure only) → outline (status-aware sections) → draft sections in parallel (blind drafters, each grounded STRICTLY in fetched bodies+sources) → deterministic stitch (frontmatter + concat, no agent) → completeness critic with a bounded re-draft** — then RETURNS the finished markdown. Per the clean contract, the workflow COMPUTES and RETURNS; the workflow itself never curls a write (its agents only hit read endpoints — `GET /graph`, `GET /tasks/:id`, the read-gated `POST /search|/context|/frontier|/inconsistencies`), and the MAIN LOOP does the single side-effect:
+
+```bash
+# The workflow returns {title, description, markdown, source_graph_version, coverage}.
+# The main loop stamps generated_at over the PUT_ISO_TIMESTAMP_HERE sentinel and does
+# the ONE write — a write-gated upsert (needs Authorization: Bearer $GRAPHTASK_AGENT_TOKEN).
+curl -sS -X PUT "$GT_BASE/api/graphs/$GID/report" "${WRITE_HEADERS[@]}" -d "$REPORT_JSON"
+```
+
+**When to reach for this workflow vs stay inline — a SOFT skill gate, not a server limit.** Like `SEARCH_TOPK` (§6), this is a threshold the skill states, not a cap the server enforces — nothing rejects an inline report on a big graph or a workflow on a small one; the gate just spends agents where they earn their token cost. **Always do the cheap `GET /graph` first** for the node count N and theme/component count (structure only, no bodies — token-light), then decide:
+
+- **INLINE** (one main-loop pass, NO fan-out): N ≲ 35 **AND** ≲ 6 themes **AND** the bodies you'd pull are ≲ ~40–50k tokens. Read the map → pull the node bodies you need → draft the whole report in one go → the main loop PUTs it. This is search-as-KB (§6), not new machinery.
+- **WORKFLOW** (`report.workflow.js`, fan-out): N ≳ 40 **OR** bodies ≳ ~50k tokens **OR** ≳ 6 themes/components.
+- **Structure overrides raw count.** 25 nodes in 8 disconnected clusters → workflow (the fan-out organizes the clusters); a tight 30-node single-topic graph → inline. Judge by how many independent regions a drafter would have to hold at once, not the headline number.
+
+**Default to inline** — agents are the expensive part (the "agents cost tokens" rule from *When NOT to* above), so only fan out when the graph is genuinely large or multi-cluster. And as always (§8), NEVER generate a report on your own initiative — one report per graph, the PUT replaces it, and it waits for an explicit ask.
+
 ## API reference
 
 All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`GRAPHTASK_BASE_URL` env var, default `http://127.0.0.1:3000`).

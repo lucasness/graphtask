@@ -1,0 +1,226 @@
+// Example report-generation workflow for graphtask (E16, over the E15 universal
+// schema). PARAMETERIZED by the target graph; the required args are `gid` +
+// `base` (so the read stages can curl what the graph already holds), with
+// optional `focus` (narrow the report to a sub-question / cluster) and
+// `audience` (tune voice — "exec", "engineer", "newcomer"). Run it from a
+// session that has the Workflow tool:
+//
+//   Workflow({ scriptPath: ".../report.workflow.js",
+//              args: { gid: "<graph id>", base: "https://graphtask.wafers.live",
+//                      focus: "…" /* optional */, audience: "…" /* optional */ } })
+//
+// CONTRACT (see the skill's "Using graphtask with dynamic workflows"): this
+// workflow COMPUTES and RETURNS the finished report markdown + metadata. It is
+// READ-OVER-GRAPH, WRITE-ONCE-BESIDE-IT. Contrast the research workflow, which
+// is write-amplifying: it returns {nodes,edges} for the main loop to POST the
+// /batch endpoint, writing INTO the graph. This one writes NOTHING into the
+// graph — no report node, no tasks, no edges, no /batch. It RETURNS
+// {title, description, markdown, source_graph_version, coverage}; the MAIN LOOP
+// does the single side-effect: one idempotent PUT /api/graphs/:gid/report with
+// Authorization: Bearer $GRAPHTASK_AGENT_TOKEN (a write-gated upsert; the PUT
+// replaces the one report per graph). Workflow scripts can't curl; the agents
+// inside them can — but ONLY the read endpoints (GET /graph, GET /tasks/:id,
+// the read-gated POST /search|/context|/frontier|/inconsistencies). No agent
+// here ever curls a write.
+//
+// INLINE FAST-PATH / DEGRADE: this fan-out only earns its token cost on a LARGE
+// or multi-cluster graph. Always do the cheap GET /graph first for the node
+// count N and theme count. For a TINY graph (N ≲ 35 AND ≲ 6 themes AND bodies
+// ≲ ~40-50k tokens) SKIP this workflow: one search+traverse read → draft the
+// whole report in a single inline pass → the main loop does the one PUT.
+// Escalate to this workflow only when N ≳ 40, or bodies ≳ ~50k tokens, or ≳ 6
+// themes/components — structure overrides raw count. Default to inline; agents
+// cost tokens. If the Workflow tool is absent, degrade to the same single-agent
+// sequential shape (map → draft → stitch → self-check → return) without the
+// fan-out.
+//
+// Shape: index/read (one agent) → outline (one agent) → draft sections in
+// parallel (blind drafters, each grounded strictly in fetched bodies) →
+// deterministic stitch (frontmatter + concat, no agent) → completeness critic
+// with a bounded re-draft, then RETURN.
+
+export const meta = {
+  name: 'graphtask-report',
+  description: 'Generate a human-readable report OVER a graphtask graph: index → outline → draft sections in parallel → stitch → completeness critic; RETURNS markdown for the main loop to PUT (writes nothing into the graph)',
+  phases: [
+    { title: 'Index', detail: 'read-only scan of structure, status, themes, references, tensions' },
+    { title: 'Outline', detail: 'status-aware section plan grounded in the index' },
+    { title: 'Draft', detail: 'blind section drafters, each grounded in fetched bodies' },
+    { title: 'Stitch', detail: 'deterministic concat + frontmatter (no agent)' },
+    { title: 'Critic', detail: 'completeness critic with a bounded re-draft' },
+  ],
+};
+
+const { gid, base, focus, audience } = args;
+const MAX_ROUNDS = 2; // completeness critic → re-draft rounds
+
+// A read-only preamble every agent shares — it names the graph + endpoints and
+// forbids writes, so no drafter can wander into a mutation.
+const READ = `Read the graphtask graph "${gid}" at ${base} (token in $GRAPHTASK_AGENT_TOKEN; read-only). Use ONLY read endpoints (GET /graph, GET /tasks/:id, the read-gated POST /search|/context|/frontier|/inconsistencies). Never write.`;
+
+// The structured index the map agent returns, so `source_graph_version` and the
+// coverage checks below are real values, not free text.
+const INDEX_SCHEMA = {
+  type: 'object',
+  required: ['N', 'version'],
+  properties: {
+    N: { type: 'number', description: 'node count' },
+    version: { type: ['string', 'number', 'null'], description: 'graphs.version — the staleness key' },
+    updated_at: { type: 'string' },
+    status_histogram: { type: 'object', description: 'counts by todo/in_progress/review/done' },
+    themes: { type: 'array', items: { type: 'string' }, description: 'themes/components over the related + required-for subgraph' },
+    top_significance: { type: 'array', items: { type: 'string' } },
+    references: { type: 'array', items: { type: 'string' }, description: 'type:reference sources' },
+    open_questions: { type: 'array', items: { type: 'string' }, description: 'todo nodes with no confidence' },
+    tensions: { type: 'array', items: { type: 'string' }, description: 'signed-cycle tensions from /inconsistencies' },
+  },
+};
+// The section plan the outline agent returns; each section names its seed nodes
+// (numeric task ids or search terms) so its drafter pulls exactly the bodies it
+// needs and stays blind to the rest of the report.
+const SECTION_SCHEMA = {
+  type: 'object',
+  required: ['title', 'description', 'sections'],
+  properties: {
+    title: { type: 'string', description: 'report title, <=100 chars' },
+    description: { type: 'string', description: 'one-line summary, <=200 chars' },
+    sections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'heading', 'brief'],
+        properties: {
+          id: { type: 'string', description: 'stable slug, e.g. "section:decisions"' },
+          heading: { type: 'string' },
+          brief: { type: 'string', description: 'what this section must cover' },
+          seeds: { type: 'array', items: { type: 'string' }, description: 'seed task ids or search terms for /context' },
+        },
+      },
+    },
+  },
+};
+const CRITIC_SCHEMA = {
+  type: 'object',
+  required: ['coverage_ok', 'coverage'],
+  properties: {
+    coverage_ok: { type: 'boolean' },
+    coverage: { type: 'number', description: '0..1 fraction of load-bearing nodes/themes covered' },
+    gaps: { type: 'array', items: { type: 'string' }, description: 'section ids that missed something' },
+    fixes: {
+      type: 'array',
+      items: { type: 'object', required: ['id', 'note'], properties: { id: { type: 'string' }, note: { type: 'string' } } },
+      description: 'per-section instructions for the re-draft',
+    },
+  },
+};
+
+// 1. INDEX — one agent maps the whole graph from the cheap read endpoints. No
+//    bodies yet: GET /graph is structure-only, so this stays token-light. It
+//    also captures graphs.version as the staleness key the return carries back.
+phase('Index');
+const index = await agent(
+  `${READ}\nBuild an INDEX of the graph for a report${focus ? ` focused on: "${focus}"` : ''}. GET /api/graphs/${gid}/graph for the node/edge map (structure only, no bodies) and read graphs.version + updated_at from it. Then, read-only: POST /api/graphs/${gid}/frontier {} for load-bearing knowledge, POST /api/graphs/${gid}/inconsistencies {} for signed-cycle tensions, GET /api/graphs/${gid}/tasks/ready for open questions. Return: node count N, a status histogram (todo/in_progress/review/done), the themes/components over the related + "required for" subgraph, the top-significance nodes, the type:reference sources, the open todo questions, the surfaced tensions, and the graph version string.`,
+  { label: 'index', phase: 'Index', schema: INDEX_SCHEMA },
+).catch(() => ({ N: 0, version: null }));
+
+// 2. OUTLINE — one agent turns the index into a status-aware section plan:
+//    exec summary; one section per theme/component; Decisions (high
+//    significance); Done (status:done); In review (status:review); Open
+//    questions (todo + /ready); Contested (from /inconsistencies); and a
+//    Sources appendix (type:reference). Blind drafters fan out over these.
+phase('Outline');
+const plan = await agent(
+  `${READ}\nFrom this INDEX, produce a status-aware OUTLINE for the report${audience ? ` for a "${audience}" audience` : ''}${focus ? `, focused on "${focus}"` : ''}.\nINDEX:\n${JSON.stringify(index)}\nDefault sections when the material is there: an exec summary; one per theme/component; Decisions from high-significance nodes; Done from status:done; In review from status:review; Open questions from todo + /ready; Contested from the /inconsistencies tensions; a Sources appendix from type:reference. Drop any section with no material. Give each section a stable id, a heading, a one-line brief, and the seed task ids / search terms its drafter should pull.`,
+  { label: 'outline', phase: 'Outline', schema: SECTION_SCHEMA },
+);
+
+const sections = plan?.sections ?? [];
+
+// Draft one section. Each drafter is BLIND to the others (mirrors the research
+// FINDERS) and grounds itself STRICTLY in fetched bodies + sources: it pulls its
+// seeds' k-hop neighborhood WITH bodies via POST /context and/or reads specific
+// nodes via GET /tasks/:id, cites inline, and invents nothing.
+function draftSection(sec, note) {
+  return agent(
+    `${READ}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources — cite node titles / sources inline and invent nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn just the section's markdown, starting with "## ${sec.heading}".`,
+    { label: `draft:${sec.id}${note ? ':redraft' : ''}`, phase: 'Draft' },
+  ).catch(() => `## ${sec.heading}\n\n_Section draft unavailable._`);
+}
+
+// 3. DRAFT — fan out one blind drafter per section, all in parallel (a barrier).
+phase('Draft');
+let drafts = await parallel(
+  sections.map((sec) => () => draftSection(sec).then((md) => ({ id: sec.id, heading: sec.heading, md }))),
+);
+
+// STITCH is DETERMINISTIC (no agent): concat the section markdown in outline
+// order under generated frontmatter. Kept as a function so the critic loop can
+// re-stitch after a bounded re-draft.
+function stitch(parts) {
+  const byId = new Map(parts.map((p) => [p.id, p]));
+  const bodyMd = sections
+    .map((sec) => byId.get(sec.id)?.md)
+    .filter(Boolean)
+    .join('\n\n');
+  // Frontmatter mirrors research.workflow.js's PUT_ISO_TIMESTAMP_HERE sentinel:
+  // the workflow does NOT know wall-clock time; the main loop stamps
+  // generated_at at write time. source_graph_version is the staleness key the
+  // reader compares against the live graph.
+  const fm = [
+    '---',
+    `title: ${JSON.stringify(plan?.title || `Report: ${gid}`)}`,
+    'generated_at: PUT_ISO_TIMESTAMP_HERE',
+    `source_graph: ${gid}`,
+    `source_graph_version: ${JSON.stringify(index?.version ?? null)}`,
+    `node_count: ${index?.N ?? sections.length}`,
+    ...(focus ? [`focus: ${JSON.stringify(focus)}`] : []),
+    '---',
+  ].join('\n');
+  return `${fm}\n\n${bodyMd}\n`;
+}
+
+// 4. STITCH + 5. CRITIC loop. The critic is the only agent in the loop; when it
+//    finds gaps and rounds remain, ONLY the affected sections are re-drafted,
+//    then we re-stitch — a bounded (MAX_ROUNDS) completeness pass.
+phase('Stitch');
+let markdown = stitch(drafts);
+let review = { coverage_ok: false, coverage: 0 };
+
+phase('Critic');
+for (let round = 0; round < MAX_ROUNDS; round++) {
+  review = await agent(
+    `${READ}\nYou are the COMPLETENESS CRITIC for this report over graph "${gid}". Check it against the INDEX: is every high-significance node and theme covered? every status:done deliverable present? every /inconsistencies tension surfaced? any claim NOT grounded in a real node body or source?\nINDEX:\n${JSON.stringify(index)}\nREPORT:\n${markdown}\nReturn {coverage_ok, coverage (0..1), gaps: [section ids], fixes: [{id, note}]}. Set coverage_ok true only when nothing load-bearing is missing and nothing is ungrounded.`,
+    { label: `critic#${round}`, phase: 'Critic', schema: CRITIC_SCHEMA },
+  ).catch(() => ({ coverage_ok: true, coverage: 1 }));
+  const fixes = review?.fixes ?? [];
+  if (review?.coverage_ok || fixes.length === 0) break;
+  // Re-draft ONLY the sections the critic flagged, then re-stitch.
+  const fixMap = new Map(fixes.map((f) => [f.id, f.note]));
+  const redone = await parallel(
+    drafts
+      .filter((d) => fixMap.has(d.id))
+      .map((d) => () => {
+        const sec = sections.find((s) => s.id === d.id);
+        return draftSection(sec, fixMap.get(d.id)).then((md) => ({ id: d.id, heading: d.heading, md }));
+      }),
+  );
+  const redoneById = new Map(redone.map((r) => [r.id, r]));
+  drafts = drafts.map((d) => redoneById.get(d.id) ?? d);
+  markdown = stitch(drafts);
+}
+
+log(`report: ${sections.length} sections, coverage ${review?.coverage ?? 'n/a'}`);
+
+// The MAIN LOOP takes this return and does the ONE side-effect: a single
+// idempotent PUT /api/graphs/:gid/report (Authorization: Bearer
+// $GRAPHTASK_AGENT_TOKEN), stamping generated_at over the PUT_ISO_TIMESTAMP_HERE
+// sentinel. It writes NOTHING into the graph — no report node, never the /batch
+// endpoint, no tasks/edges — so the report has zero impact on the graph's
+// version / updated_at. One report per graph; the PUT replaces any prior one.
+return {
+  title: plan?.title || `Report: ${gid}`,
+  description: (plan?.description || `Report over graphtask graph ${gid}.`).slice(0, 200),
+  markdown,
+  source_graph_version: index?.version ?? null,
+  coverage: review?.coverage ?? null,
+};
