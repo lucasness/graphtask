@@ -732,6 +732,13 @@ an agent](#using-it-with-an-agent).
   keep `related` edges genuine and specific, and **optimize for truth, not the
   retriever**. A/B-validated to lift mid-tier multi-hop answer quality while
   keeping the graph leaner, not denser.
+- **Report generation.** Draft inline for a tiny graph or escalate to
+  `report.workflow.js` for a large one (SKILL.md, "Generating a report");
+  either way, cite nodes with `[[cite:<id>]]` markers and respect **edge
+  fidelity** — edges are directed, so "A supports B" in prose must match a live
+  A→B edge, and a plain `related to` edge never licenses an evidence/causal
+  claim. Both are checked by the faithfulness eval
+  (`eval/report-faithfulness.js` + `eval/report-faithfulness-judges.workflow.js`).
 - **Live updates.** The browser canvas re-renders within ~150 ms of any
   task/edge mutation via the `/events` SSE endpoint; the agent doesn't need to
   consume the stream itself.
@@ -1207,6 +1214,7 @@ graphs / tasks / edges are untouched.
 | Change graph schema or trigger | `db/schema.sql` |
 | Change live-update behavior | `src/sse.js`, `openGraphEventStream` / `refreshFromEvent` / `followAgentEdit` in `public/app.js` |
 | Change agent skill content | `.claude/skills/graphtask/SKILL.md` |
+| Change report generation, reader mode, or its eval | `src/routes/reports.js`, `reportsAll.js`; reader view in `public/app.js`; `.claude/skills/graphtask/workflows/report.workflow.js`; `eval/report-faithfulness*.js` |
 | Debug transient frontend state | Module-scope state in `public/app.js`: `activeGraphId`, `pendingNode`, `edgeCreation`, `edgeTypeEditing`, `statusEditing`, `colorPaletteState`, `_lazyCreatedGraphId` |
 
 ### Current Caveats
@@ -1245,6 +1253,19 @@ and benchmarks have their own design doc: [design/SEARCH.md](design/SEARCH.md).
   cross-graph endpoints; embedding indexer + boot warmup (`src/search/`,
   `src/routes/search.js`, `searchAll.js`). Architecture + benchmarks in
   [design/SEARCH.md](design/SEARCH.md).
+- [x] **Reports & reader mode (E16)** — one canonical human-readable report per
+  graph (`reports` table, outside tasks/edges so writes never bump
+  `graphs.updated_at`), drafted inline for small graphs or via the
+  `report.workflow.js` generator (map → draft sections in parallel → stitch →
+  completeness critic) for large ones, and read in a client-only third canvas
+  view with a cross-graph KB browser and staleness banner — zero graph writes
+  on toggle or read (`src/routes/reports.js`, `reportsAll.js`; reader mode in
+  `public/app.js`; design in [design/DESIGN.md](design/DESIGN.md#reader-mode-e16)).
+  Report generation is gated on a faithfulness eval — citation validity,
+  high-significance coverage, and LLM-judged grounding / status-fidelity /
+  contradiction-surfacing, run against both generation paths
+  (`eval/report-faithfulness.js`, `eval/report-faithfulness-judges.workflow.js`,
+  `eval/report-faithfulness-results.md`).
 
 **Planned — not started**
 
