@@ -735,7 +735,13 @@ body.view-reader #reader-list { display: block; }
   max-height: calc(100vh - 140px);
   overflow-y: auto;
   z-index: 5;
+  /* Stay scrollable for a long outline, but hide the scrollbar — the moving
+     active-entry highlight is the scroll feedback, and a flickering bar is
+     distracting. */
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* legacy Edge */
 }
+#reader-toc::-webkit-scrollbar { display: none; } /* WebKit / Blink */
 #reader-toc.hidden { display: none; }
 #reader-toc .reader-toc-title {
   font-family: var(--font-ui);
