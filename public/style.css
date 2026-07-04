@@ -687,6 +687,15 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
 /* Reader has no create/fit/tidy actions — hide the bottom toolbar wholesale
    (heavier gate than kanban's per-button hiding: nothing in it applies). */
 body.view-reader #bottom-bar { display: none; }
+/* Reader is a pure reading surface: hide the entire graph/collaboration chrome
+   so a selection made in graph view doesn't bleed through (E16) — the presence
+   cursor tags, the collaborator avatar bar + hide-presence eye, the agent-follow
+   button, and the node Edit panel. */
+body.view-reader #peer-cursor-layer,
+body.view-reader #presence-bar,
+body.view-reader #presence-eye,
+body.view-reader #btn-follow-toggle,
+body.view-reader #panel { display: none !important; }
 /* Book toggle: both glyphs live in the DOM; show whichever matches the
    current mode (the #presence-eye two-glyph pattern). Ember tint marks the
    active tool, outline-only per the design system. */
