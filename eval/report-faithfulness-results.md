@@ -29,8 +29,10 @@ markdown + `[[cite:id]]` shape.
    status-fidelity, contradiction-surfacing), each independently re-fetching the
    live graph via curl (`GET /tasks/:id`, `GET /graph`, `POST /context`,
    `POST /inconsistencies`, `POST /frontier`) rather than trusting the report
-   text. Full per-judge issues are in the workflow transcript
-   (`report-faithfulness-judges`); the substantive findings are below.
+   text. The harness is committed as
+   `eval/report-faithfulness-judges.workflow.js` (run via the Workflow tool)
+   with the corrected endpoint briefing baked in; the substantive findings from
+   this run are below.
 
 ## What the judges actually caught
 
@@ -62,9 +64,11 @@ because it's the reason a citation-validity script alone isn't sufficient.
   default params reproduces the report's claim exactly (same 7 node ids, same
   `stale`/`verified_at`/`importance` values). Fixed by adding `/frontier` to the
   judges' allowed-endpoints list and its response shape to their briefing;
-  re-run scored grounding 0.98. This is preserved as a lesson for future runs of
-  this eval: keep the judge prompt's endpoint list in sync with the real API
-  surface, or accurate reports get penalized for an evaluator blind spot.
+  re-run scored grounding 0.98. The corrected briefing is baked into the
+  committed harness (`eval/report-faithfulness-judges.workflow.js`) so the
+  blind spot can't silently recur — keep that briefing's endpoint list in sync
+  with the real API surface, or accurate reports get penalized for an
+  evaluator blind spot.
 
 ## Fixtures (unchanged, per task spec)
 
