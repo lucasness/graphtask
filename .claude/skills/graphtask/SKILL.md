@@ -848,6 +848,26 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq
 
 Agents write status `review`, never `done` (§3 — `done` is the human's call). The batch merge preserves UI-managed keys AND a human's `status` when your content omits them, so a re-run never silently reverts a node a human advanced. Keep the small, fixed node/edge vocabulary the graph already uses.
 
+**Single dynamic node, no workflow involved — `upsert_task`.** Not every write is a structured workflow result; sometimes you just need to create-or-update ONE node from a computed variable (a finding, a rendered summary). `POST /tasks` has no identity key — it's `{content}` only, so it can only ever create, never tell you "this already exists." A client-side check-then-create-or-update would mean searching by title first, which isn't reliable (titles aren't unique). `POST /batch` already solves this server-side via `external_id`, even for a single node — route single-node upserts through it instead of `POST /tasks`:
+
+```bash
+upsert_task() {
+  # Usage: upsert_task <external_id> <content>
+  # Create-or-update ONE node keyed by a stable external_id you choose (e.g.
+  # "claim:tsmc-capex"). Re-calling with the same external_id updates in place
+  # instead of duplicating — the same idempotency /batch gives a whole
+  # workflow result, applied to just one node.
+  local EXT_ID="$1"
+  local CONTENT="$2"
+  curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" \
+    "${WRITE_HEADERS[@]}" \
+    -d "$(jq -nc --arg ext "$EXT_ID" --arg c "$CONTENT" \
+      '{nodes:[{external_id:$ext, content:$c}], edges:[]}')"
+}
+```
+
+**Gotcha: `--arg`, not `--argjson`, for any `content`/body field.** `--argjson` tells jq "this argument is already valid JSON" — feed it a raw multi-line markdown string (real newlines, not `\n` literals) and it fails with `Invalid string: control characters ... must be escaped`, which surfaces downstream as a server-side `content is required` (the curl body never built, so the request goes out empty/broken). `--arg` takes a raw string and escapes it for you — that's what `upsert_task` above and `patch_task` (§3) both use for `content`. `--argjson` is only correct for values that are already JSON on their own, like the numeric `version` in `patch_task` or the `id` in `announce_focus`. If you're assembling many nodes at once with computed content (not the fixed two-node shape in the example above), jq's per-field `--arg` flags stop scaling — building the payload with `python3 -c 'import json; print(json.dumps({...}))'` is a simpler, equally-safe alternative for that case.
+
 **Hard-won lessons (validated on a real run, E13.10).**
 
 - **Shape = TWO fan-out workflows with deterministic GLUE between them, not one mega-workflow.** Use agents ONLY for the genuinely-LLM phases (build, judge); use plain node scripts for everything measurable (provision, measure, render, compare). The glue lives in the main loop between workflows. Minimize agents — they're the cost.
