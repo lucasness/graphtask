@@ -360,6 +360,8 @@ Items 1 & 2 are MANDATORY write-gates; item 3 is a deliberately softer ask-don't
 
 **One node = one user-meaningful concept or unit of work.** Don't create a node per file edit, per git commit, or per sentence of notes. Granularity should match what a human would read in a status update or scan as a single concept.
 
+**No meta/navigation nodes — orientation is computed, not written.** Never create "RESUME HERE", "⭐ START HERE", "current status", table-of-contents, or session-handoff nodes. The graph already answers "where do I pick up?" with queries that are correct by construction and can't go stale: `/tasks/ready` (workable now), `/blockers` (why something isn't), `/frontier` (established knowledge to re-check). A hand-written status node is a parallel narrative that drifts from live state — the exact failure the sync HARD RULE exists to prevent — and if it sits at `todo` it pollutes the very `/ready` queue it tries to replace. Cold-start context (the "why", decisions, gotchas) belongs in the bodies of the real nodes it concerns; a human-readable whole-graph snapshot is the **report** (§8 — explicit ask only), never a node. This is an observed cross-session failure mode: agents inherit a RESUME node from a previous session and keep feeding it. Don't — if you find one, treat the live graph as truth, and offer the user to fold anything not already in real nodes into them and delete it.
+
 For each node, write a real markdown body — title alone is never enough. The body is what the human sees when reviewing or exploring. See section 3 for what to put in the body at each status.
 
 The example below is plan-shaped (`required for` edges for ordering). For a research / mapping shape, swap `"purpose":"required for"` for `"purpose":"related to"` (or `supports`/`contradicts` for evidence relations) and use whichever frontmatter status fits the depth ladder (e.g. `todo` = unexplored, `review` = drafted). The bulk-edge mechanics are identical regardless of shape. (See [The universal schema (E15)](#the-universal-schema-e15) for the full `purpose` vocabulary.)
@@ -601,6 +603,8 @@ curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T2/blockers"
 curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T1/unblocks"
 ```
 
+`/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (and `/frontier` for stale knowledge) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
+
 For raw structural traversal (no status filtering):
 
 ```bash
@@ -707,6 +711,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See [Images and agent discretion](#images-and-agent-discretion--hard-rules) for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - **Reports** — never generate a report, and never overwrite an existing one, on your own initiative. Generate only when the user explicitly asks ("write me a report / brief / summary of this graph"). When a report already exists and you've just finished a body of work on the graph, you MAY *ask* whether to update it — but asking is the ceiling: regenerating without a yes is the same category error as writing `done` yourself. The report is a separate artifact (`PUT /api/graphs/:gid/report`), never a graph node, so it never touches the graph.
+- **Meta/navigation nodes** — never create (or keep feeding) "RESUME HERE" / "START HERE" / status-banner nodes. Orientation is computed (`/tasks/ready`, `/blockers`, `/frontier` — §5); narrative snapshots are the report's job, on explicit ask. Full rule in §2.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
 
 ## 9. Per-graph appearance settings (do not touch unless asked)
