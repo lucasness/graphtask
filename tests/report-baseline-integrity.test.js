@@ -150,6 +150,34 @@ describe('report write leaves the staleness baseline (graphs.updated_at) untouch
     expect(events.filter((e) => e.kind === 'tasks')).toHaveLength(0);
     expect(events.filter((e) => e.kind === 'edges')).toHaveLength(0);
   });
+
+  // E16.18 — the notify-isolation contract must also hold on the UPDATE branch a
+  // regenerate takes (ON CONFLICT DO UPDATE), not just the first-PUT INSERT. The
+  // trigger fires on INSERT OR UPDATE OR DELETE and is column-agnostic, so
+  // moving generated_at must still emit exactly one report frame and zero
+  // task/edge frames.
+  it('a regenerate PUT (UPDATE branch) keeps the notify isolated: one report frame, ZERO tasks/edges', async () => {
+    const gid = await makeLegacyGraph();
+    await request(app).put(url(gid)).send({ title: 'First', body: 'x' }); // INSERT
+
+    const frames = [];
+    const fakeRes = { write: (chunk) => frames.push(String(chunk)) };
+    subscribe(gid, fakeRes);
+
+    const put = await request(app).put(url(gid)).send({ title: 'Regen', body: 'y', regenerated: true }); // UPDATE
+    expect(put.status).toBe(200);
+
+    const arrived = await waitFor(
+      () => parseFrames(frames).some((e) => e.graph_id === gid && e.kind === 'report'),
+    );
+    unsubscribe(gid, fakeRes);
+
+    const events = parseFrames(frames).filter((e) => e.graph_id === gid);
+    expect(arrived).toBe(true);
+    expect(events.filter((e) => e.kind === 'report')).toHaveLength(1);
+    expect(events.filter((e) => e.kind === 'tasks')).toHaveLength(0);
+    expect(events.filter((e) => e.kind === 'edges')).toHaveLength(0);
+  });
 });
 
 describe('staleness baselines off graphs.updated_at (GET /report/meta)', () => {
@@ -221,6 +249,74 @@ describe('staleness baselines off graphs.updated_at (GET /report/meta)', () => {
     expect(afterRewrite.updated_at.getTime()).toBe(baseline.updated_at.getTime());
     expect(afterRewrite.version).toBe(baseline.version);
     expect((await request(app).get(metaUrl(gid))).body.stale).toBe(true);
+  });
+
+  // E16.18 — the opt-in counterpart to the test above. `regenerated: true`
+  // declares a genuine regeneration built from the current graph, so the PUT
+  // resets generated_at to NOW() and the report is fresh again — the escape
+  // from the "stale flag latches forever" trap without a DELETE-then-PUT.
+  it('a regeneration (regenerated: true) resets generated_at and clears staleness', async () => {
+    const gid = await makeLegacyGraph();
+    await sleep(5);
+    const first = (await request(app).put(url(gid)).send({ title: 'R', body: 'x' })).body;
+
+    // Make the graph newer than the report → stale.
+    await sleep(5);
+    await insertTask(gid, 'A');
+    expect((await request(app).get(metaUrl(gid))).body.stale).toBe(true);
+    const baseline = await graphRow(gid);
+
+    // Regenerate: generated_at advances past the graph's last change, so the
+    // report reads fresh again.
+    await sleep(5);
+    const regen = (await request(app).put(url(gid)).send({ title: 'R2', body: 'y', regenerated: true })).body;
+    expect(new Date(regen.generated_at).getTime()).toBeGreaterThan(new Date(first.generated_at).getTime());
+
+    // The graph baseline is STILL untouched — a report write (even a
+    // regeneration) never bumps graphs.updated_at/version; only generated_at
+    // moved, and it's now newer than the graph, so stale is false.
+    const afterRegen = await graphRow(gid);
+    expect(afterRegen.updated_at.getTime()).toBe(baseline.updated_at.getTime());
+    expect(afterRegen.version).toBe(baseline.version);
+    const meta = (await request(app).get(metaUrl(gid))).body;
+    expect(new Date(meta.generated_at).getTime()).toBeGreaterThan(new Date(meta.graph_updated_at).getTime());
+    expect(meta.stale).toBe(false);
+  });
+
+  it('regenerated must be a boolean (400 on a non-boolean string/number)', async () => {
+    const gid = await makeLegacyGraph();
+    for (const bad of ['yes', 1, 0]) {
+      const res = await request(app).put(url(gid)).send({ title: 'R', body: 'x', regenerated: bad });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/regenerated must be a boolean/);
+    }
+  });
+
+  // null is treated as absent (default false = preserve the clock), matching the
+  // handler's other optional fields — a client serializer that emits null for an
+  // unset boolean must NOT get a 400.
+  it('regenerated: null is accepted and behaves as the default re-write (preserves generated_at)', async () => {
+    const gid = await makeLegacyGraph();
+    await sleep(5);
+    const first = (await request(app).put(url(gid)).send({ title: 'R', body: 'x' })).body;
+    await sleep(5);
+    const res = await request(app).put(url(gid)).send({ title: 'R2', body: 'y', regenerated: null });
+    expect(res.status).toBe(200);
+    expect(res.body.generated_at).toBe(first.generated_at);
+  });
+
+  // Guard the default: a PUT that OMITS regenerated must behave exactly like the
+  // historical re-write (preserve generated_at) — this is what keeps the
+  // narration-scrub / typo-fix re-PUT from silently resetting the clock.
+  it('omitting regenerated preserves generated_at (default is a re-write, not a regen)', async () => {
+    const gid = await makeLegacyGraph();
+    await sleep(5);
+    const first = (await request(app).put(url(gid)).send({ title: 'R', body: 'x' })).body;
+    await sleep(5);
+    const second = (await request(app).put(url(gid)).send({ title: 'R2', body: 'y' })).body;
+    expect(second.generated_at).toBe(first.generated_at);
+    const third = (await request(app).put(url(gid)).send({ title: 'R3', body: 'z', regenerated: false })).body;
+    expect(third.generated_at).toBe(first.generated_at);
   });
 });
 

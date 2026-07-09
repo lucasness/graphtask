@@ -64,9 +64,25 @@ router.get('/meta', async (req, res) => {
   });
 });
 
-// PUT (upsert) the report. Validates then upserts in one statement; generated_at
-// is set only on INSERT (omitted from the UPDATE SET so it's preserved), and
-// run_id is COALESCE'd so a later PUT that omits it keeps the original run's id.
+// PUT (upsert) the report. Validates then upserts in one statement; run_id is
+// COALESCE'd so a later PUT that omits it keeps the original run's id.
+//
+// `generated_at` is the staleness CLOCK (/report/meta compares it against the
+// graph's updated_at). On INSERT it's set by the column DEFAULT NOW(). On the
+// UPDATE branch its behavior is caller-controlled by the body's `regenerated`
+// flag (E16.18):
+//   - regenerated: false (DEFAULT) → generated_at is PRESERVED. A plain
+//     re-write — a typo fix, a narration scrub, a metadata patch — is NOT a
+//     regeneration and must not reset the staleness clock (a report that was
+//     stale stays stale). This is the historical, test-pinned behavior
+//     ("a re-write is NOT a regeneration", report-baseline-integrity.test.js).
+//   - regenerated: true → generated_at is reset to NOW(). The caller is
+//     declaring this write is a genuine, human-approved regeneration built from
+//     the current graph, so the report is fresh as of now and the stale banner
+//     clears. This is the explicit opt-in that lets a regeneration clear
+//     staleness without the old DELETE-then-PUT dance.
+// The flag only affects the UPDATE branch — on INSERT the report is fresh by
+// definition, so `regenerated` is a no-op there.
 router.put('/', async (req, res) => {
   const { gid } = req.params;
   const b = req.body ?? {};
@@ -101,6 +117,17 @@ router.put('/', async (req, res) => {
     return res.status(400).json({ error: 'meta must be an object' });
   }
 
+  // Opt-in staleness-clock reset (E16.18). Absent/false = preserve generated_at
+  // (a re-write); true = reset it to NOW() (a genuine regeneration). null is
+  // treated as absent (default false), matching every other optional field in
+  // this handler (description/source_graph_version/run_id/meta all tolerate
+  // null) — a client whose serializer emits null for an unset boolean gets the
+  // default, not a 400.
+  const regenerated = b.regenerated === undefined || b.regenerated === null ? false : b.regenerated;
+  if (typeof regenerated !== 'boolean') {
+    return res.status(400).json({ error: 'regenerated must be a boolean' });
+  }
+
   const r = await pool.query(
     `INSERT INTO reports (graph_id, title, description, body, source_graph_version, run_id, meta)
      VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::jsonb, '{}'::jsonb))
@@ -111,9 +138,12 @@ router.put('/', async (req, res) => {
        source_graph_version = EXCLUDED.source_graph_version,
        run_id = COALESCE(EXCLUDED.run_id, reports.run_id),
        meta = EXCLUDED.meta,
+       -- Reset the staleness clock only when the caller declares a regeneration;
+       -- a plain re-write ($8 = false) keeps the original generated_at.
+       generated_at = CASE WHEN $8::boolean THEN NOW() ELSE reports.generated_at END,
        updated_at = NOW()
      RETURNING *`,
-    [gid, title, description, body, sourceGraphVersion, runId, JSON.stringify(meta)],
+    [gid, title, description, body, sourceGraphVersion, runId, JSON.stringify(meta), regenerated],
   );
   res.json(r.rows[0]);
 });
