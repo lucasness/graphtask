@@ -91,7 +91,9 @@ for (let round = 0; round < MAX_ROUNDS && dryRounds < 2; round++) {
   dryRounds = 0;
   fresh.forEach((f) => seen.add(f.external_id));
 
-  // 3. VERIFY — adversarial 3-vote per finding; confidence = vote margin.
+  // 3. VERIFY — adversarial 3-vote per finding. Survival is the vote (killed
+  //    when 2+ of 3 refute); confidence = the MEAN of the judges' 0..1
+  //    sureness scores, rounded to one decimal.
   const judged = await parallel(fresh.map((f) => () =>
     parallel(Array.from({ length: 3 }, (_, v) => () =>
       agent(

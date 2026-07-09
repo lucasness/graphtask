@@ -56,7 +56,7 @@ const MAX_ROUNDS = 2; // completeness critic → re-draft rounds
 
 // A read-only preamble every agent shares — it names the graph + endpoints and
 // forbids writes, so no drafter can wander into a mutation.
-const READ = `Read the graphtask graph "${gid}" at ${base} (token in $GRAPHTASK_AGENT_TOKEN; read-only). Use ONLY read endpoints (GET /graph, GET /tasks/:id, the read-gated POST /search|/context|/frontier|/inconsistencies). Never write.`;
+const READ = `Read the graphtask graph "${gid}" at ${base} (token in $GRAPHTASK_AGENT_TOKEN; read-only). Use ONLY read endpoints (GET /api/graphs/:gid for the graph row, GET /graph, GET /tasks/:id, the read-gated POST /search|/context|/frontier|/inconsistencies). Never write.`;
 
 // Citation convention. Drafters cite NODES with a stable [[cite:<id>]] marker
 // instead of spelling out ("Title," #id) or pasting URLs/paths; the reader turns
@@ -72,7 +72,7 @@ const INDEX_SCHEMA = {
   required: ['N', 'version'],
   properties: {
     N: { type: 'number', description: 'node count' },
-    version: { type: ['string', 'number', 'null'], description: 'graphs.version — the staleness key' },
+    version: { type: ['number', 'null'], description: 'graphs.version (integer, from GET /api/graphs/:gid — NOT /graph) — provenance of what the report was built from; the PUT rejects non-integers' },
     updated_at: { type: 'string' },
     status_histogram: { type: 'object', description: 'counts by todo/in_progress/review/done' },
     themes: { type: 'array', items: { type: 'string' }, description: 'themes/components over the related + required-for subgraph' },
@@ -100,7 +100,7 @@ const SECTION_SCHEMA = {
           id: { type: 'string', description: 'stable slug, e.g. "section:decisions"' },
           heading: { type: 'string' },
           brief: { type: 'string', description: 'what this section must cover' },
-          seeds: { type: 'array', items: { type: 'string' }, description: 'seed task ids or search terms for /context' },
+          seeds: { type: 'array', items: { type: 'string' }, description: 'numeric task ids (usable as /context {"seeds":[...]}) or search terms (usable ONLY as /context {"query":"..."} or /search — /context seeds rejects non-numeric values)' },
         },
       },
     },
@@ -126,7 +126,7 @@ const CRITIC_SCHEMA = {
 //    also captures graphs.version as the staleness key the return carries back.
 phase('Index');
 const index = await agent(
-  `${READ}\nBuild an INDEX of the graph for a report${focus ? ` focused on: "${focus}"` : ''}. GET /api/graphs/${gid}/graph for the node/edge map (structure only, no bodies) and read graphs.version + updated_at from it. Then, read-only: POST /api/graphs/${gid}/frontier {} for load-bearing knowledge, POST /api/graphs/${gid}/inconsistencies {} for signed-cycle tensions, GET /api/graphs/${gid}/tasks/ready for open questions. Return: node count N, a status histogram (todo/in_progress/review/done), the themes/components over the related + "required for" subgraph, the top-significance nodes, the type:reference sources, the open todo questions, the surfaced tensions, and the graph version string.`,
+  `${READ}\nBuild an INDEX of the graph for a report${focus ? ` focused on: "${focus}"` : ''}. GET /api/graphs/${gid} for the graph row and read the integer graphs.version + updated_at from THAT (GET /graph does NOT carry them — it returns only {nodes, links}). Then GET /api/graphs/${gid}/graph for the node/edge map (structure only, no bodies). Then, read-only: POST /api/graphs/${gid}/frontier {} for load-bearing knowledge, POST /api/graphs/${gid}/inconsistencies {} for signed-cycle tensions, GET /api/graphs/${gid}/tasks/ready for open questions. Return: node count N, a status histogram (todo/in_progress/review/done), the themes/components over the related + "required for" subgraph, the top-significance nodes, the type:reference sources, the open todo questions, the surfaced tensions, and the integer graphs.version.`,
   { label: 'index', phase: 'Index', schema: INDEX_SCHEMA },
 ).catch(() => ({ N: 0, version: null }));
 
@@ -149,7 +149,7 @@ const sections = plan?.sections ?? [];
 // nodes via GET /tasks/:id, cites inline, and invents nothing.
 function draftSection(sec, note) {
   return agent(
-    `${READ}\n${CITE}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources, citing with [[cite:<id>]] markers (see CITATIONS above) and inventing nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn ONLY the section's markdown, starting with "## ${sec.heading}". Your final message is published VERBATIM as the section a human reads — no status lines, no process narration ("All grounding fetched...", "Drafting the section now.", "Here is the section."), nothing before the heading.`,
+    `${READ}\n${CITE}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context — {"seeds":[<numeric task ids>],"hops":1} for id seeds, or {"query":"<search term>","hops":1} for text seeds (the seeds param accepts ONLY numeric ids) — and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources, citing with [[cite:<id>]] markers (see CITATIONS above) and inventing nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn ONLY the section's markdown, starting with "## ${sec.heading}". Your final message is published VERBATIM as the section a human reads — no status lines, no process narration ("All grounding fetched...", "Drafting the section now.", "Here is the section."), nothing before the heading.`,
     { label: `draft:${sec.id}${note ? ':redraft' : ''}`, phase: 'Draft' },
   ).catch(() => `## ${sec.heading}\n\n_Section draft unavailable._`);
 }
@@ -192,8 +192,10 @@ function stitch(parts) {
     .join('\n\n');
   // Frontmatter mirrors research.workflow.js's PUT_ISO_TIMESTAMP_HERE sentinel:
   // the workflow does NOT know wall-clock time; the main loop stamps
-  // generated_at at write time. source_graph_version is the staleness key the
-  // reader compares against the live graph.
+  // generated_at at write time. source_graph_version records the integer graph
+  // version the report was built from (provenance); staleness itself is
+  // computed from the report's timestamps vs the graph's updated_at, not from
+  // this field.
   const fm = [
     '---',
     `title: ${JSON.stringify(plan?.title || `Report: ${gid}`)}`,
@@ -249,6 +251,12 @@ return {
   title: plan?.title || `Report: ${gid}`,
   description: (plan?.description || `Report over graphtask graph ${gid}.`).slice(0, 200),
   markdown,
-  source_graph_version: index?.version ?? null,
+  // The PUT rejects a non-integer source_graph_version, so coerce defensively —
+  // an index agent that returned a numeric string must not fail the main loop.
+  // (Explicit null/'' guard: Number(null) and Number('') are 0, not NaN.)
+  source_graph_version:
+    index?.version != null && index.version !== '' && Number.isInteger(Number(index.version))
+      ? Number(index.version)
+      : null,
   coverage: review?.coverage ?? null,
 };
