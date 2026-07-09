@@ -252,8 +252,22 @@ GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 
 # Preflight: probe /api/config to confirm reachability AND learn whether auth
 # is enabled. /api/config returns {auth_enabled, provider, viewer_user_id}.
-CONFIG=$(curl -sS --max-time 2 "$GT_BASE/api/config" 2>/dev/null) || {
-  echo "graphtask not reachable at $GT_BASE — start the app or set GRAPHTASK_BASE_URL." >&2
+#
+# RETRY before concluding it's down. A supervised instance (Docker restart
+# policy, systemd, a PaaS worker that sleeps between sessions) often comes
+# back up a few seconds AFTER a fresh agent session starts, so the very first
+# probe of a session can race the restart — "connection refused" (or a
+# proxy's 502 page) at second zero usually means "still booting", not
+# "broken". One bare curl is not a diagnosis.
+CONFIG=""
+for attempt in 1 2 3 4 5; do
+  CONFIG=$(curl -sS --max-time 5 "$GT_BASE/api/config" 2>/dev/null) \
+    && echo "$CONFIG" | jq -e 'has("auth_enabled")' >/dev/null 2>&1 && break
+  CONFIG=""
+  [ "$attempt" -lt 5 ] && sleep 5
+done
+[ -n "$CONFIG" ] || {
+  echo "graphtask not reachable at $GT_BASE after ~25s of retries — start the app or set GRAPHTASK_BASE_URL." >&2
   exit 1
 }
 
@@ -694,7 +708,7 @@ done
 
 The API uses HTTP status codes meaningfully — handle them, don't paper over them:
 
-- **Preflight fails (curl exit code ≠ 0 on `GET /api/graphs`)** — the app isn't reachable. **Stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
+- **Preflight fails (`GET /api/config` unreachable)** — don't conclude the app is down from a single failed curl: a supervised instance that sleeps between sessions often revives seconds after your session starts, which is why the §1 preflight retries for ~25s. If it's still unreachable after the retries, **stop and ask the user** what URL graphtask is at; don't try to install or start it yourself.
 - **400 `cycle`** on `POST /edges` or `/edges/bulk` — your dependency would close a loop. The bulk version returns `failedAt: <index>` so you can identify the offending edge. Drop it (or invert direction) and retry the whole batch.
 - **400 on `POST /tasks`** with a frontmatter validation message — check `title` length (≤100), `description` length (≤200), or `status` value.
 - **400 on `PATCH /graphs/:id`** with `anon_role must be one of none, viewer, editor` — pass one of those three strings literally.
@@ -1098,8 +1112,8 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    ```
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
-3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.wafers.live`. Self-hosted: `export GRAPHTASK_BASE_URL=https://graphtask.example.com`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`. The agent uses this for both API calls AND the URL it prints to the user — so it must be reachable from the user's browser, not just the agent.
+3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.wafers.live`. Self-hosted: `export GRAPHTASK_BASE_URL=https://graphtask.example.com`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`. Persist it the same way as the token in step 4 (shell rc / session env) — if it only lives in one terminal, future agent sessions silently fall back to the localhost default and probe the wrong instance. The agent uses this for both API calls AND the URL it prints to the user — so it must be reachable from the user's browser, not just the agent.
 4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **recommended** so the user's work is saved to their account) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). Without it the agent still works anonymously, but creates orphan graphs not tied to their account — so the section 1 check surfaces the tradeoff and lets them choose; it does not hard-block.
 
-If the user reports they can't reach graphtask at all (preflight `curl` fails), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL.
+If the user reports they can't reach graphtask at all (preflight fails even after §1's retries), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL. The most common false alarm is a supervised instance still booting when the session's first probe runs; the §1 retry loop absorbs that, so a failure that survives the retries is a real reachability or URL problem.
 

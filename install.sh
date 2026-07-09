@@ -124,7 +124,9 @@ graphtask skill installed.
 
 Next steps:
   1. Restart Claude Code so the new hooks load.
-  2. Set the base URL if you're not using a local instance:
+  2. Set the base URL if you're not using a local instance — and persist it
+     (shell rc / settings.json env block), or future sessions fall back to
+     http://127.0.0.1:3000:
        export GRAPHTASK_BASE_URL=https://your-graphtask.example.com
   3. (If the instance has AUTH_PROVIDER=clerk) Sign in, open
      Settings → Agent tokens, mint a token, then export it:

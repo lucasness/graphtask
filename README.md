@@ -228,7 +228,10 @@ brew install jq        # macOS — or: apt install jq / apk add jq
 #    cleanly when it stops working.
 bash <(curl -fsSL https://raw.githubusercontent.com/lucasness/graphtask/main/install.sh)
 
-# 3. Point the agent at your graphtask instance
+# 3. Point the agent at your graphtask instance. Persist this (shell rc,
+#    ~/.claude/settings.json env block, or your platform's session env) —
+#    if it only lives in the current terminal, future agent sessions fall
+#    back to http://127.0.0.1:3000 and probe the wrong instance.
 export GRAPHTASK_BASE_URL="https://graphtask.wafers.live"   # hosted
 # export GRAPHTASK_BASE_URL="https://graphtask.example.com"     # self-hosted
 # export GRAPHTASK_BASE_URL="http://localhost:3000"             # local Docker / npm start
@@ -262,6 +265,23 @@ If you're hacking on graphtask itself, you can skip the personal install
 The agent creates a graph on first use and writes its id to
 `.graphtask/graph-id` in the project. It prints the URL after creating —
 open it in a browser to watch updates live.
+
+### The agent says graphtask "isn't reachable" at the start of a session
+
+If your instance is supervised — a Docker restart policy, systemd, or a
+platform worker that sleeps between sessions — it often comes back up a few
+seconds *after* a new agent session starts. The session's very first probe
+can race that restart and see "connection refused" even though nothing is
+broken. The skill's preflight retries for ~25 seconds before reporting the
+instance down; if you script against the API yourself, retry the same way
+instead of trusting a single `curl`. Two things to check when it genuinely
+won't connect:
+
+- **`GRAPHTASK_BASE_URL` is exported persistently** (see step 3 above).
+  When it's unset, every recipe falls back to `http://127.0.0.1:3000`,
+  which is only correct for a local instance.
+- **The instance is actually running** — `curl $GRAPHTASK_BASE_URL/api/config`
+  should return JSON with `auth_enabled` once it's up.
 
 ### Mint an agent token
 
