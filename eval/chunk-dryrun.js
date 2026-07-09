@@ -18,6 +18,9 @@
 //   GRAPHTASK_BASE_URL=... GRAPHTASK_AGENT_TOKEN=... node eval/chunk-dryrun.js --gid <id>
 
 import { splitMarkdown, estimateTokens } from '../src/search/chunking.js';
+import { resolveAgentToken } from './resolve-token.js';
+
+const TOKEN = resolveAgentToken();
 
 // The two graphs #190's measurements were taken from: this KB-search graph and
 // the "AI demand → semiconductors" market-research graph.
@@ -38,8 +41,8 @@ function parseArgs(argv) {
 
 async function loadNodes(gid) {
   const base = process.env.GRAPHTASK_BASE_URL || 'https://graphtask.wafers.live';
-  const headers = process.env.GRAPHTASK_AGENT_TOKEN
-    ? { Authorization: `Bearer ${process.env.GRAPHTASK_AGENT_TOKEN}` }
+  const headers = TOKEN
+    ? { Authorization: `Bearer ${TOKEN}` }
     : {};
   const res = await fetch(`${base}/api/graphs/${gid}/tasks`, { headers });
   if (!res.ok) throw new Error(`failed to load graph ${gid}: ${res.status}`);

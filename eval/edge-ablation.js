@@ -18,10 +18,11 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+const TOKEN = resolveAgentToken();
 const HJSON = { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) };
 const SEED_N = 3, HOPS = 2;
 const P_GRID = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];

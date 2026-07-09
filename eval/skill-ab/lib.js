@@ -1,9 +1,10 @@
 // Shared helpers for the E13.10 write-side skill A/B harness (#469/#470).
 // All scripts hit the LIVE warm endpoint (never a 2nd in-process model, #436).
 import crypto from 'crypto';
+import { resolveAgentToken } from '../resolve-token.js';
 
 export const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+const TOKEN = resolveAgentToken();
 const WRITER_ID = process.env.GRAPHTASK_WRITER_ID || crypto.randomUUID();
 const WRITER_NAME = process.env.GRAPHTASK_WRITER_NAME || "Kevin's Claude";
 

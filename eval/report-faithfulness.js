@@ -16,9 +16,13 @@
 // Run: node eval/report-faithfulness.js
 //   (fetches both fixture graphs' /graph + /report and prints a table)
 import { extractCiteIds, CITE_MARKER_SOURCE } from '../public/reader-cite.js';
+import { resolveAgentToken } from './resolve-token.js';
 
 const BASE = process.env.GRAPHTASK_BASE_URL || 'https://graphtask.wafers.live';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+// Resolve from env OR a repo-local secrets file (.env, .wafer/session.env, …),
+// so `node eval/report-faithfulness.js` authenticates even in a fresh shell
+// that never sourced the token. null when genuinely absent (anonymous reads).
+const TOKEN = resolveAgentToken();
 const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
 
 async function get(url) {

@@ -11,10 +11,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { countTokens } from './metrics.js';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+const TOKEN = resolveAgentToken();
 const HJSON = { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) };
 const BODY = 1500, SEEDTOPK = 3, HOPS = 2, ALPHA = 0.5;
 // Node budget is configurable so the answer-quality benchmark can test both the

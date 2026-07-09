@@ -24,10 +24,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { coverage, setPrecision, countTokens, percentile } from './metrics.js';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+const TOKEN = resolveAgentToken();
 const HJSON = { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) };
 
 function arg(name, dflt) {

@@ -22,10 +22,11 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-const TOKEN = process.env.GRAPHTASK_AGENT_TOKEN;
+const TOKEN = resolveAgentToken();
 const HJSON = { 'Content-Type': 'application/json', ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}) };
 const K = Number(process.env.ROUTER_TOPK || 10);   // top search hits to assess (≈ tight pack node count)
 const SEED_N = 3;                                  // mirror deployed seedTopK=3

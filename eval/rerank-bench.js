@@ -23,8 +23,10 @@ import { fileURLToPath } from 'url';
 import { assemblePipeline } from '../src/search/service.js';
 import { createRerankProvider } from '../src/search/providers/rerank.js';
 import { scoreQuery, meanScores, percentile } from './metrics.js';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TOKEN = resolveAgentToken();
 const KS = [1, 10];           // precision@1 is rerank's home metric; recall@10 for the list
 const TOP_M = 20;             // rerank this many lexical hits
 const GID = process.env.STOCK_GID || 'fwmhe8ysfrnx9fw7';
@@ -36,7 +38,7 @@ function arg(name, def) {
 
 async function loadLiveCorpus(gid) {
   const base = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-  const headers = process.env.GRAPHTASK_AGENT_TOKEN ? { Authorization: `Bearer ${process.env.GRAPHTASK_AGENT_TOKEN}` } : {};
+  const headers = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
   const res = await fetch(`${base}/api/graphs/${gid}/tasks`, { headers });
   if (!res.ok) throw new Error(`load corpus ${gid}: ${res.status}`);
   const rows = await res.json();

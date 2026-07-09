@@ -23,8 +23,10 @@ import { fileURLToPath } from 'url';
 import { assemblePipeline } from '../src/search/service.js';
 import { defaultConfig, configFromEnv } from '../src/search/config.js';
 import { scoreQuery, meanScores, percentile } from './metrics.js';
+import { resolveAgentToken } from './resolve-token.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TOKEN = resolveAgentToken();
 
 function parseArgs(argv) {
   const args = { ks: [5, 10], gid: null, dataset: null };
@@ -42,8 +44,8 @@ function parseArgs(argv) {
 // `edges` array on the dataset. Either way the expander gets the same shape.
 async function loadLiveEdges(gid) {
   const base = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-  const headers = process.env.GRAPHTASK_AGENT_TOKEN
-    ? { Authorization: `Bearer ${process.env.GRAPHTASK_AGENT_TOKEN}` }
+  const headers = TOKEN
+    ? { Authorization: `Bearer ${TOKEN}` }
     : {};
   const res = await fetch(`${base}/api/graphs/${gid}/graph`, { headers });
   if (!res.ok) throw new Error(`failed to load edges for graph ${gid}: ${res.status}`);
@@ -53,8 +55,8 @@ async function loadLiveEdges(gid) {
 
 async function loadLiveCorpus(gid) {
   const base = process.env.GRAPHTASK_BASE_URL || 'http://127.0.0.1:3000';
-  const headers = process.env.GRAPHTASK_AGENT_TOKEN
-    ? { Authorization: `Bearer ${process.env.GRAPHTASK_AGENT_TOKEN}` }
+  const headers = TOKEN
+    ? { Authorization: `Bearer ${TOKEN}` }
     : {};
   const res = await fetch(`${base}/api/graphs/${gid}/tasks`, { headers });
   if (!res.ok) throw new Error(`failed to load live graph ${gid}: ${res.status}`);
