@@ -33,6 +33,14 @@ async function get(url) {
 export const TINY_GID = process.env.FAITHFULNESS_TINY_GID || 'u53pdwgdxmz6c284';
 export const LARGE_GID = process.env.FAITHFULNESS_LARGE_GID || '8ew4cvsq3ag23m63';
 
+// Drafter self-talk detector: whole lines of process narration ("All grounding
+// fetched... Drafting the section now.") that a section drafter leaked into its
+// returned markdown. Twin of the literal in report.workflow.js's stitch scrub —
+// that script can't import repo modules, so the two literals are kept in sync
+// by tests/report-narration.test.js. A non-zero count means the workflow's
+// scrub (or an inline generation) let narration through to the published body.
+export const NARRATION_LINE_RE = /^[^\n#]*(?:Drafting the section now\.|Here is the section\.)\s*$/;
+
 /** Deterministic faithfulness scorer over one report + its graph's node set. */
 export function scoreReport({ markdown, nodes }) {
   const validIds = new Set(nodes.map((n) => String(n.id)));
@@ -54,6 +62,8 @@ export function scoreReport({ markdown, nodes }) {
   const sectionsWithCite = sections.filter(hasCite);
   const groundingDensity = sections.length ? sectionsWithCite.length / sections.length : 0;
 
+  const narrationArtifacts = body.split('\n').filter((l) => NARRATION_LINE_RE.test(l));
+
   return {
     citedIds,
     invalidIds,
@@ -62,6 +72,7 @@ export function scoreReport({ markdown, nodes }) {
     groundingDensity: +groundingDensity.toFixed(3),
     highSigCount: highSig.length,
     sectionCount: sections.length,
+    narrationArtifacts,
   };
 }
 
@@ -78,11 +89,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     scoreGraph(LARGE_GID, 'large-workflow'),
   ]);
   const w = (s, n) => String(s).padEnd(n);
-  console.log(w('report', 16), w('nodes', 6), w('cited', 6), w('invalid', 8), w('citeValidity', 13), w('coverage', 9), w('groundDensity', 13));
+  console.log(w('report', 16), w('nodes', 6), w('cited', 6), w('invalid', 8), w('citeValidity', 13), w('coverage', 9), w('groundDensity', 13), w('narration', 10));
   for (const r of rows) {
     console.log(
       w(r.label, 16), w(r.nodeCount, 6), w(r.citedIds.length, 6), w(r.invalidIds.length, 8),
-      w(r.citationValidity, 13), w(r.coverage, 9), w(r.groundingDensity, 13),
+      w(r.citationValidity, 13), w(r.coverage, 9), w(r.groundingDensity, 13), w(r.narrationArtifacts.length, 10),
     );
   }
   console.log(JSON.stringify(rows, null, 2));

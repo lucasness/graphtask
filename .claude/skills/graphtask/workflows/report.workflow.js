@@ -149,7 +149,7 @@ const sections = plan?.sections ?? [];
 // nodes via GET /tasks/:id, cites inline, and invents nothing.
 function draftSection(sec, note) {
   return agent(
-    `${READ}\n${CITE}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources, citing with [[cite:<id>]] markers (see CITATIONS above) and inventing nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn just the section's markdown, starting with "## ${sec.heading}".`,
+    `${READ}\n${CITE}\nDraft ONLY the "${sec.heading}" section of a report over graph "${gid}"${focus ? ` (report focus: "${focus}")` : ''}${audience ? ` for a "${audience}" audience` : ''}.\nBRIEF: ${sec.brief}\nSEEDS: ${JSON.stringify(sec.seeds ?? [])}\nPull grounding with POST /api/graphs/${gid}/context {"seeds":<seed ids>,"hops":1} (k-hop neighborhood WITH bodies) and/or GET /api/graphs/${gid}/tasks/:id for specific nodes. Ground EVERY claim strictly in the fetched bodies + type:reference sources, citing with [[cite:<id>]] markers (see CITATIONS above) and inventing nothing; if the material isn't there, say so rather than filling it in.${note ? `\nCRITIC ASKED YOU TO FIX: ${note}` : ''}\nReturn ONLY the section's markdown, starting with "## ${sec.heading}". Your final message is published VERBATIM as the section a human reads — no status lines, no process narration ("All grounding fetched...", "Drafting the section now.", "Here is the section."), nothing before the heading.`,
     { label: `draft:${sec.id}${note ? ':redraft' : ''}`, phase: 'Draft' },
   ).catch(() => `## ${sec.heading}\n\n_Section draft unavailable._`);
 }
@@ -160,13 +160,34 @@ let drafts = await parallel(
   sections.map((sec) => () => draftSection(sec).then((md) => ({ id: sec.id, heading: sec.heading, md }))),
 );
 
-// STITCH is DETERMINISTIC (no agent): concat the section markdown in outline
-// order under generated frontmatter. Kept as a function so the critic loop can
-// re-stitch after a bounded re-draft.
+// Drafters occasionally leak process narration into their returned markdown
+// ("All grounding fetched... Drafting the section now.") — an agent's final
+// message IS its return value, so anything it says ships. The prompt above
+// forbids it, and stitch() scrubs whatever slips through anyway. The regex has
+// a twin exported by eval/report-faithfulness.js (NARRATION_LINE_RE) — this
+// script can't import repo modules, so keep the two literals in sync;
+// tests/report-narration.test.js asserts they match.
+const NARRATION_LINE_RE = /^[^\n#]*(?:Drafting the section now\.|Here is the section\.)\s*$/;
+function cleanSection(md) {
+  let text = String(md ?? '');
+  // The drafter contract says output STARTS at "## <heading>" — anything
+  // before the first heading line is preamble narration by definition.
+  const m = text.match(/^## /m);
+  if (m && m.index > 0) text = text.slice(m.index);
+  // Drop whole lines bearing known narration signatures anywhere in the body.
+  text = text.split('\n').filter((l) => !NARRATION_LINE_RE.test(l)).join('\n');
+  return text.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// STITCH is DETERMINISTIC (no agent): scrub each section's narration, then
+// concat the section markdown in outline order under generated frontmatter.
+// Kept as a function so the critic loop can re-stitch after a bounded re-draft.
 function stitch(parts) {
   const byId = new Map(parts.map((p) => [p.id, p]));
   const bodyMd = sections
     .map((sec) => byId.get(sec.id)?.md)
+    .filter(Boolean)
+    .map((md) => cleanSection(md))
     .filter(Boolean)
     .join('\n\n');
   // Frontmatter mirrors research.workflow.js's PUT_ISO_TIMESTAMP_HERE sentinel:
