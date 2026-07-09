@@ -103,11 +103,11 @@ Legacy graphs (`owner_user_id IS NULL`, created before Phase B or on a no-auth i
 
 **Check for a token before your first write — and if there isn't one, say so.** A `gt_` agent token ties everything you create to the user's account. You can absolutely work WITHOUT one — anonymously — and it functions; but graphs you create land with `owner_user_id: null`: not tied to the user, not in their **My graphs** sidebar, and pure URL-bearer — anyone with the URL gets full access, manage included (`anon_role` is ignored on un-owned graphs). So a successful (`201`) anonymous write is **not** confirmation the work is saved to *them* — it's an orphan graph.
 
-Because of that, **never go anonymous silently.** If `GRAPHTASK_AGENT_TOKEN` is unset on an auth-enabled instance, before your first write tell the user, plainly: *you can keep working anonymously, but a token saves your work to your account (and shows it in your sidebar) — here's how to mint one.* Then let them choose — wait for a token if they want one, or proceed anonymously if they'd rather just get going. Anonymous is a fully supported path; the only rule is that it's the user's **informed** choice, not a default you slid into. (On a no-auth instance there's no token concept — anonymous is the only mode, so no nudge is needed.)
+Because of that, **never go anonymous silently.** But first — **look for the token before declaring it missing.** It's commonly sitting in a repo-local secrets file (`.env`, `.wafer/session.env`, …) that this bash session never sourced, so an empty `$GRAPHTASK_AGENT_TOKEN` does NOT mean "no token." The identity block below scans those files and exports it; only if it's genuinely absent from BOTH the environment and those files, on an auth-enabled instance, before your first write tell the user, plainly: *you can keep working anonymously, but a token saves your work to your account (and shows it in your sidebar) — here's how to mint one.* Then let them choose — wait for a token if they want one, or proceed anonymously if they'd rather just get going. Anonymous is a fully supported path; the only rule is that it's the user's **informed** choice, not a default you slid into. (On a no-auth instance there's no token concept — anonymous is the only mode, so no nudge is needed.)
 
 > **The server enforces this, so a silent orphan is now impossible.** On an accounts-enabled instance, an *unauthenticated* `POST /api/graphs` is **refused with `401`** ("refusing to create a graph with no owner") unless the body carries `allow_anonymous: true`. A bare token-less create no longer returns a misleading `201` — it fails loudly and tells you to send the token or opt in explicitly. If the user has genuinely chosen anonymous, send `{"name": ..., "allow_anonymous": true}`. With a token set (identity block below) you never hit this — your graphs land owned.
 
-To attribute writes, the user generates a token from the in-app key-icon panel (Settings → Agent tokens) and exports it as `GRAPHTASK_AGENT_TOKEN`; the identity block below picks it up automatically. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
+To attribute writes, the user generates a token from the in-app key-icon panel (Settings → Agent tokens) and provides it as `GRAPHTASK_AGENT_TOKEN` — either an exported env var OR a `GRAPHTASK_AGENT_TOKEN=` line in a repo-local secrets file (`.env`, `.wafer/session.env`, …); the identity block below resolves it from either automatically, so a fresh shell that never sourced the file still finds it. Agent tokens always start with the prefix `gt_`; Clerk session JWTs start with `eyJ` (server uses the prefix to route).
 
 ### Why am I getting 401 / 403?
 
@@ -177,12 +177,32 @@ WRITE_HEADERS=(
 )
 
 # Authed deployments (AUTH_PROVIDER=clerk): the user generates an agent token
-# in the in-app Settings → Agent tokens panel and exports it as
+# in the in-app Settings → Agent tokens panel and provides it as
 # GRAPHTASK_AGENT_TOKEN. **Recommended on auth-enabled instances** so your work
 # is saved to the user's account — without it the §1 check tells the user the
 # tradeoff and lets them choose (anonymous still works; it just creates orphan
 # graphs not in their "My graphs" sidebar). On no-auth deployments the var is
 # unset and the block below is a no-op.
+#
+# RESOLVE THE TOKEN FROM A LOCAL SECRETS FILE, not just the live environment.
+# The token is frequently PRESENT in a repo-local secrets file (.env,
+# .wafer/session.env, …) even when THIS bash session never `source`d it — a
+# fresh Claude session's shell usually hasn't. Treating "env var empty" as "no
+# token" is the #1 false "no token" → silent-anonymous → orphan-graph bug. So if
+# the env var is empty, SCAN those files before concluding it's absent. The
+# extractor pulls the value of the `GRAPHTASK_AGENT_TOKEN=` line, tolerating an
+# `export ` prefix, single/double quotes, leading whitespace, CRLF, and a
+# trailing `# comment`; it anchors on the exact key so `GRAPHTASK_AGENT_TOKEN=`
+# matches but `GRAPHTASK_AGENT_TOKEN_BACKUP=` does not.
+if [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
+  for f in .env .env.local .dev.vars .wafer/session.env .graphtask/session.env; do
+    [ -f "$f" ] || continue
+    tok="$(grep -aE '^[[:space:]]*(export[[:space:]]+)?GRAPHTASK_AGENT_TOKEN=' "$f" \
+      | tail -n1 | sed -E 's/\r$//; s/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+    [ -n "$tok" ] && { export GRAPHTASK_AGENT_TOKEN="$tok"; break; }
+  done
+fi
+
 if [ -n "$GRAPHTASK_AGENT_TOKEN" ]; then
   WRITE_HEADERS+=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
   READ_HEADERS=( -H "Authorization: Bearer $GRAPHTASK_AGENT_TOKEN" )
@@ -199,6 +219,16 @@ GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 AGENT_ID="$(jq -r .id .graphtask/agent-session.json)"
 AGENT_NAME="$(jq -r .name .graphtask/agent-session.json)"
 GID="$(cat .graphtask/graph-id)"
+# Re-resolve the token from a local secrets file (shell state, incl. this env
+# var, does NOT survive between bash calls — same scan as the identity block).
+if [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
+  for f in .env .env.local .dev.vars .wafer/session.env .graphtask/session.env; do
+    [ -f "$f" ] || continue
+    tok="$(grep -aE '^[[:space:]]*(export[[:space:]]+)?GRAPHTASK_AGENT_TOKEN=' "$f" \
+      | tail -n1 | sed -E 's/\r$//; s/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+    [ -n "$tok" ] && { export GRAPHTASK_AGENT_TOKEN="$tok"; break; }
+  done
+fi
 WRITE_HEADERS=(
   -H 'Content-Type: application/json'
   -H 'X-Writer-Type: agent'
@@ -279,15 +309,30 @@ done
 # silently. If there's no token, surface the message below to the user and
 # RECOMMEND minting one, then let them decide (provide a token, or say "go ahead
 # anonymously"). Do NOT exit — anonymous is a supported path, not an error.
+# Resolve the token from a repo-local secrets file before deciding it's absent —
+# the SAME scan as the identity block, repeated here because shell state doesn't
+# survive between bash calls. This is what stops a false "no token" nudge (and
+# the silent-anonymous orphan that follows) when the token is sitting in
+# .wafer/session.env / .env but this shell never sourced it.
+if [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
+  for f in .env .env.local .dev.vars .wafer/session.env .graphtask/session.env; do
+    [ -f "$f" ] || continue
+    tok="$(grep -aE '^[[:space:]]*(export[[:space:]]+)?GRAPHTASK_AGENT_TOKEN=' "$f" \
+      | tail -n1 | sed -E 's/\r$//; s/^[^=]*=[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+    [ -n "$tok" ] && { export GRAPHTASK_AGENT_TOKEN="$tok"; break; }
+  done
+fi
 AUTH_ENABLED=$(echo "$CONFIG" | jq -r .auth_enabled)
 if [ "$AUTH_ENABLED" = "true" ] && [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
   cat >&2 <<EOF
-No GRAPHTASK_AGENT_TOKEN set — I can work anonymously, but anything I create
-won't be saved to your account (it won't show in your "My graphs" sidebar and is
-reachable only by its URL). To save your work to your account, mint a token:
+No GRAPHTASK_AGENT_TOKEN found — checked the environment AND the repo's local
+secrets files (.env, .wafer/session.env, …). I can work anonymously, but
+anything I create won't be saved to your account (it won't show in your "My
+graphs" sidebar and is reachable only by its URL). To save your work, mint a
+token — or, if you already have one in a secrets file, tell me where:
   • open $GT_BASE → sign in → Settings (Cmd/Ctrl+K) → Agent tokens → generate
-  • export GRAPHTASK_AGENT_TOKEN=gt_...          # this shell
-  • echo GRAPHTASK_AGENT_TOKEN=gt_... >> ~/.zshrc    # future shells
+  • add GRAPHTASK_AGENT_TOKEN=gt_... to .env / .wafer/session.env (I read those)
+  • or: export GRAPHTASK_AGENT_TOKEN=gt_...        # this shell only
 Then I'll pick it up automatically. Or tell me to go ahead anonymously.
 EOF
   # Relay the above to the user in your own words and recommend a token. Then
@@ -1133,7 +1178,7 @@ If the user says something like "set up graphtask" / "install the skill" / "I fo
    Override `CLAUDE_HOME` if their config lives somewhere other than `~/.claude`. After the script runs, tell them to **restart Claude Code** so the new hooks load.
 2. **`jq`** — recipes parse JSON with it. Install via `brew install jq` (macOS), `apt install jq` (Debian/Ubuntu), or `apk add jq` (Alpine).
 3. **`GRAPHTASK_BASE_URL`** — point at the instance they're using. Hosted users: `export GRAPHTASK_BASE_URL=https://graphtask.wafers.live`. Self-hosted: `export GRAPHTASK_BASE_URL=https://graphtask.example.com`. Local users: leave unset; the recipes default to `http://127.0.0.1:3000`. Persist it the same way as the token in step 4 (shell rc / session env) — if it only lives in one terminal, future agent sessions silently fall back to the localhost default and probe the wrong instance. The agent uses this for both API calls AND the URL it prints to the user — so it must be reachable from the user's browser, not just the agent.
-4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **recommended** so the user's work is saved to their account) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env` loaded by the shell, a wafer `session.env`, etc.). Without it the agent still works anonymously, but creates orphan graphs not tied to their account — so the section 1 check surfaces the tradeoff and lets them choose; it does not hard-block.
+4. **`GRAPHTASK_AGENT_TOKEN`** (auth-enabled instances — **recommended** so the user's work is saved to their account) — tell them to open the in-app Agent tokens panel (key icon), click Generate, copy the `gt_…` string from the modal (shown exactly once), and persist it in whichever env mechanism their setup uses (`export` in `~/.zshrc`, a project `.env`, a wafer `session.env`, etc.). The skill's token resolver reads these repo-local secrets files directly (§ identity block), so the token is picked up even in a fresh shell that never sourced them — the user doesn't have to re-`export` it every session. Without a token anywhere the agent still works anonymously, but creates orphan graphs not tied to their account — so the section 1 check surfaces the tradeoff and lets them choose; it does not hard-block.
 
 If the user reports they can't reach graphtask at all (preflight fails even after §1's retries), don't try to start the server yourself — ask whether they're running it locally and which port, or whether they meant to point at the hosted URL. The most common false alarm is a supervised instance still booting when the session's first probe runs; the §1 retry loop absorbs that, so a failure that survives the retries is a real reachability or URL problem.
 
