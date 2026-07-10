@@ -218,7 +218,7 @@ fi
 GT_BASE="${GRAPHTASK_BASE_URL:-http://127.0.0.1:3000}"
 AGENT_ID="$(jq -r .id .graphtask/agent-session.json)"
 AGENT_NAME="$(jq -r .name .graphtask/agent-session.json)"
-GID="$(cat .graphtask/graph-id)"
+GT_GID="$(cat .graphtask/graph-id)"
 # Re-resolve the token from a local secrets file (shell state, incl. this env
 # var, does NOT survive between bash calls — same scan as the identity block).
 if [ -z "$GRAPHTASK_AGENT_TOKEN" ]; then
@@ -247,7 +247,7 @@ fi
 After any write to a graph, record the gid so the optional cleanup hook (below) can depart your presence on session end:
 
 ```bash
-grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
+grep -qxF "$GT_GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GT_GID" >> .graphtask/agent-session-graphs
 ```
 
 See [Presence lifecycle](#presence-lifecycle) below for how your avatar gets cleaned up between turns.
@@ -342,23 +342,23 @@ fi
 
 mkdir -p .graphtask
 if [ ! -f .graphtask/graph-id ]; then
-  GID=$(curl -sS -X POST "$GT_BASE/api/graphs" \
+  GT_GID=$(curl -sS -X POST "$GT_BASE/api/graphs" \
     "${WRITE_HEADERS[@]}" \
     -d '{"name":"Project plan"}' \
     | jq -r .id)
-  echo "$GID" > .graphtask/graph-id
+  echo "$GT_GID" > .graphtask/graph-id
   grep -qxF '.graphtask/' .gitignore 2>/dev/null || echo '.graphtask/' >> .gitignore
   # Show the user the URL to open. /g/:gid is the same route for every view
   # (graph, kanban, …) — view is a per-user localStorage flag, not in the URL.
-  echo "Graph created: $GT_BASE/g/$GID"
+  echo "Graph created: $GT_BASE/g/$GT_GID"
 fi
-GID="$(cat .graphtask/graph-id)"
-grep -qxF "$GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GID" >> .graphtask/agent-session-graphs
+GT_GID="$(cat .graphtask/graph-id)"
+grep -qxF "$GT_GID" .graphtask/agent-session-graphs 2>/dev/null || echo "$GT_GID" >> .graphtask/agent-session-graphs
 ```
 
 **Always print the URL after creating a graph** so the user can open the canvas immediately — don't just hand them the id and make them assemble the URL themselves. The same applies any time you create a *new* graph mid-session (e.g., if you rotate-id or start a separate plan).
 
-If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GID/rotate-id` to invalidate it and update the local file with the new id from the response.
+If a graph id leaks (e.g. accidentally committed), call `POST /api/graphs/$GT_GID/rotate-id` to invalidate it and update the local file with the new id from the response.
 
 ## The universal schema (E15)
 
@@ -410,7 +410,7 @@ Three of the four — `significance`, `confidence`, `verified_at` — survive a 
 Items 1 & 2 are MANDATORY write-gates; item 3 is a deliberately softer ask-don't-act gate (surface, then stop) — don't conflate them.
 1. **(mandatory) Stop at `review`, never set `done`** (§3) — `done` is the human's call.
 2. **(mandatory) Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
-3. **(ask, don't act) If a report already EXISTS, ask after a body of work — never regenerate automatically.** At the same "finished a body of work" boundary as item 2 (NOT per-write), run the cheap body-less probe `GET /api/graphs/$GID/report/meta`. If it returns `exists && stale` (the report's `generated_at` predates the graph's `updated_at`), surface ONE line — "the report is stale as of `<generated_at>` vs the graph's `<updated_at>`; want me to regenerate it?" — then STOP and wait for a yes. If `exists` is false (no report yet), do nothing. Optional magnitude threshold: only ask after ≥K nodes changed or a transition to `done`. Regenerating a report is always an explicit, human-approved action.
+3. **(ask, don't act) If a report already EXISTS, ask after a body of work — never regenerate automatically.** At the same "finished a body of work" boundary as item 2 (NOT per-write), run the cheap body-less probe `GET /api/graphs/$GT_GID/report/meta`. If it returns `exists && stale` (the report's `generated_at` predates the graph's `updated_at`), surface ONE line — "the report is stale as of `<generated_at>` vs the graph's `<updated_at>`; want me to regenerate it?" — then STOP and wait for a yes. If `exists` is false (no report yet), do nothing. Optional magnitude threshold: only ask after ≥K nodes changed or a transition to `done`. Regenerating a report is always an explicit, human-approved action.
    **Clearing staleness on regenerate:** by default the PUT PRESERVES `generated_at` on update — a plain re-write (typo fix, narration scrub, metadata patch) is deliberately NOT a regeneration and must not reset the staleness clock ("a re-write is NOT a regeneration", pinned in `tests/report-baseline-integrity.test.js`). When the user says yes and you regenerate the report from the current graph, send **`regenerated: true`** in the PUT body — that resets `generated_at` to now, so the freshly regenerated report reads as current and the stale banner clears. Omit the flag (or send `false`) for a correction you don't want to reset the clock. (The flag's only effect is advancing the report's own `generated_at`; the graph's baseline — `graphs.updated_at`/`version` — is never touched by any report write.)
 
 **Ship-fully / save-project interplay.** A report is graphtask DB state, not a repo file — it's never git-added, committed, or built — so report generation lives OUTSIDE `wafer-save-project` and must never auto-run inside it. "Ship fully" auto-ships CODE; it does NOT auto-generate or auto-update a report. The ask-to-update prompt above is the report-shaped counterweight to "ship fully", exactly as "never set `done`" is the review-shaped counterweight. The test-gated-done convention (mark `done` when tests pass) applies to BUILD/CODE work only and never licenses auto-generating or updating a report — a report always waits for an explicit yes.
@@ -431,22 +431,22 @@ The example below is plan-shaped (`required for` edges for ordering). For a rese
 
 ```bash
 # Tasks. Body content tells the user what you intend to do, in plain markdown.
-T1=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
+T1=$(curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/tasks" \
   "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Audit current session-token usage\nstatus: todo\n---\n## Approach\nGrep src/auth/** for token reads. List call sites that need to switch to cookie-based reads.\n"}' \
   | jq -r .id)
-T2=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
+T2=$(curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/tasks" \
   "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Implement cookie-based session\nstatus: todo\n---\n## Approach\nWrap the existing session middleware so reads come from `Set-Cookie` (httpOnly + secure) instead of the auth header.\n"}' \
   | jq -r .id)
-T3=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/tasks" \
+T3=$(curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/tasks" \
   "${WRITE_HEADERS[@]}" \
   -d '{"content":"---\ntitle: Update auth tests\nstatus: todo\n---\n## Approach\nSwitch test fixtures from header-based to cookie-jar style. Update assertions for Set-Cookie response headers.\n"}' \
   | jq -r .id)
 
 # Bulk dependencies — transactional, all-or-nothing. `purpose: required for`
 # derives the cycle-checked `dependency` type.
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/edges/bulk" \
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/edges/bulk" \
   "${WRITE_HEADERS[@]}" \
   -d "{\"edges\":[
     {\"source_id\":$T1,\"target_id\":$T2,\"purpose\":\"required for\"},
@@ -492,7 +492,7 @@ A **report** is the whole-graph analogue of a node's `review` body — that same
 ```bash
 # On failure the response is {"error":...}, not an array — a bare `jq length`
 # would return 1 and silently mask it, so type-check before trusting the count.
-BLOCKERS=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks/$TID/blockers" "${READ_HEADERS[@]}" \
+BLOCKERS=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$TID/blockers" "${READ_HEADERS[@]}" \
   | jq 'if type=="array" then length else "AUTH_ERROR" end')
 ```
 
@@ -513,7 +513,7 @@ announce_focus() {
   local TID="$1"
   local ANCHOR
   ANCHOR=$(jq -nc --argjson id "$TID" '{kind: "node", id: $id}')
-  curl -sS -X POST "$GT_BASE/api/graphs/$GID/selection" \
+  curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/selection" \
     "${WRITE_HEADERS[@]}" \
     -d "{\"node_ids\":[$TID],\"edge_ids\":[],\"editing\":$ANCHOR,\"cursor_anchor\":$ANCHOR}" \
     >/dev/null
@@ -526,7 +526,7 @@ announce_focus_edge() {
   local EID="$1"
   local ANCHOR
   ANCHOR=$(jq -nc --argjson id "$EID" '{kind: "edge", id: $id}')
-  curl -sS -X POST "$GT_BASE/api/graphs/$GID/selection" \
+  curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/selection" \
     "${WRITE_HEADERS[@]}" \
     -d "{\"node_ids\":[],\"edge_ids\":[$EID],\"editing\":$ANCHOR,\"cursor_anchor\":$ANCHOR}" \
     >/dev/null
@@ -535,7 +535,7 @@ announce_focus_edge() {
 clear_focus() {
   # Optional explicit clear when you're done with a task and won't touch
   # another. Usually not needed — Stop hook cleanup handles it at end of turn.
-  curl -sS -X DELETE "$GT_BASE/api/graphs/$GID/selection/$AGENT_ID" >/dev/null
+  curl -sS -X DELETE "$GT_BASE/api/graphs/$GT_GID/selection/$AGENT_ID" >/dev/null
 }
 
 patch_task() {
@@ -551,13 +551,13 @@ patch_task() {
   local TID="$1"
   local NEW_CONTENT="$2"
   local CUR_JSON
-  CUR_JSON=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks/$TID" "${READ_HEADERS[@]}")
+  CUR_JSON=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$TID" "${READ_HEADERS[@]}")
   local CUR_VERSION
   CUR_VERSION=$(echo "$CUR_JSON" | jq -r .version)
   local CUR_CONTENT
   CUR_CONTENT=$(echo "$CUR_JSON" | jq -r .content)
   local RESP
-  RESP=$(curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/tasks/$TID" \
+  RESP=$(curl -sS -X PATCH "$GT_BASE/api/graphs/$GT_GID/tasks/$TID" \
     "${WRITE_HEADERS[@]}" \
     -d "$(jq -nc \
       --arg c "$NEW_CONTENT" \
@@ -630,12 +630,12 @@ Change an edge's `purpose` (e.g. `related to` → `supports`, or into/out of `re
 
 **Required: announce focus on the edge first** with `announce_focus_edge` (defined in section 3). This is the same "tell viewers what you're about to touch" rule as for tasks — without it, the human can't see which edge you're about to change in time to intercept.
 
-Same OCC rule as tasks (see [§3](#3-status-discipline-and-node-body-content)): GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge. There is no single-edge GET route — fetch the edge by filtering the edge list (`GET /api/graphs/$GID/edges`), which returns full edge rows (`source_id`, `target_id`, `purpose`, `meta`, `version`) suitable for `base_row`.
+Same OCC rule as tasks (see [§3](#3-status-discipline-and-node-body-content)): GET first, send `base_version` + `base_row` so the server's three-way merge protects UI-managed `meta` keys (`color`, `curve`) the user set on the edge. There is no single-edge GET route — fetch the edge by filtering the edge list (`GET /api/graphs/$GT_GID/edges`), which returns full edge rows (`source_id`, `target_id`, `purpose`, `meta`, `version`) suitable for `base_row`.
 
 ```bash
 announce_focus_edge "$EID"
-CUR=$(curl -sS "$GT_BASE/api/graphs/$GID/edges" "${READ_HEADERS[@]}" | jq --argjson id "$EID" '.[] | select(.id==$id)')
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID/edges/$EID" \
+CUR=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/edges" "${READ_HEADERS[@]}" | jq --argjson id "$EID" '.[] | select(.id==$id)')
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GT_GID/edges/$EID" \
   "${WRITE_HEADERS[@]}" \
   -d "$(jq -nc \
     --argjson v "$(echo "$CUR" | jq .version)" \
@@ -657,16 +657,16 @@ The server does the recursion — never compute readiness yourself. All three st
 # confidence-bearing node is a claim/finding, not ready work, so it never
 # appears here even if it still sits at todo; re-checking findings is /frontier's
 # job. So in a mixed plan+knowledge graph, /ready stays a clean "what to do next".
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/ready" "${READ_HEADERS[@]}"
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/ready" "${READ_HEADERS[@]}"
 
 # What's blocking task X from being completable? Returns recursive prereqs not yet done
 # (mix of todo, in_progress, review tasks). Use this to triage a stuck goal.
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T2/blockers" "${READ_HEADERS[@]}"
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T2/blockers" "${READ_HEADERS[@]}"
 
 # If I finish task X, what becomes ready? Returns the direct parent tasks whose
 # only remaining non-done prereq is X. Use this to find "critical review" tasks —
 # review tasks whose completion would unlock further work.
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
 ```
 
 `/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (and `/frontier` for stale knowledge) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
@@ -674,20 +674,20 @@ curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
 For raw structural traversal (no status filtering):
 
 ```bash
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/leaves" "${READ_HEADERS[@]}"          # DAG roots: no incoming deps
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T2/subtasks" "${READ_HEADERS[@]}"    # all recursive prerequisites
-curl -sS "$GT_BASE/api/graphs/$GID/tasks/$T2/ancestors" "${READ_HEADERS[@]}"   # all recursive dependents
-curl -sS "$GT_BASE/api/graphs/$GID/graph/shortest-path?from=$T1&to=$T3" "${READ_HEADERS[@]}"
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/leaves" "${READ_HEADERS[@]}"          # DAG roots: no incoming deps
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T2/subtasks" "${READ_HEADERS[@]}"    # all recursive prerequisites
+curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T2/ancestors" "${READ_HEADERS[@]}"   # all recursive dependents
+curl -sS "$GT_BASE/api/graphs/$GT_GID/graph/shortest-path?from=$T1&to=$T3" "${READ_HEADERS[@]}"
 ```
 
 **Pattern: "find the review tasks I should chase down to unstick the critical path"**
 
 ```bash
 # 1. Get all review tasks
-REVIEW_IDS=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks" "${READ_HEADERS[@]}" | jq -r '.[] | select(.meta.status == "review") | .id')
+REVIEW_IDS=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks" "${READ_HEADERS[@]}" | jq -r '.[] | select(.meta.status == "review") | .id')
 # 2. For each, ask the server what completing it would unblock
 for id in $REVIEW_IDS; do
-  unblocks=$(curl -sS "$GT_BASE/api/graphs/$GID/tasks/$id/unblocks" "${READ_HEADERS[@]}" | jq 'length')
+  unblocks=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$id/unblocks" "${READ_HEADERS[@]}" | jq 'length')
   if [ "$unblocks" -gt 0 ]; then
     echo "task $id unblocks $unblocks parent(s)"
   fi
@@ -701,7 +701,7 @@ When the user asks a **content** question about the graph — "find the node abo
 ```bash
 # Ask the retriever. Read-gated, so READ_HEADERS is only needed on a private
 # graph; a JSON body means you still send Content-Type.
-RESULTS=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" \
+RESULTS=$(curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/search" \
   -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"query":"how does presence cleanup work"}')
 
@@ -711,7 +711,7 @@ IDS=$(echo "$RESULTS" | jq -r '.results[].taskId')
 # The results carry an optional lexical `snippet` but NOT the full body — pull
 # the candidate pool so you can rerank it against the actual question.
 for id in $IDS; do
-  curl -sS "$GT_BASE/api/graphs/$GID/tasks/$id" "${READ_HEADERS[@]}" \
+  curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$id" "${READ_HEADERS[@]}" \
     | jq '{id, title: .meta.title, content}'
 done
 ```
@@ -732,10 +732,10 @@ The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: eve
 
 ```bash
 # 1. INDEX — the whole map once (structure only, no bodies).
-MAP=$(curl -sS "$GT_BASE/api/graphs/$GID/graph" "${READ_HEADERS[@]}")
+MAP=$(curl -sS "$GT_BASE/api/graphs/$GT_GID/graph" "${READ_HEADERS[@]}")
 
 # 2. ENTRY — search finds the most relevant node by content (this section, above).
-SEED=$(curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" -H 'Content-Type: application/json' \
+SEED=$(curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/search" -H 'Content-Type: application/json' \
   "${READ_HEADERS[@]}" -d '{"query":"how does X relate to Y"}' | jq -r '.results[0].taskId')
 
 # 3. TRAVERSE — follow SEED's related links to its neighbors, then read their bodies.
@@ -743,7 +743,7 @@ NEIGHBORS=$(echo "$MAP" | jq --argjson s "$SEED" \
   '[.links[] | select(.type=="related") | select(.source==$s or .target==$s)
     | if .source==$s then .target else .source end] | unique')
 for id in $(echo "$NEIGHBORS" | jq -r '.[]'); do
-  curl -sS "$GT_BASE/api/graphs/$GID/tasks/$id" "${READ_HEADERS[@]}" | jq '{id, title:.meta.title, content}'
+  curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$id" "${READ_HEADERS[@]}" | jq '{id, title:.meta.title, content}'
 done
 ```
 
@@ -795,12 +795,12 @@ Missing keys fall back to the viewer's app-level Defaults. PATCH merges; sending
 
 ```bash
 # Override font + background for this graph
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GT_GID" \
   "${WRITE_HEADERS[@]}" \
   -d '{"settings":{"font":"garamond","bg_color":"#100F0F"}}'
 
 # Clear the per-graph font override (revert to default)
-curl -sS -X PATCH "$GT_BASE/api/graphs/$GID" \
+curl -sS -X PATCH "$GT_BASE/api/graphs/$GT_GID" \
   "${WRITE_HEADERS[@]}" \
   -d '{"settings":{"font":null}}'
 ```
@@ -822,13 +822,13 @@ Both accept an optional `filter` — a Mongo/Pinecone-style object over node `me
 ```bash
 # High-confidence, non-reference search hits only. Ranking is untouched — the
 # filter just drops non-matching candidates (you still rerank, §6).
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/search" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/search" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"query":"selenium supply","filter":{"confidence":{"$gte":0.7},"type":{"$ne":"reference"}}}'
 
 # Context neighborhood, filtered at OUTPUT. A low-confidence node on the path
 # between two matching nodes is RETAINED and marked bridge:true — the filter
 # NEVER prunes traversal. `meta` is surfaced on each node when a filter is set.
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/context" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/context" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"query":"how does X relate to Y","filter":{"confidence":{"$gte":0.6}}}'
 ```
 
@@ -839,7 +839,7 @@ An absent filter → response byte-identical to the pre-filter contract. An inva
 `POST /frontier` returns LOAD-BEARING confidence-bearing nodes that are STALE or LOW-confidence — the maintenance queue a flat doc store can't express (complements `/tasks/ready`). Importance = OUT-degree over `required for` + `supports` edges, so a foundation many things REST ON ranks first.
 
 ```bash
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"minImportance":2,"staleDays":90,"lowConfidenceBelow":0.5,"maxResults":50}'
 # → {frontier:[{id,title,status,type,importance,confidence,verified_at,stale,lowConfidence}], truncated, params}
 ```
@@ -852,9 +852,9 @@ All params optional (defaults shown). A node with no `verified_at` counts as sta
 
 ```bash
 # Graph-wide — list every tension.
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 # Per-claim — only tensions through node 42 ("is claim X contested?").
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{"start": 42}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{"start": 42}'
 # → {mode, start?, inconsistencies:[{nodes,edges,length,contradicts,balanced}], truncated, scanned, params}
 ```
 
@@ -902,7 +902,7 @@ This section applies only when the harness running this skill ALSO exposes a dyn
 # Results from the workflow, already structured. external_id is YOUR stable key
 # per node (so a re-run upserts, not duplicates); edges reference nodes by that
 # external_id (string) or by an existing numeric task id.
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq -n \
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/batch" "${WRITE_HEADERS[@]}" -d "$(jq -n \
   --arg run "research-2026-06-21-round1" \
   '{run_id:$run,
     nodes:[ {external_id:"claim:tsmc-capex",
@@ -931,7 +931,7 @@ upsert_task() {
   # workflow result, applied to just one node.
   local EXT_ID="$1"
   local CONTENT="$2"
-  curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" \
+  curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/batch" \
     "${WRITE_HEADERS[@]}" \
     -d "$(jq -nc --arg ext "$EXT_ID" --arg c "$CONTENT" \
       '{nodes:[{external_id:$ext, content:$c}], edges:[]}')"
@@ -969,13 +969,13 @@ Per the clean contract, the workflow COMPUTES and RETURNS `{ nodes, edges, openQ
 #    unstamped batch 400s wholesale — then write the round atomically at status
 #    review (idempotent on external_id); sources land as reference nodes.
 ROUND_JSON=$(echo "$ROUND_JSON" | sed "s/PUT_ISO_TIMESTAMP_HERE/$(date -u +%FT%TZ)/g")
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/batch" "${WRITE_HEADERS[@]}" -d "$ROUND_JSON"
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/batch" "${WRITE_HEADERS[@]}" -d "$ROUND_JSON"
 # 2. COMPLETION GATE 1 is already honored — everything is `review`, never `done`.
 # 3. work the re-verification frontier (stale load-bearing knowledge to re-check):
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 # 4. COMPLETION GATE 2 — run the inconsistency scan and SURFACE any tension by
 #    name (never auto-resolve a contradicts edge):
-curl -sS -X POST "$GT_BASE/api/graphs/$GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/inconsistencies" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
 ```
 
 Rule of thumb: read-only POSTs — `search` / `context` / `frontier` / `inconsistencies` — take `READ_HEADERS` + an explicit `Content-Type`; only mutating calls (e.g. the `batch` write in step 1) take `WRITE_HEADERS`.
@@ -1001,7 +1001,7 @@ A concrete, parameterized report generator ships at **`.claude/skills/graphtask/
 REPORT_JSON=$(echo "$RESULT" | jq --arg now "$(date -u +%FT%TZ)" \
   '{title, description, body: (.markdown | gsub("PUT_ISO_TIMESTAMP_HERE"; $now)), source_graph_version, regenerated: true}')
 # The ONE write — a write-gated upsert (needs Authorization: Bearer $GRAPHTASK_AGENT_TOKEN).
-curl -sS -X PUT "$GT_BASE/api/graphs/$GID/report" "${WRITE_HEADERS[@]}" -d "$REPORT_JSON"
+curl -sS -X PUT "$GT_BASE/api/graphs/$GT_GID/report" "${WRITE_HEADERS[@]}" -d "$REPORT_JSON"
 ```
 
 **When to reach for this workflow vs stay inline — a SOFT skill gate, not a server limit.** Like `SEARCH_TOPK` (§6), this is a threshold the skill states, not a cap the server enforces — nothing rejects an inline report on a big graph or a workflow on a small one; the gate just spends agents where they earn their token cost. **Always do the cheap `GET /graph` first** for the node count N and theme/component count (structure only, no bodies — token-light), then decide:
@@ -1014,7 +1014,7 @@ curl -sS -X PUT "$GT_BASE/api/graphs/$GID/report" "${WRITE_HEADERS[@]}" -d "$REP
 
 ## API reference
 
-All paths below are `:gid`-scoped (substitute `$GID`). Base URL is `$GT_BASE` (`GRAPHTASK_BASE_URL` env var, default `http://127.0.0.1:3000`).
+All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE` (`GRAPHTASK_BASE_URL` env var, default `http://127.0.0.1:3000`).
 
 | Method | Path | Notes |
 |---|---|---|
