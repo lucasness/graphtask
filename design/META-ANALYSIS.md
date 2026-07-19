@@ -417,6 +417,140 @@ adversarial checking. Keep them as defaults/warnings, not gates.
 
 ---
 
+## 8. Cross-study component recombination (the "dissect and recombine" idea)
+
+> A separate research pass (25–0 on the core, plus a 51-confirmed / 6-corrected buildability
+> pass; the 6 "refutations" were all **my** citation mis-mappings, not content errors). This
+> section answers: *is there a name for pooling procedurally-commensurable pieces across
+> topically-unrelated papers, is it valid, and can LLMs drive it?*
+
+### 8.1 The idea, precisely
+Stop treating a paper as an atomic, topic-labeled unit. **Decompose each study into its
+methods and sub-experiments** (model system, materials, protocol, timeframe, assay, and each
+individual arm/contrast). Then match across papers on **procedural commensurability at the
+sub-experiment level, not on topic** — and pool the pieces that are "the same thing measured
+the same way," assembling a sample no keyword search could gather because the source papers
+have unrelated titles and questions.
+
+### 8.2 Is there a term? — closest matches, and where this goes beyond them (all verified)
+- **Component Network Meta-Analysis (CNMA)** is the closest *named method*: it decomposes
+  multicomponent interventions into components and estimates each. It can *technically*
+  "reconnect a disconnected network" via shared components — the nearest published analogue —
+  **but its own developers call the disconnected case "questionable,"** resting on an
+  additivity assumption that *cannot be tested there*; they advise it only with strong prior
+  arguments, else analyze sub-networks separately. *(Cite CNMA to Rücker et al. 2020 /
+  Efthimiou et al. 2022 / Rücker's BMC Med Res Methodol methods paper — **not** to
+  `sim.70068`, which is a transitivity paper.)*
+- **Virtual Control Groups (VCGs)** are the closest *real-world practice* — and they're in the
+  exact preclinical domain: reuse historical control arms **stratified/matched by strain, age,
+  study duration, vehicle** (literally the component-matching envisioned), 3Rs-motivated
+  (~25% animal reduction). Verified limits: substituting virtual controls **reproduces the
+  original *statistical* findings only "poorly-to-moderately,"** is validated only at the
+  *coarse-conclusion* level, replaces only a *proportion* of controls, is control-group
+  specific, and is confined to *homogeneous study types*.
+- **Retrospective data harmonization** (Maelstrom): "inferential equivalence" of measures from
+  different-purpose cohorts — but a *hard* precondition is design compatibility, and in
+  practice **only 11.8% of surveyed initiatives validated their harmonized data** (practice
+  diverges sharply from guidance).
+- **NMA / IPD**: link *randomized* trials through shared comparators; validity rests on
+  **transitivity/exchangeability** (no systematic difference in effect-modifier distributions),
+  which is a *judgment call, not a statistical test*.
+- **Verdict:** the full cross-purpose vision **extends beyond CNMA and every established
+  method** — all of them stay inside a single *connected, same-outcome, design-compatible*
+  network; the vision pools arms linked *only by procedural sameness* across unrelated papers.
+  **No established methodology sanctions the full case.** That's the white space — and it means
+  the feature must be *more* careful than existing methods, not less.
+
+### 8.3 The validity line — when recombination is valid vs. a fabrication engine
+The powerful version and the garbage version look identical until you ask: **does the pooled
+contrast preserve within-study randomization?** (Phillippo et al. 2018 / NICE DSU TSD 18, verified.)
+
+- **Anchored** (link two studies through a *shared comparator*, compare *relative* effects):
+  **"should always be preferred."** Requires only *conditional constancy of relative effects*
+  (balance the effect modifiers).
+- **Unanchored** (pluck arm A, compare directly to arm B — no shared comparator): a **last
+  resort**, valid only with no connected randomized network or single-arm studies. Requires the
+  far stronger *conditional constancy of absolute effects* — you must **know and adjust for
+  ALL effect modifiers AND prognostic variables.** Results that don't demonstrate the
+  adjustment compensates for the missing comparator **"should be disregarded entirely."**
+- Even the *adjusted* unanchored method (MAIC) is **not reliably better than naive** — under
+  low covariate overlap + high covariate strength it's *worse*, and **more data does not fix
+  residual bias** (2025 simulation, verified). 89% of NICE population-adjusted comparisons are
+  unanchored MAICs — i.e., the risky mode is the common one.
+
+**Why "identical protocol" still isn't identical (quantified, verified):**
+- **Batch effects** (Leek et al. 2010): **32.1–99.5%** of measured features associate with mere
+  *processing date*; the technical signal *typically dominates the biological one*. The
+  procedural dimensions that cause this — lab, reagent lot, instrument, technician, date — are
+  *exactly what a cross-study pooling tool would have to match on.*
+- **The killer example** (Haibe-Kains et al. 2013, CGP vs CCLE): two labs assayed the **same
+  471 cell lines with the same 15 drugs**. Gene expression agreed (median Spearman **0.85**),
+  but **drug response did not** — median IC50 correlation **0.28**, AUC **0.35**, only **1 of
+  15 drugs** above 0.6. Models trained on one lab failed on the other. Cause: assay,
+  concentration range, curve-fit differences. **Same material, same drugs, different lab →
+  non-commensurable phenotypes.** This is the empirical ceiling on the whole idea.
+- The motivating example is *in-vitro*, where studies often **aren't randomized at all** — so
+  there's no within-study anchor to lean on. SYRCLE makes *baseline similarity between groups*
+  a checked item *for exactly this reason* (verified).
+
+### 8.4 Can LLMs drive this? — honest verdict (three independent evals, verified)
+**No — assist, don't drive.** Consistent across all sources:
+- LLMs **cannot autonomously replace human extraction**; positioned only as a *second reviewer
+  with human oversight*.
+- **Text/string fields extract well; numeric fields — the values you must pool — are the least
+  reliable.** Hallucination is real and measured: GPT-4 fabricated an "RCT" design the abstract
+  never stated; ChatGPT-4o **agreed 92.4%** overall but **fabricated 5.2%** of cases,
+  concentrated on *unreported* items (agreement dropped to **77.2%** there — it *infers* rather
+  than flagging missing data). Not replicable even at temperature 0.
+- Accuracy is **highly setup-dependent**: o3 75.3%, GPT-4o ~61.6% on one dataset but **96.3%**
+  in a favorable batch/external-validation setup — so architecture matters enormously.
+- **End-to-end automated meta-analysis is unsolved** (2025 PRISMA review, 978→54 studies): 57%
+  of automation targets early-stage tasks, only 17% advanced synthesis; higher-order synthesis
+  is underdeveloped. Automation *assists* human judgment; it doesn't replace it.
+
+⇒ **This is why source-anchoring + double-extraction + reconciliation + human sign-off (§0,
+§5) are load-bearing, not optional.** The model *proposes* commensurability; a human and the
+statistics *dispose*.
+
+### 8.5 Formal substrate for decomposition (verified)
+- **OBI** (Ontology for Biomedical Investigations): **2500+** logically-defined, ID-bearing
+  terms for assays, devices, objectives, at multiple granularities; positioned as a
+  *cross-dataset integration standard* and interoperable with the OBO Foundry (GO, ChEBI, …).
+  **The leading candidate canonical schema** for the "study card."
+- **EXPO**: a general, domain-independent experiment ontology that **demonstrably surfaced
+  cross-domain commensurability** (it made a high-energy-physics and a phylogenetics experiment
+  comparable) — a proof-of-concept for the exact "find commensurable pieces across unrelated
+  fields" move.
+- **ISA framework** (Investigation/Study/Assay) — pragmatic tabular metadata standard;
+  lighter-weight complement to OBI for the arm/assay decomposition.
+
+### 8.6 The white space (verified) and the feature's honest ambition
+- The **CAMARADES** preclinical toolchain covers search, screening (SyRF/Rayyan), extraction
+  (Auto-STEED), and risk-of-bias (SYRCLE) — but has **no tool for meta-analysis statistics, for
+  multiple experiments within a paper, or for cross-study arm pooling.** Verified gap.
+- **No system does component-level cross-study recombination.** The opening is real.
+
+**So the feature is a discovery + evidence-mapping + hypothesis-generation engine — not an
+autopilot pooled-estimate generator.** Concretely, on top of the graphtask substrate:
+1. **Decompose** each study into an OBI/EXPO-style structured **study card** (model system,
+   materials, protocol steps, timeframe, assay, arms/contrasts) — every field *source-anchored*
+   (§0). Study card = a typed node cluster; procedural components = node meta / linked nodes.
+2. **Match** — propose candidate poolable pieces across topically-unrelated papers on procedural
+   dimensions (strain/age/passage/vehicle/assay/concentration-range/readout). The matcher is a
+   query over the graph; a **commensurability edge** carries a *match score*.
+3. **Gate before pooling** — prefer *anchored* (relative, within-study) contrasts; classify any
+   *unanchored* recombination as **observational + low-certainty**; enforce procedural-match
+   thresholds; surface batch/lab confounding explicitly; require SYRCLE-style baseline-similarity
+   checks. (Rides `metaFilter` + a new "anchored?" predicate.)
+4. **Human sign-off** on the matched set and every extracted number (double-extraction +
+   reconciliation → the `verified_at` stamp; unverified pieces sit in the `frontier` queue).
+5. **Present** the recombined dataset with an explicit **commensurability-confidence score** and
+   the CGP/CCLE caveat that identical-material ≠ identical-measurement. Never render an
+   unanchored between-study contrast as if it were a randomized result.
+
+This is publishable-grade *if and only if* it refuses to over-claim. Built the other way, it's
+a fabrication engine with a beautiful forest plot.
+
 ## Sources (verified primary references)
 
 - Page et al. 2021, **PRISMA 2020** — BMJ 372:n71 / n160.
@@ -436,3 +570,15 @@ adversarial checking. Keep them as defaults/warnings, not gates.
 - **MetaInsight** 2019 — Res Synth Methods (jrsm.1373).
 - **GRADE / GRADEpro GDT** — gradepro.org.
 - RoB 2 / ROBINS-I / AMSTAR 2 — per Kolaski et al. 2023, Systematic Reviews.
+
+**§8 — cross-study component recombination:**
+- Component NMA — Rücker et al. 2020 (Biometrical J.), Efthimiou et al. 2022 (Stat. Med. 10.1002/sim.9372), CNMA methods review (BMC Med Res Methodol 10.1186/s12874-023-01959-9). *(Not `sim.70068`, which is Spineli et al. 2025 on transitivity.)*
+- Phillippo et al. 2018, **anchored vs unanchored / NICE DSU TSD 18** — Medical Decision Making 38(2):200–211 (10.1177/0272989X17725740).
+- MAIC simulation 2025 — Applied Health Economics & Health Policy (10.1007/s40258-025-00952-1).
+- Leek et al. 2010, **batch effects** — Nature Reviews Genetics (nrg2825).
+- Haibe-Kains et al. 2013, **CGP vs CCLE inconsistency** — Nature 504:389–393 (nature12831).
+- **Virtual Control Groups** — proof-of-principle (EuropePMC MED/32242633, 2020) + toxicology validation (ScienceDirect S0273230024000734 / S0273230024000333, 2024).
+- Preclinical SR/MA primer — Nature Reviews Methods Primers (s43586-024-00347-x, 2024); **SYRCLE** RoB (BMC Med Res Methodol 10.1186/1471-2288-14-43); **CAMARADES** toolchain (camarades.ch/tools).
+- Maelstrom retrospective harmonization — Int. J. Epidemiology 46(1):103.
+- LLM extraction reliability — PMC12823200 (2025, o3/GPT-4o); arXiv 2405.14445 (GPT-4, fabrication); PLoS ONE 0313401 (ChatGPT-4o, 5.2% hallucination); automated-MA review arXiv 2504.20113.
+- Experiment ontologies — **OBI** (obi-ontology.org), **EXPO** (J. R. Soc. Interface 10.1098/rsif.2006.0134).
