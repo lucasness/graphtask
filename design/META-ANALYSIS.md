@@ -37,11 +37,16 @@ worse than useless — it is *confidently wrong and looks authoritative*.
 
 A third rule follows from the product being a *paper*, not a build artifact:
 
-3. **Papers have irreducible human gates.** graphtask's "agent marks itself done when
-   tests pass" norm is correct for building *this feature*; it is exactly the wrong norm
-   for a *paper the feature produces*. Protocol sign-off, the final included-study set,
-   and a spot-check of extracted numbers are human checkpoints. A meta-analysis that
-   declares itself done is the failure mode.
+3. **Full automation is a goal; the human gate is a review board at the end.** We DO attempt a
+   fully-autonomous mode: the system produces the entire meta-analysis end-to-end and emits a
+   preprint (arXiv-style) delivered to a human **review board** (currently Kevin) who signs off
+   before anything is treated as final or published externally. The gate is not "a human does
+   the work"; it's "a human board approves the finished artifact." The one non-negotiable that
+   makes the board able to function: **the automated output must carry its own uncertainty** —
+   commensurability-confidence scores, anchored-vs-unanchored labels, batch-effect flags — so
+   the reviewer can judge it. An output that strips uncertainty into a bare confident number is
+   the failure mode, *not* automation itself. (Assisted, human-in-the-loop mode is expected to
+   yield better results and is built too — see §8.6.)
 
 ---
 
@@ -508,9 +513,19 @@ contrast preserve within-study randomization?** (Phillippo et al. 2018 / NICE DS
   of automation targets early-stage tasks, only 17% advanced synthesis; higher-order synthesis
   is underdeveloped. Automation *assists* human judgment; it doesn't replace it.
 
-⇒ **This is why source-anchoring + double-extraction + reconciliation + human sign-off (§0,
-§5) are load-bearing, not optional.** The model *proposes* commensurability; a human and the
-statistics *dispose*.
+**Important scope note on that verdict:** every eval above measured *unguarded, autonomous*
+extraction judged against a human standard. It is NOT a reason to abandon automation. With
+source-anchoring, double-extraction + reconciliation, stronger models (e.g. Opus 4.8 at high
+effort), and a review-board gate, hallucination becomes a **tracked, gated quantity, not a
+disqualifier** — and the *hallucination rate itself is a first-class product metric* the tool
+surfaces (per-field extraction agreement, % inferred-vs-stated, reconciliation disagreement).
+So: we attempt full automation AND we measure exactly how often it errs. The guardrails aren't
+there because automation is forbidden; they're there so the automated output can be *trusted or
+distrusted with evidence*.
+
+⇒ Net: source-anchoring + double-extraction + reconciliation + review-board sign-off (§0, §5)
+are load-bearing. The model *proposes* commensurability and drafts the paper; the statistics
+and the review board *dispose* — with the extraction-error rate on the page.
 
 ### 8.5 Formal substrate for decomposition (verified)
 - **OBI** (Ontology for Biomedical Investigations): **2500+** logically-defined, ID-bearing
@@ -530,8 +545,18 @@ statistics *dispose*.
   multiple experiments within a paper, or for cross-study arm pooling.** Verified gap.
 - **No system does component-level cross-study recombination.** The opening is real.
 
-**So the feature is a discovery + evidence-mapping + hypothesis-generation engine — not an
-autopilot pooled-estimate generator.** Concretely, on top of the graphtask substrate:
+**Two operating modes (both built):**
+- **Autonomous mode** — the system runs the whole pipeline end-to-end and produces a complete
+  preprint delivered to the review board. This is an explicit goal, not a stretch.
+- **Assisted mode** — a human is in the loop during screening/extraction/matching; expected to
+  yield better results, and the source of ground-truth for measuring autonomous mode's error rate.
+
+**The load-bearing principle for *either* mode:** the output is an *uncertainty-carrying,
+auditable artifact*, never a bare confident number. It always ships with its commensurability
+scores, anchored-vs-unanchored labels, batch-effect flags, and per-field extraction agreement —
+that is precisely what lets the review board judge an autonomously-produced preprint. "Discovery
++ evidence-mapping engine" describes the *artifact* (it shows its work and its doubt); it does
+NOT mean "don't automate." Concretely, on top of the graphtask substrate:
 1. **Decompose** each study into an OBI/EXPO-style structured **study card** (model system,
    materials, protocol steps, timeframe, assay, arms/contrasts) — every field *source-anchored*
    (§0). Study card = a typed node cluster; procedural components = node meta / linked nodes.
