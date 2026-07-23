@@ -658,7 +658,7 @@ research. Everything is additive and optional — a plain task graph that never
 sets these fields behaves exactly as before.
 
 - **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose` (the only accepted edge field on writes — a legacy `type` is no longer accepted). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
-- **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`). The three numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
+- **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, `decision` = a committed choice, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`), `decided_at` (ISO-8601 datetime, when a human committed a `type: decision` node — the baseline `/decisions/at-risk` compares grounds against). The numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
 - **Role predicates** (derived, not stored): a **claim** = `confidence` set AND `type` ≠ `reference`; an **open question** = `status: todo` with no `confidence`; a **reference** = `type: reference`.
 - **No canvas/UI rendering** for the new fields, by design — they're agent-/query-facing. The canvas still renders off the derived `type`.
 - **Completion gates** (the skill enforces both): stop at `review`, never `done`; and after any graph write, run the inconsistency scan and surface tensions — never auto-resolve a `contradicts` edge.
@@ -696,7 +696,8 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | POST | `/api/graphs/:gid/search` | Hybrid keyword+vector search over the graph's nodes. Body: `{query, config?, filter?}`. Returns `{query, results, timings}` where `results` is the ranked candidate list (`{taskId, score, source, snippet, meta}`). The optional `filter` (E15) is a Mongo-style metadata filter (`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin` + `$and/$or`) that post-filters results without changing ranking. |
 | POST | `/api/search` | Cross-graph search over the graphs the caller can read |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood with bodies (one cohesive KB call). Body `{query?\|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. The E15 `filter` applies at output with the **bridge rule** (a node bridging two matching nodes is retained, marked `bridge:true`), never pruning traversal. |
-| POST | `/api/graphs/:gid/frontier` | E15 re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. |
+| POST | `/api/graphs/:gid/frontier` | E15 re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance and a `significance` tie-break) ∧ (stale ∨ low-confidence) confidence-bearing nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. |
+| POST | `/api/graphs/:gid/decisions/at-risk` | E17 decision re-check queue: `type: decision` nodes whose grounds (incoming `supports`/`required for` edges) are stale, low-confidence, contradicted, or edited after the decision's `decided_at` (falling back to its `created_at`). Status-independent — `done` decisions surface. Body `{staleDays?, lowConfidenceBelow?, maxResults?}` → `{atRisk, truncated, params}`. |
 | POST | `/api/graphs/:gid/inconsistencies` | E15 signed-cycle scan: directed cycles in the supports/contradicts subgraph with an odd number of `contradicts` edges. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. |
 | POST | `/api/graphs/:gid/batch` | Transactional upsert of many nodes + edges (idempotent per node `external_id`; `run_id` attribution). The dynamic-workflow write-back path. |
 | GET | `/api/graphs/:gid/events` | Server-sent events; pushes `{graph_id, kind, op, id}` on every task/edge change |
@@ -1205,7 +1206,8 @@ graphs / tasks / edges are untouched.
   merge treats it as "didn't mention" rather than "removed" and
   preserves the current value. Tasks protect `x`, `y`, `color`,
   `background-image`, plus the E15 research fields `significance`,
-  `confidence`, `verified_at`; edges protect `meta.color`, `meta.curve`. An
+  `confidence`, `verified_at` and E17's `decided_at`; edges protect
+  `meta.color`, `meta.curve`. An
   agent that genuinely wants to
   clear one of these sends an explicit `null` — `null` is defined, so
   the protection short-circuit doesn't fire and the clear lands.

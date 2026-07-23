@@ -18,6 +18,7 @@ import searchAllRouter from './routes/searchAll.js';
 import reportsAllRouter from './routes/reportsAll.js';
 import contextRouter from './routes/context.js';
 import frontierRouter from './routes/frontier.js';
+import decisionsAtRiskRouter from './routes/decisionsAtRisk.js';
 import inconsistencyRouter from './routes/inconsistency.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
@@ -117,6 +118,7 @@ app.use('/api/reports', reportsAllRouter);
 // it's a POST (the query/seeds ride in the body).
 app.use('/api/graphs/:gid/context', requireGraph('read'), contextRouter);
 app.use('/api/graphs/:gid/frontier', requireGraph('read'), frontierRouter);
+app.use('/api/graphs/:gid/decisions/at-risk', requireGraph('read'), decisionsAtRiskRouter);
 app.use('/api/graphs/:gid/inconsistencies', requireGraph('read'), inconsistencyRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);

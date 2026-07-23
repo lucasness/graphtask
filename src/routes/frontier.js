@@ -10,6 +10,16 @@
 // first. (The umbrella's older "in-degree" wording is backwards under this
 // direction and would surface terminal leaves instead of foundations.)
 // Importance is derived on demand from edges, never stored.
+//
+// E17 additions:
+// - INHERITED IMPORTANCE (one hop, through decisions only): a claim whose
+//   `supports`/`required for` edge lands on a `type: decision` node also
+//   inherits that decision's own out-degree. A finding grounding a decision
+//   that gates ten build tasks is load-bearing even though its direct
+//   out-degree is 1 — without this, a foundation-of-a-foundation ranks 0.
+// - SIGNIFICANCE TIE-BREAK: within equal importance, higher `significance`
+//   ranks first, so a significant orphan claim isn't buried below the
+//   truncation cap by dozens of importance-0 peers.
 
 import { Router } from 'express';
 import pool from '../db.js';
@@ -46,12 +56,23 @@ router.post('/', async (req, res, next) => {
     // relative; an absent verified_at is treated as never-verified = stale.
     // Fetch maxResults+1 so we can flag truncation without a second COUNT.
     const { rows } = await pool.query(
-      `WITH imp AS (
+      `WITH deg AS (
          SELECT t.id,
                 (SELECT count(*) FROM edges e
                   WHERE e.source_id = t.id AND e.graph_id = $1
-                    AND e.purpose IN ('required for', 'supports')) AS importance
+                    AND e.purpose IN ('required for', 'supports')) AS out_deg
            FROM tasks t WHERE t.graph_id = $1
+       ),
+       imp AS (
+         SELECT d.id,
+                d.out_deg + COALESCE(
+                  (SELECT sum(dd.out_deg) FROM edges e
+                     JOIN tasks td ON td.id = e.target_id
+                     JOIN deg dd ON dd.id = e.target_id
+                    WHERE e.source_id = d.id AND e.graph_id = $1
+                      AND e.purpose IN ('required for', 'supports')
+                      AND td.meta->>'type' = 'decision'), 0) AS importance
+           FROM deg d
        )
        SELECT t.id,
               t.meta->>'title'        AS title,
@@ -74,7 +95,9 @@ router.post('/', async (req, res, next) => {
                 OR (t.meta->>'verified_at')::timestamptz < NOW() - ($3 || ' days')::interval
                 OR (t.meta->>'confidence' IS NOT NULL AND (t.meta->>'confidence')::numeric < $4)
           )
-        ORDER BY i.importance DESC, (t.meta->>'verified_at') ASC NULLS FIRST, t.id ASC
+        ORDER BY i.importance DESC,
+                 (t.meta->>'significance')::numeric DESC NULLS LAST,
+                 (t.meta->>'verified_at') ASC NULLS FIRST, t.id ASC
         LIMIT $5`,
       [gid, minImportance.value, String(staleDays.value), lowConfidenceBelow.value, maxResults.value + 1],
     );

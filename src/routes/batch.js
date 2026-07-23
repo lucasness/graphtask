@@ -32,12 +32,13 @@ const MAX_ID_LEN = 200; // cap on client-supplied external_id / run_id (TEXT col
 // owned progress — an agent re-running a round must not reset a human's
 // in_progress/review/done back to todo. x/y/color/background-image are the
 // canvas-owned drag/recolor/image keys the single-write PATCH already protects.
-// significance/confidence/verified_at (E15.A2) are the reserved research fields:
-// a body-rewriting re-run that omits them must not wipe a value a human or an
-// earlier verify pass set. Explicit null still clears (mergeFields escape hatch).
+// significance/confidence/verified_at (E15.A2) and decided_at (E17) are the
+// reserved typed fields: a body-rewriting re-run that omits them must not wipe
+// a value a human or an earlier pass set. Explicit null still clears
+// (mergeFields escape hatch).
 const PROTECTED_TASK_KEYS = [
   'status', 'x', 'y', 'color', 'background-image',
-  'significance', 'confidence', 'verified_at',
+  'significance', 'confidence', 'verified_at', 'decided_at',
 ];
 const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve'];
 

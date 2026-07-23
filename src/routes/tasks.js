@@ -193,13 +193,14 @@ router.patch('/:id', validateId, async (req, res) => {
         // UI-managed frontmatter keys: the canvas writes these whenever a
         // user drags or recolors a node. Agents that rebuild content from
         // scratch typically don't include them, so without this list they'd
-        // silently wipe user state on every PATCH. The three E15.A2 research
-        // fields ride the same protection: a body-rewriting agent PATCH that
-        // omits significance/confidence/verified_at must not wipe a value a
-        // human or an earlier verify pass set (explicit null still clears).
+        // silently wipe user state on every PATCH. The E15.A2 research fields
+        // and E17's decided_at ride the same protection: a body-rewriting
+        // agent PATCH that omits significance/confidence/verified_at/decided_at
+        // must not wipe a value a human or an earlier pass set (explicit null
+        // still clears).
         protectedFromAgentRemoval: [
           'x', 'y', 'color', 'background-image',
-          'significance', 'confidence', 'verified_at',
+          'significance', 'confidence', 'verified_at', 'decided_at',
         ],
       },
     );

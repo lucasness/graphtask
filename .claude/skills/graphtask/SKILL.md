@@ -384,29 +384,40 @@ All optional, validated only WHEN PRESENT — no migration (they live in `meta`)
 
 | field | type | meaning |
 |---|---|---|
-| `type` | open string (≤40) | node kind. Absent = a work/knowledge node. `reference` is the one server-recognized value — an external citation/source. |
+| `type` | open string (≤40) | node kind. Absent = a work/knowledge node. Two server-recognized values: `reference` (an external citation/source) and `decision` (a committed choice — see [Decision records](#decision-records-e17)). |
 | `significance` | number 0.0–1.0 (one-decimal convention) | how much this node matters. UNIVERSAL (plans + research). |
 | `confidence` | number 0.0–1.0 (one-decimal) | how sure we are (a finding) / source reliability (a `reference`). Research-tier. |
 | `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked. Distinct from the automatic `updated_at`. Research-tier. |
+| `decided_at` | ISO-8601 datetime | when the human COMMITTED a `type: decision` node. `/decisions/at-risk` compares each ground's `updated_at` against it (pivot detection); absent → the decision's `created_at` is the baseline. |
 
-Three of the four — `significance`, `confidence`, `verified_at` — survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`). `type` is NOT merge-protected — an omitting rewrite drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content.
+`significance`, `confidence`, `verified_at`, `decided_at` survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`). `type` is NOT merge-protected — an omitting rewrite drops it, so always re-state `type` (e.g. `type: reference`, `type: decision`) when you rewrite a node's content.
 
 ### Role predicates (derived, never stored)
 - **claim** = `confidence` set AND `type` ≠ `reference` — a node that ASSERTS something, with a sureness.
 - **open question** = `status: todo` AND no `confidence` — an unanswered question.
 - **reference** = `type: reference` — an external source.
+- **decision** = `type: decision` — a committed choice; its staleness is computed from its grounds by `/decisions/at-risk`, never self-reported.
 
 ### Conventions (HARD — keep the vocabulary consistent or read-time filtering rots)
 - **Never put `confidence` on an open question.** The moment a node has confidence it READS as an assertion; an open question with confidence is a category error. To remove a `confidence` value set by mistake you must send `confidence: null` — omitting it preserves the old value (merge protection), so the node stays hidden from `/ready`. Same for clearing a stale `verified_at`.
 - **A finding is born at `review` (or `done`), never `todo`.** `todo` means "open question, not yet answered" — that's what `/ready` hands back as work to do. The instant you record a finding (you set `confidence`), give it a real status: `review` for a first-pass claim awaiting human confirmation, `done` only on explicit human say-so; a `type: reference` source lands at `review` like every other agent write — `done` stays the human's call. Leaving a confidence-bearing node at `todo` is the same category error as the bullet above — and `/ready` filters such nodes out, so a finding stuck at `todo` silently goes missing from BOTH the work queue and the answered-knowledge view.
 - **`verified_at` = a deliberate re-check, not any edit.** A typo fix bumps `updated_at` automatically — it must NOT touch `verified_at`. Set `verified_at` only when you actually re-confirmed the claim against sources.
-- **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes.
-- **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
+- **`confidence` and `verified_at` are research-tier — for findings/claims and `reference` sources ONLY.** Don't put them on plan / coding / decision / task nodes: a design preference or task estimate is not a research sureness, and a node with `confidence` reads as a *claim* (it'll surface in research queries). For how much a task/decision matters use `significance` (the one reserved field that's universal and belongs on a plain task); put trade-offs and option preferences in the body or model them as `contradicts`/`supports` between option nodes. A provisional *decision* does NOT get `confidence` as a workaround — it gets `type: decision` + `decided_at` + typed edges from its grounds, and `/decisions/at-risk` computes its staleness (see [Decision records](#decision-records-e17)).
+- **Findings get NO `type`.** A finding/claim is identified by its `confidence` + `status`, **not** a type label — leave `type` ABSENT on findings. `type` is reserved for a genuine node KIND a reader acts on — `reference` (a source) or `decision` (a committed choice). Do NOT invent per-finding category/topic types (`commercialization`, `finding/market`, `timeline`, …): that proliferating, per-session vocabulary IS the cross-session encoding drift the reserved fields exist to kill (two sessions invent two schemes and filtering breaks). Categorize a finding by its searchable body + `significance`, never a `type` vocabulary. Use `type: reference` (one word, server-recognized) for sources — not "source", not a topic.
 - **Findings are SEPARATE nodes**, never prose embedded in a question's body — so each finding carries its own `confidence`/`verified_at` and retrieval/filtering is per-finding and token-efficient.
 - **Completeness of retrieval FIRST, scrutinize confidence LATER.** Build the full picture, then filter by confidence at READ time — don't drop low-confidence nodes while building.
 - **Filters choose what to SHOW / SEED, never what to TRAVERSE.** Read-time filters (see [Read-side queries](#read-side-queries-e15-filters-frontier-inconsistency)) apply at the output; on `/context` a low-confidence node bridging two matching nodes is KEPT and marked `bridge:true` so connectivity stays honest.
 
-### Completion gates — after finishing graph work
+### Decision records (E17)
+
+Knowledge bases change, projects pivot, new tech ships — every committed decision is provisional, and the graph must notice MECHANICALLY when a decision's grounds shift, not via prose vows ("done must never suppress this") buried in node bodies that only help an agent who happens to read them. When the human commits a choice (a stack, an architecture, a vendor, a strategy):
+
+- **The decision is a node**: `type: decision`, `decided_at: <when the human committed>`, `significance` for how much rides on it. Status reflects the work ("decide X" starts as an open question at `todo`; committed → `done` on human say-so, like any node). NO `confidence`/`verified_at` — a decision's staleness is computed from its grounds, never self-reported.
+- **The body records what a future reader needs**: the chosen option, the alternatives considered *as node references* (so "why not X?" has an answer years later), the rationale, and any explicit revisit-if conditions.
+- **Grounds are TYPED EDGES, not prose refs.** Every finding/requirement the decision rests on gets `supports` (or `required for`) → the decision. Writing "see node 3954" in the body wires NOTHING — `/frontier` importance and `/decisions/at-risk` both read edges, so a prose-only cluster is invisible to the exact machinery meant to guard it (this is an observed failure: a carefully-built decision cluster wired only with `related to` scored importance 0 and could never surface).
+- **Dependents are gated**: work that builds on the decision gets decision `required for` → task. This is what makes the decision (and via inheritance its grounds) load-bearing to `/frontier`, and what makes `/blockers` honest about what a reopened decision blocks.
+- **Reopening never rewrites history.** If the verdict flips, move the decision's `status` back (done → todo/in_progress) and APPEND the new context — the original rationale and alternatives stay in the body. The rewrite that erases why you decided is the memory-loss this machinery exists to prevent.
+- **When you weaken a claim, check what rests on it.** Any time you drop a node's `confidence`, add a `contradicts` edge, or supersede a finding, traverse its outgoing `supports`/`required for` edges; if a `type: decision` node is among the dependents, SURFACE that to the human ("this weakens the ground under decision N") — never silently reopen or re-decide.
 Items 1 & 2 are MANDATORY write-gates; item 3 is a deliberately softer ask-don't-act gate (surface, then stop) — don't conflate them.
 1. **(mandatory) Stop at `review`, never set `done`** (§3) — `done` is the human's call.
 2. **(mandatory) Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
@@ -669,7 +680,7 @@ curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T2/blockers" "${READ_HEADERS[@]}"
 curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
 ```
 
-`/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (and `/frontier` for stale knowledge) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
+`/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (plus `/frontier` for stale knowledge and `/decisions/at-risk` for committed decisions whose grounds shifted — both are cheap and quiet when healthy) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
 
 For raw structural traversal (no status filtering):
 
@@ -778,7 +789,7 @@ The API uses HTTP status codes meaningfully — handle them, don't paper over th
 - `meta['background-image']` on tasks — the picture rendered on the node face. Don't set or replace one on your own initiative; only the user picks which image (if any) lives on the canvas. See [Images and agent discretion](#images-and-agent-discretion--hard-rules) for the full rule; same merge protection as the other UI keys, so leaving it out of a PATCH preserves what the user chose.
 - The `done` status on tasks — never write it on your own initiative. Only set `done` when the user explicitly says so for a specific task ("mark T1 done", "go ahead and finish off the testing task"). Vague positive feedback ("looks great") is **not** permission. When in doubt, leave it in `review` and ask.
 - **Reports** — never generate a report, and never overwrite an existing one, on your own initiative. Generate only when the user explicitly asks ("write me a report / brief / summary of this graph"). When a report already exists and you've just finished a body of work on the graph, you MAY *ask* whether to update it — but asking is the ceiling: regenerating without a yes is the same category error as writing `done` yourself. The report is a separate artifact (`PUT /api/graphs/:gid/report`), never a graph node, so it never touches the graph.
-- **Meta/navigation nodes** — never create (or keep feeding) "RESUME HERE" / "START HERE" / status-banner nodes. Orientation is computed (`/tasks/ready`, `/blockers`, `/frontier` — §5); narrative snapshots are the report's job, on explicit ask. Full rule in §2.
+- **Meta/navigation nodes** — never create (or keep feeding) "RESUME HERE" / "START HERE" / status-banner nodes. Orientation is computed (`/tasks/ready`, `/blockers`, `/frontier`, `/decisions/at-risk` — §5); narrative snapshots are the report's job, on explicit ask. Full rule in §2.
 - The graph's `settings` JSONB (font / colors) — also a UI concern. Don't touch unless the user explicitly asks (e.g. "make this graph's background dark green"). See section 9 if so.
 
 ## 9. Per-graph appearance settings (do not touch unless asked)
@@ -844,7 +855,21 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/frontier" -H 'Content-Type: applic
 # → {frontier:[{id,title,status,type,importance,confidence,verified_at,stale,lowConfidence}], truncated, params}
 ```
 
-All params optional (defaults shown). A node with no `verified_at` counts as stale (never verified). Plain tasks (no `confidence`, not a `reference`) are excluded. Over the cap → `truncated:true`.
+All params optional (defaults shown). A node with no `verified_at` counts as stale (never verified). Plain tasks (no `confidence`, not a `reference`) are excluded. Over the cap → `truncated:true`. Importance is E17-aware: a claim whose `supports`/`required for` edge lands on a `type: decision` node also inherits that decision's own out-degree (one hop — a finding grounding a decision that gates ten build tasks is load-bearing even at direct out-degree 1), and equal importance breaks ties by `significance` so a significant orphan claim isn't buried below the cap.
+
+### Decisions at risk — "which committed decisions no longer rest on solid ground"
+
+`POST /decisions/at-risk` (E17) returns every `type: decision` node with a shifted ground — **status-independent by design: `done` decisions surface.** "Done must never suppress the re-check" is a computed invariant here, not a prose vow. A ground (a node wired INTO the decision via `supports`/`required for`) puts the decision at risk when it is stale (frontier scope + rules), low-confidence, touched by a `contradicts` edge, or **edited after `decided_at`** (the pivot detector — falls back to the decision's `created_at`). A decision that itself touches a `contradicts` edge surfaces as `selfContradicted` even with no wired grounds.
+
+```bash
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/decisions/at-risk" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
+  -d '{"staleDays":90,"lowConfidenceBelow":0.5,"maxResults":50}'
+# → {atRisk:[{id,title,status,decided_at,importance,selfContradicted,
+#             reasons:[{id,title,kinds:["stale"|"lowConfidence"|"contradicted"|"changedSinceDecision"]}]}],
+#    truncated, params}
+```
+
+All params optional (defaults shown). Ranked by the decision's out-degree (blast radius). A healthy cluster returns nothing — the queue only speaks when something actually degraded, so run it at every resume without noise. When it fires: surface the decision + reasons to the human; reopening (status back from `done`, rationale APPENDED never rewritten) is the human's call — see [Decision records](#decision-records-e17).
 
 ### Inconsistency scan — "where does the graph contradict itself"
 
@@ -868,6 +893,7 @@ Guardrailed (max cycle length / count → `truncated:true`). This IS completion 
 - *"high-confidence answers about X"* → `/search` with a `confidence` filter, then rerank (§6).
 - *"the neighborhood of X, trustworthy nodes only, without losing connectivity"* → `/context` with a filter (bridges kept).
 - *"what needs re-verifying / what's gone stale"* → `/frontier`.
+- *"which committed decisions need revisiting / did anything shift under a done decision"* → `/decisions/at-risk`.
 - *"does the graph contradict itself / is claim X contested"* → `/inconsistencies` (graph-wide / per-claim).
 - *"what supports or contradicts N"* → `GET /graph`, then filter N's links by `purpose`.
 
@@ -1053,7 +1079,8 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
 | POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). For content questions, prefer this over grep — see [§6](#6-search-the-graph-find--what-does-the-graph-say-about-x). |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). |
-| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/decisions/at-risk` | **E17** decision re-check queue: `type: decision` nodes whose grounds (incoming `supports`/`required for`) are stale ∨ low-confidence ∨ contradicted ∨ edited after `decided_at`. Status-independent (`done` surfaces). Body `{staleDays?, lowConfidenceBelow?, maxResults?}` → `{atRisk, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
 | POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Body `{query}` only — `config`/`filter` are silently ignored here (filter per-graph instead). Response same shape, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |

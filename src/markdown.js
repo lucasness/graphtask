@@ -45,8 +45,10 @@ export function serializeMarkdown(meta, body) {
 const VALID_STATUSES = ['todo', 'in_progress', 'review', 'done'];
 
 // E15.A2 — node `type` (open string) classification cap. Empty/absent means a
-// plain work/knowledge node; the only server-recognized special value today is
-// `reference` (an external citation), but the field is intentionally open.
+// plain work/knowledge node; the server-recognized special values are
+// `reference` (an external citation) and `decision` (E17 — a committed choice
+// whose staleness /decisions/at-risk computes from its grounds), but the field
+// is intentionally open.
 const NODE_TYPE_MAX = 40;
 
 // Accept ISO-8601 date or date-time — the form the skill documents for
@@ -104,6 +106,14 @@ export function validateMeta(meta) {
       return 'verified_at must be an ISO-8601 datetime';
     }
   }
+  // E17 — `decided_at`: when a human committed a `type: decision` node. Same
+  // shape rules as verified_at; /decisions/at-risk compares each ground's
+  // updated_at against it (falling back to the decision's created_at).
+  if (meta.decided_at !== undefined && meta.decided_at !== null) {
+    if (!isIsoDatetime(meta.decided_at)) {
+      return 'decided_at must be an ISO-8601 datetime';
+    }
+  }
   if (meta.type !== undefined && meta.type !== null) {
     if (typeof meta.type !== 'string') {
       return 'type must be a string';
@@ -140,6 +150,9 @@ export function applyDefaults(meta) {
   }
   if (result.verified_at instanceof Date) {
     result.verified_at = result.verified_at.toISOString();
+  }
+  if (result.decided_at instanceof Date) {
+    result.decided_at = result.decided_at.toISOString();
   }
   result.status = result.status || 'todo';
   return result;
