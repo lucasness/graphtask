@@ -1817,23 +1817,22 @@ function readerEmptyState(message) {
 }
 
 // Entering reader mode: paint the cross-graph rail, then pick which report to
-// show. Default = the last report the viewer opened (if still readable), else
-// the active graph's report. All reads, no writes (FIXED #4).
+// show. The ACTIVE graph's own report wins whenever it exists — a /g/<id> URL
+// names this graph, so its report is what a shared link promises. The
+// last-read memory is only the fallback for graphs with no report of their
+// own (resume reading when entering the reader from a report-less working
+// graph). Order lives in reader-pick.js so the suite pins it. All reads, no
+// writes (FIXED #4).
 async function renderReader() {
   renderReaderList();
-  const last = readerLastReport();
-  if (last && last !== activeGraphId) {
-    readerReportGid = last;
-    const result = await renderReaderBody(last);
-    // The remembered report is gone or no longer readable — fall back to the
-    // active graph's report so reader mode never opens on a dead pointer.
-    if (result === 'unreadable' && activeGraphId != null) {
-      readerReportGid = activeGraphId;
-      await renderReaderBody(activeGraphId);
-    }
-  } else {
-    readerReportGid = activeGraphId;
-    await renderReaderBody(activeGraphId);
+  const chain = window.ReaderPick?.readerFallbackChain?.(activeGraphId, readerLastReport())
+    || [activeGraphId];
+  for (const gid of chain) {
+    readerReportGid = gid;
+    const result = await renderReaderBody(gid);
+    // Anything but "no report / no access" is terminal: 'ok'/'empty'/'error'
+    // painted a state for this gid, and 'stale' means a newer render took over.
+    if (result !== 'unreadable') break;
   }
   markReaderRowActive(readerReportGid);
 }
