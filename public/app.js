@@ -8663,12 +8663,22 @@ function followAgentEdit(node, op) {
 }
 
 function parseGraphIdFromPath() {
-  const m = location.pathname.match(/^\/g\/([a-z0-9]+)\/?$/);
-  return m ? m[1] : null;
+  const r = window.RouteParse?.resolveRoute?.(location.pathname);
+  return r && r.kind === 'graph' ? r.gid : null;
 }
 
 async function bootSidebar() {
   await fetchGraphsList();
+  // Honest URLs before resolving a target: alias shapes (/graph/<id>) get
+  // canonicalized to /g/<id>, and an UNKNOWN path is rewritten to '/' so the
+  // bar never keeps a path we ignored while the fallback below opens the
+  // last-active graph (the /graph/<id> silent-misdirection fix).
+  const route = window.RouteParse?.resolveRoute?.(location.pathname) ?? { kind: 'root' };
+  if (route.kind === 'graph' && route.canonical !== location.pathname) {
+    history.replaceState(history.state, '', route.canonical + location.search);
+  } else if (route.kind === 'unknown') {
+    history.replaceState(history.state, '', '/');
+  }
   // Resolve which graph to open: URL → localStorage → first public → none.
   // The URL-supplied id is bearer-token equivalent and must be honored even
   // if the graph is private (and therefore not in sidebar.graphs). Same for
