@@ -725,9 +725,9 @@
     import * as ReaderCite from '/reader-cite.js';
     window.ReaderCite = ReaderCite;
   </script>
-  <!-- Reader report-selection order — same shared pure-module pattern: app.js
-       reads window.ReaderPick to decide which report the reader opens (active
-       graph's own report first; last-read only as a fallback). -->
+  <!-- Reader ?view=reader param helpers — same shared pure-module pattern:
+       app.js reads window.ReaderPick to honor and write the shareable
+       view param (the reader is a view of the active graph). -->
   <script type="module">
     import * as ReaderPick from '/reader-pick.js';
     window.ReaderPick = ReaderPick;

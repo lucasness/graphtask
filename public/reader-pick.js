@@ -1,19 +1,11 @@
-// Reader report-selection order. Pure, DOM-free ES module — same single-home
+// Reader URL-param helpers. Pure, DOM-free ES module — same single-home
 // contract as reader-toc.js: the browser loads it via a <script type="module">
 // shim onto window.ReaderPick (see index.html) and vitest imports it directly.
 //
-// The order encodes the fix for the shared-link footgun: a /g/<id> URL names a
-// graph, so THAT graph's report is what the link promises — the active graph
-// always comes first, and the remembered last-read report is only a fallback
-// for graphs with no report of their own (the resume-reading default when
-// entering the reader from a report-less working graph). The trailing active
-// entry re-paints the active graph's capability-aware empty-state CTA when the
-// remembered report turns out to be gone or unreadable too.
-export function readerFallbackChain(activeGid, lastGid) {
-  const chain = [activeGid];
-  if (lastGid != null && lastGid !== activeGid) chain.push(lastGid, activeGid);
-  return chain;
-}
+// The reader is an alternate VIEW of the active graph, never a cross-graph
+// reader app (owner decision 2026-07-25): it always renders the active graph's
+// own report, and a graph with no readable report bounces back to the canvas.
+// What lives here is the shareable-view plumbing for that model.
 
 // --- ?view=reader share param -----------------------------------------------
 // A shared link should carry the sender's view: reader mode itself is a

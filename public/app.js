@@ -1505,20 +1505,11 @@ let readerRenderToken = 0;
 // with the Viewer so re-renders (theme switch, live SSE refresh) never stack
 // observers.
 let readerTocObserver = null;
-// The graph_id whose report the Viewer currently shows. In reader mode this can
-// differ from activeGraphId: clicking a cross-graph rail row (E16.5) loads
-// another graph's report WITHOUT repointing the active graph.
+// The graph_id whose report the Viewer currently shows. The reader is an
+// alternate VIEW of the active graph (owner decision 2026-07-25), so outside a
+// transient render this always tracks activeGraphId — the rail switches the
+// active graph rather than overlaying a foreign report.
 let readerReportGid = null;
-// Persists the last report the viewer opened so re-entering reader mode reopens
-// it (a client-only preference, not a server graphPref — FIXED #4).
-const READER_LAST_REPORT_KEY = 'graphtask:reader:lastReport';
-function readerLastReport() {
-  try { return localStorage.getItem(READER_LAST_REPORT_KEY) || null; } catch { return null; }
-}
-function setReaderLastReport(gid) {
-  if (gid == null) return;
-  try { localStorage.setItem(READER_LAST_REPORT_KEY, String(gid)); } catch {}
-}
 // The report object currently shown (its generated_at drives the staleness
 // banner, E16.6). Null when the reader shows an empty/error state.
 let currentReport = null;
@@ -1816,23 +1807,34 @@ function readerEmptyState(message) {
   }
 }
 
-// Entering reader mode: paint the cross-graph rail, then pick which report to
-// show. The ACTIVE graph's own report wins whenever it exists — a /g/<id> URL
-// names this graph, so its report is what a shared link promises. The
-// last-read memory is only the fallback for graphs with no report of their
-// own (resume reading when entering the reader from a report-less working
-// graph). Order lives in reader-pick.js so the suite pins it. All reads, no
-// writes (FIXED #4).
+// Exit reader mode from outside the toggle's closure (renderReader's
+// no-report bounce): clears the sticky flag, un-presses the toggle buttons,
+// restores the graph's canvas view, and drops ?view=reader from the bar.
+function exitReaderMode() {
+  setReaderModeFlag(false);
+  document.querySelectorAll('#sidebar-reader-btn, #sidebar-reader-btn-collapsed')
+    .forEach((b) => b.setAttribute('aria-pressed', 'false'));
+  applyView(getViewPref(activeGraphId));
+  const search = window.ReaderPick?.withReaderParam?.(location.search, false);
+  if (search !== undefined) {
+    history.replaceState(history.state, '', location.pathname + search);
+  }
+}
+
+// Entering reader mode: paint the rail, then render the ACTIVE graph's report.
+// The reader is an alternate VIEW of the active graph, never a cross-graph
+// reader app (owner decision 2026-07-25) — a graph with no readable report has
+// no reader view, so bounce back to the canvas instead of ever showing another
+// graph's report. 'error' (network) stays in reader with its message: bouncing
+// on a transient failure would hide that anything went wrong. All reads, no
+// graph writes (FIXED #4).
 async function renderReader() {
   renderReaderList();
-  const chain = window.ReaderPick?.readerFallbackChain?.(activeGraphId, readerLastReport())
-    || [activeGraphId];
-  for (const gid of chain) {
-    readerReportGid = gid;
-    const result = await renderReaderBody(gid);
-    // Anything but "no report / no access" is terminal: 'ok'/'empty'/'error'
-    // painted a state for this gid, and 'stale' means a newer render took over.
-    if (result !== 'unreadable') break;
+  readerReportGid = activeGraphId;
+  const result = await renderReaderBody(activeGraphId);
+  if (result === 'unreadable' || result === 'empty') {
+    exitReaderMode();
+    return;
   }
   markReaderRowActive(readerReportGid);
 }
@@ -1863,8 +1865,9 @@ async function renderReaderBody(gid) {
     return 'unreadable';
   }
   // 404 = no report yet (or graph not readable — the mount guard 404s too). The
-  // CTA is capability-aware: a 404 implies the ACTIVE graph (a rail-opened graph
-  // always has a report), so fall back to the active graph's viewer_can_edit.
+  // CTA is capability-aware: the reader only ever renders the ACTIVE graph now,
+  // so fall back to the active graph's viewer_can_edit. (renderReader bounces
+  // to the canvas on this status; the CTA paint is a harmless intermediate.)
   if (res.status === 404) {
     currentReportCanEdit = readerReportGid === activeGraphId
       ? (currentGraph?.viewer_can_edit !== false) : false;
@@ -1989,14 +1992,14 @@ function makeReportItem(report) {
   return item;
 }
 
-// Rail row click: load THIS graph's report into the Viewer. Deliberately does
-// NOT switchActiveGraph, open the graph's presence, or re-subscribe SSE — only
-// a GET /report fires (FIXED #4). Persist the choice for next entry.
+// Rail row click: the rail is a shortcut list of graphs that HAVE reports, and
+// the reader is a view of the ACTIVE graph — so reading another graph's report
+// means switching to that graph. The reader stays on across the switch (the
+// ?view=reader param written while the reader shows), and this view's enter()
+// re-renders the new graph's report.
 function openReportFromRail(gid) {
-  readerReportGid = gid;
-  setReaderLastReport(gid);
-  markReaderRowActive(gid);
-  renderReaderBody(gid);
+  if (gid === activeGraphId) return;
+  switchActiveGraph(gid, { pushState: true });
 }
 
 // Highlight the rail row whose report is currently shown (orange .active dot).
