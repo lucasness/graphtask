@@ -14,3 +14,23 @@ export function readerFallbackChain(activeGid, lastGid) {
   if (lastGid != null && lastGid !== activeGid) chain.push(lastGid, activeGid);
   return chain;
 }
+
+// --- ?view=reader share param -----------------------------------------------
+// A shared link should carry the sender's view: reader mode itself is a
+// per-browser localStorage flag, so without a URL signal a receiver always
+// lands on the canvas. The param is per-load INTENT, not a preference — the
+// receiver's sticky flag is never written by honoring it.
+
+export function readerRequestedInSearch(search) {
+  try { return new URLSearchParams(search || '').get('view') === 'reader'; } catch { return false; }
+}
+
+// Return `search` with view=reader set (on) or removed (off), preserving every
+// other param. Returns '' (not '?') when nothing remains, so callers can
+// always write pathname + result.
+export function withReaderParam(search, on) {
+  const p = new URLSearchParams(search || '');
+  if (on) p.set('view', 'reader'); else p.delete('view');
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}

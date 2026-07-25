@@ -7157,12 +7157,21 @@ async function switchActiveGraph(id, { pushState = false } = {}) {
   try { localStorage.setItem(ACTIVE_GRAPH_STORAGE_KEY, String(id)); } catch {}
   // Reader is a global cross-graph mode: while it's on, graph switches (and
   // boot, which funnels through here) stay in reader; the per-graph view
-  // pref is what reader returns to when toggled off. EXCEPTION: a ?node= deep
-  // link (e.g. a citation click's new tab) is inherently a graph action — force
-  // graph view so the selected node is visible even if the shared reader flag
-  // is on. The flag itself is untouched, so other tabs stay in reader.
-  applyView(_pendingNodeFocus ? 'graph' : (readerModeOn() ? 'reader' : getViewPref(id)));
-  if (pushState) history.pushState({ graphId: id }, '', `/g/${id}`);
+  // pref is what reader returns to when toggled off. A ?view=reader URL param
+  // is per-load intent from a shared link — it opens the reader WITHOUT
+  // writing the receiver's sticky flag. EXCEPTION: a ?node= deep link (e.g. a
+  // citation click's new tab) is inherently a graph action — force graph view
+  // so the selected node is visible even if the shared reader flag is on. The
+  // flag itself is untouched, so other tabs stay in reader.
+  const readerRequested = window.ReaderPick?.readerRequestedInSearch?.(location.search) === true;
+  applyView(_pendingNodeFocus ? 'graph'
+    : ((readerRequested || readerModeOn()) ? 'reader' : getViewPref(id)));
+  // The pushed URL carries the view so copying the bar shares what you see:
+  // ?view=reader while the reader is showing, bare /g/<id> otherwise.
+  if (pushState) {
+    const search = window.ReaderPick?.withReaderParam?.('', currentView === 'reader') ?? '';
+    history.pushState({ graphId: id }, '', `/g/${id}${search}`);
+  }
   renderSidebar();
   if (cy) cy.elements().remove();
   // In parallel: load the graph contents and the graph row metadata. The
@@ -10111,6 +10120,12 @@ document.addEventListener('DOMContentLoaded', () => {
     setReaderModeFlag(on);
     readerBtns.forEach((b) => b.setAttribute('aria-pressed', on ? 'true' : 'false'));
     applyView(on ? 'reader' : getViewPref(activeGraphId));
+    // Keep the bar shareable: sync ?view=reader with the toggle (preserving
+    // other params). replaceState, so param flips never pile up in history.
+    const search = window.ReaderPick?.withReaderParam?.(location.search, on);
+    if (search !== undefined) {
+      history.replaceState(history.state, '', location.pathname + search);
+    }
   }
   readerBtns.forEach((b) => b.addEventListener('click', () => {
     setReaderMode(!document.body.classList.contains('view-reader'));
