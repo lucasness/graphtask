@@ -11,4 +11,8 @@ __pycache__/
 *.pyc
 eval/.doc-expansions-*.json
 eval/.doc2query-*.json
+eval/.static-bench-texts.json
 eval/skill-ab/frozen/stock-snapshot.json
+
+# Static-embedding model artifacts (fetched by scripts/fetch-static-model.mjs)
+models/

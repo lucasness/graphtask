@@ -104,7 +104,7 @@ export function makeCandidate(taskId, score, source, extra = {}) {
 export const RETRIEVERS = Object.freeze(['lexical', 'dense']);
 export const POSTPROCESSORS = Object.freeze(['graphExpand', 'rerank']);
 export const FUSION_MODES = Object.freeze(['rrf', 'merge', 'concat']);
-export const PROVIDER_BACKENDS = Object.freeze(['none', 'http', 'local-onnx', 'local', 'modal', 'api']);
+export const PROVIDER_BACKENDS = Object.freeze(['none', 'http', 'local-onnx', 'local', 'modal', 'api', 'static']);
 // Edge types the graphExpander may traverse — mirrors edges.js VALID_TYPES so
 // config can restrict expansion to a subset and validate against the real set.
 export const EDGE_TYPES = Object.freeze(['dependency', 'related']);

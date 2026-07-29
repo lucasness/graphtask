@@ -78,7 +78,10 @@ export function createDenseRetriever({ provider, topK = DEFAULT_TOPK, chunkOpts 
       if (chunks.length === 0) return [];
 
       const [qvec] = await provider.embed([queryPrefix + query]);
-      if (!qvec) return [];
+      // Zero-norm guard: the static backend returns exact zeros for a
+      // zero-token query (e.g. only zero-width chars) — cosine against a
+      // zero vector is meaningless, so the dense leg abstains.
+      if (!qvec || !qvec.some((x) => x !== 0)) return [];
 
       // Score every chunk, collapse to nodes by max-pool, keeping the winning
       // passage as the snippet.
@@ -138,7 +141,10 @@ export function createStoreDenseRetriever({ pool, provider, topK = DEFAULT_TOPK,
       if (!(await availablePromise)) return memory.retrieve(query, ctx);
 
       const [qvec] = await provider.embed([queryPrefix + query]);
-      if (!qvec) return [];
+      // Zero-norm guard: the static backend returns exact zeros for a
+      // zero-token query (e.g. only zero-width chars) — cosine against a
+      // zero vector is meaningless, so the dense leg abstains.
+      if (!qvec || !qvec.some((x) => x !== 0)) return [];
 
       const rows = await annSearchChunks(pool, {
         vector: qvec,

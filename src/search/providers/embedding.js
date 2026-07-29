@@ -10,6 +10,7 @@
 // a dependency yet), so selecting it fails loudly rather than silently no-op.
 
 import { authHeaders, postJson, l2normalize } from './http.js';
+import { createStaticEmbeddingProvider } from './staticEmbedding.js';
 
 const DEFAULT_BATCH = 64; // TEI caps server-side batch; keep requests bounded.
 
@@ -29,6 +30,10 @@ export function createEmbeddingProvider(cfg = {}, deps = {}) {
   if (backend === 'none') return null;
   if (HTTP_BACKENDS.has(backend)) return createHttpEmbeddingProvider(cfg, deps);
   if (backend === 'local-onnx') return createLocalOnnxProvider(cfg, deps);
+  // In-process static-embedding-table backend (no model runtime at all —
+  // tokenize + table lookup + mean pool). Cold-starts in <1s on the 1-core
+  // box where local-onnx takes tens of seconds; see staticEmbedding.js.
+  if (backend === 'static') return createStaticEmbeddingProvider(cfg);
   throw new Error(`unknown embedding backend "${backend}"`);
 }
 

@@ -176,9 +176,13 @@ export function assertConfig(input) {
  * `none` is configured. This is the seam P2.1/P2.2/P2.3/P2.4 hang the real
  * providers off of — no code change to swap local-VM ⇄ Modal, just env.
  *
- *   EMBEDDING_BACKEND   none | http | local-onnx   (default none)
+ *   EMBEDDING_BACKEND   none | http | local-onnx | static   (default none)
  *   EMBEDDING_URL       provider endpoint (http backend)
- *   EMBEDDING_MODEL     model id (part of the index version)
+ *   EMBEDDING_MODEL     model id (part of the index version); for the static
+ *                       backend this is the GTSE artifact basename (default
+ *                       static-retrieval-mrl-en-v1-int8-d256)
+ *   EMBEDDING_STATIC_DIR  static backend: artifact directory (default
+ *                       <repo>/models/static; run scripts/fetch-static-model.mjs)
  *   EMBEDDING_DIM       vector dimension
  *   EMBEDDING_TIMEOUT_MS  per-request timeout (default 10000; raise for cold/remote backends)
  *   EMBEDDING_RETRIES   bounded retries on timeout/5xx (default 2)
@@ -245,6 +249,7 @@ export function configFromEnv(env = process.env) {
     ...(env.EMBEDDING_RETRIES ? { retries: Number(env.EMBEDDING_RETRIES) } : {}),
     ...(env.EMBEDDING_BATCH ? { batchSize: Number(env.EMBEDDING_BATCH) } : {}),
     ...(env.EMBEDDING_QUERY_PREFIX ? { queryPrefix: env.EMBEDDING_QUERY_PREFIX } : {}),
+    ...(env.EMBEDDING_STATIC_DIR ? { staticDir: env.EMBEDDING_STATIC_DIR } : {}),
     ...authFromEnv(env, 'EMBEDDING'),
   };
   if (embBackend !== 'none' && !cfg.retrievers.includes('dense')) {
