@@ -1,0 +1,9 @@
+{
+  "name": "sc-verify-throwaway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway manifest to confirm the Socket GitHub App scans this repo's PRs. Delete with the branch.",
+  "dependencies": {
+    "lodash": "4.17.21"
+  }
+}
