@@ -479,6 +479,10 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/edges/bulk" \
 
 4. **Optimize for TRUTH, not the retriever (anti-hairball).** A faithful graph — real concepts, real intermediates, real relationships — is *already* the retrieval-optimal one, because retrieval rides on genuine structure. So do **not** add edges "to help search": a phantom edge that doesn't reflect a real relationship corrupts both the artifact and retrieval precision (an over-connected hairball has high coverage but near-zero precision — every pack drags in half the graph and the reader drowns). Connectivity is a *consequence* of modeling the domain honestly, never a target to maximize. Rules 1–2 are about modeling real structure faithfully — they are not licence to over-connect.
 
+5. **A program of work is its prerequisite chain — never an umbrella node.** For a multi-phase body of work (what a tracker would call an epic), wire the REAL prerequisites among its steps, plus the one handoff edge where the program's last step feeds the next program. That is the whole structure. Do **not** create a container/umbrella node with membership edges to its children, and do not invent a node `type` for it (`type` has exactly two server-recognized values, `reference` and `decision`). Grouping is DERIVED — `POST /structure` (§ below) returns the independent bodies of work as connected components of the `required for` subgraph, so a membership edge would restate what the chain already proves, which rules 3–4 forbid. A prefix in the title (`E18.1`, `E18.2`, …) is a human LABEL for reading the canvas; it is convenient and additive, but it is never the mechanism, and no query reads it.
+
+   Measured basis: on a 124-node plan graph, sibling steps carried 118 intra-program `required for` edges against 7 cross-program ones, and plain components recovered most programs exactly — while the umbrella nodes that did exist linked only 6–16% of their own children, because rules 3–4 correctly told agents not to write those edges. The container node was filling a gap that the chain already covered. If a node genuinely holds a program's design rationale, keep it as a document node with real content and let it sit in the chain — just don't wire membership to it.
+
 ## 3. Status discipline and node body content
 
 Status enum: `todo` → `in_progress` → `review` → `done`. Each transition should bring **new body content** that justifies the status. Don't bump status without updating the body — the body is the artifact, regardless of graph shape.
@@ -767,6 +771,8 @@ done
 
 **Heads-up:** every section-5 endpoint (`subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`) and `shortest-path` traverses **`dependency` edges only** — they're for plan-shaped graphs and won't see `related` links. A knowledge base wired with `related` edges is navigated through the `/graph` map, as above.
 
+**`subtasks` vs `ancestors`** are the two directions of one recursive closure: `subtasks` walks upstream (everything this node rests on), `ancestors` walks downstream (everything resting on this node). Note the naming inverts the graph-theory convention — here "ancestors" returns *dependents* — because edge direction is prerequisite → dependent, so following edges forward reaches the tasks a node feeds. Neither is a membership query: `subtasks` from one terminal node recovers only that node's branch, so on a program that fans out it returns a fraction of the program. For "what's in this body of work" use `POST /structure`.
+
 ## 7. Error handling
 
 The API uses HTTP status codes meaningfully — handle them, don't paper over them:
@@ -884,6 +890,27 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/inconsistencies" -H 'Content-Type:
 ```
 
 Guardrailed (max cycle length / count → `truncated:true`). This IS completion gate (2): run it after writing, surface tensions by name, never auto-resolve.
+
+### Derived plan structure — "what are the bodies of work in here, and where is each one up to"
+
+`POST /structure` (E19) answers the question every other structural query can't. `subtasks`, `ancestors`, `blockers`, `unblocks`, `ready`, `leaves`, and `shortest-path` are all anchored on a node you already know; this one returns the SHAPE of the graph. Use it to orient at the start of a session on an unfamiliar graph, and to report progress by body of work instead of by node.
+
+A **region** is a connected component of the purpose-filtered subgraph. That is the entire definition — deterministic, label-free, no heuristic and no resolution knob.
+
+```bash
+# Plan structure (default): the independent programs of work.
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/structure" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{}'
+# Argument structure: how the evidence clusters instead.
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/structure" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" -d '{"purposes":["supports","contradicts"]}'
+# → {regions:[{id,size,nodes:[{id,title,status}],counts,entry,exit,ready}], seams:[…], singletons:[…], params}
+```
+
+- `purposes` (default `["required for"]`) picks which subgraph to componentize: `required for` → plan/program structure; `supports`+`contradicts` → argument structure; `related to` → topical KB regions. `related to` regions are legitimately blobbier, because it's the promiscuous default purpose.
+- `minRegionSize` (default `2`) — smaller components are reported under `singletons`. Output is total: every node lands in exactly one region or in `singletons`.
+- Per region: `counts` is the status rollup ("what's left in this chunk"), `entry` are the nodes with no in-region prerequisite (where it starts), `exit` are the nodes with no in-region dependent (what it delivers), and `ready` is the subset `/tasks/ready` would return.
+- `seams` are the graph's **bridges — single points of failure, NOT region boundaries.** A bridge in a dependency graph means: if this one prerequisite never lands, everything on the far side is severed. Each carries `sideA`/`sideB` node counts, ranked widest-severance first. Read them as plan risk.
+
+**Seams are never auto-cut, and there is deliberately no option to.** It's tempting to cut them to recover a finer sub-structure, but measurement showed no label-free criterion distinguishes a program handoff from an ordinary link in a chain (in-program seams severed 19 and 17 nodes while the true cross-program ones severed 18 and 14), and in a linear chain *every* edge is a bridge, so cutting shatters chains. Auto-cutting would manufacture a confidently wrong grouping. If two programs come back fused into one region, that usually means they genuinely are one program by dependency, and the separate names are the human's subdivision — see write-side rule 5.
 
 ### Agent-side `purpose` traversal
 
@@ -1065,8 +1092,8 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to its edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | DAG roots (no incoming dep edges) |
 | GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start — open questions (`status:todo`, no `confidence`) with all recursive prereqs `done`; see [§5](#5-status-aware-traversal-find-what-to-work-on-next-whats-blocking-what-gets-unblocked) for the exact predicate |
-| GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
-| GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
+| GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites — everything this node rests on |
+| GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents — everything resting on this node |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
@@ -1082,6 +1109,7 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/decisions/at-risk` | **E17** decision re-check queue: `type: decision` nodes whose grounds (incoming `supports`/`required for`) are stale ∨ low-confidence ∨ contradicted ∨ edited after `decided_at`. Status-independent (`done` surfaces). Body `{staleDays?, lowConfidenceBelow?, maxResults?}` → `{atRisk, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/structure` | **E19** derived plan structure: the independent bodies of work as connected components of a purpose-filtered subgraph, each with a status rollup + entry/exit/ready, plus `seams` (bridges = single points of failure, never auto-cut). Body `{purposes?, minRegionSize?}` → `{regions, seams, singletons, params}`. **Read-gated.** See [Derived plan structure](#derived-plan-structure--what-are-the-bodies-of-work-in-here-and-where-is-each-one-up-to). |
 | POST | `/api/search` | Cross-graph search over every graph the signed-in caller owns or is a member of (same set as `GET /api/graphs`). Body `{query}` only — `config`/`filter` are silently ignored here (filter per-graph instead). Response same shape, plus each result carries `graphId` + `title` and a `graphs` map (id → name). **401 if anonymous.** |
 | GET | `/api/graphs/:gid/events` | SSE stream — used by the browser; you generally don't need to consume this |
 | GET/POST | `/api/graphs/:gid/presence` | Live avatar-bar presence. `POST {id, name, type}` announces/refreshes (204; 400 without `id`); `GET` returns the snapshot. The browser owns this; agents normally let the install-time Stop/SessionStart hooks manage it — see [Presence lifecycle](#presence-lifecycle). **Read-gated.** |
