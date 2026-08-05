@@ -150,6 +150,34 @@ DATABASE_URL=postgresql://localhost/graphtask npm start
 
 Open <http://localhost:3000>.
 
+**Semantic search (optional, but silent if you skip it)**
+
+Search runs a keyword leg and a vector leg. The keyword leg works out of the
+box; the vector leg needs an embedding backend. The default `EMBEDDING_BACKEND`
+is `none`, so a fresh install is keyword-only until you pick one.
+
+The lightest option is `static` — an in-process embedding table, no model
+runtime, cold-starts in under a second. It needs its artifacts fetched once:
+
+```sh
+# ~130 MB download, converted to a 7.9–31 MB table under models/ (gitignored).
+# Pinned to an exact model revision and checksum-verified; see SECURITY.md.
+node scripts/fetch-static-model.mjs
+
+# then, in .env:
+EMBEDDING_BACKEND=static
+EMBEDDING_MODEL=static-retrieval-mrl-en-v1-int8-d1024
+```
+
+**This step fails quietly if you skip it.** The server still boots and
+`/api/graphs/:gid/search` still returns 200 with keyword results — the dense
+leg just errors internally and its message lands in the response's
+`timings.errors`. So if semantic matches seem missing, check there first
+rather than assuming search is working fully.
+
+`EMBEDDING_BACKEND=local-onnx` (runs a real ONNX model) and `=http` (your own
+TEI/Modal endpoint) are the other options; see `.env.example`.
+
 **Tests**
 
 `npm test` (re)creates a `graphtask_test` database on your local Postgres at
