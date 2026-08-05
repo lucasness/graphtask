@@ -2139,11 +2139,13 @@ const CURVE_SNAP_DISTANCE = 3;
 function resolveNodeOverlap(node) {
   if (!node || node.empty()) return false;
   const MAX_ITER = 30;
+  // Membership never changes across iterations (only positions do), so build
+  // the collection once instead of re-filtering all nodes every iteration.
+  const others = cy.nodes().filter((n) => n.id() !== node.id() && n.id() !== '__edge_target__');
   let pushed = false;
   for (let iter = 0; iter < MAX_ITER; iter++) {
     let any = false;
     const myBB = node.boundingBox();
-    const others = cy.nodes().filter((n) => n.id() !== node.id() && n.id() !== '__edge_target__');
     for (let i = 0; i < others.length; i++) {
       const other = others[i];
       const oBB = other.boundingBox();
@@ -2180,6 +2182,69 @@ function resolveAllOverlaps() {
       if (resolveNodeOverlap(n)) changed = true;
     });
     if (!changed) break;
+  }
+}
+
+// Place nodes that have no saved position without disturbing the ones that
+// do (used by fetchGraph when most of the graph IS hand-arranged). New nodes
+// cascade in next to their already-placed neighbors — each round places every
+// pending node that has gained a placed neighbor, so an agent's fresh cluster
+// grows off the node it connects to. Deterministic (average of anchors + a
+// fixed downward offset), so every client and every refetch agrees on the
+// result without persisting anything. Nodes with no path to a placed node
+// fall back to a grid below the graph's bounding box.
+const NEW_NODE_PLACE_OFFSET_Y = 110;
+const NEW_NODE_GRID_STEP_X = 240;
+const NEW_NODE_GRID_STEP_Y = 90;
+const NEW_NODE_GRID_COLS = 5;
+function placeUnpositionedNodes(nodes) {
+  const pending = new Set(nodes.map((n) => n.id()));
+  let progress = true;
+  while (progress && pending.size > 0) {
+    progress = false;
+    for (const n of nodes) {
+      if (!pending.has(n.id())) continue;
+      const anchors = n.neighborhood('node').filter(
+        (m) => !pending.has(m.id()) && !m.id().startsWith('__')
+      );
+      if (anchors.length === 0) continue;
+      let sx = 0;
+      let sy = 0;
+      anchors.forEach((a) => {
+        const p = a.position();
+        sx += p.x;
+        sy += p.y;
+      });
+      n.position({
+        x: sx / anchors.length,
+        y: sy / anchors.length + NEW_NODE_PLACE_OFFSET_Y,
+      });
+      pending.delete(n.id());
+      resolveNodeOverlap(n);
+      progress = true;
+    }
+  }
+  if (pending.size === 0) return;
+  // Disconnected from anything placed: stack in a grid below the graph.
+  const placedNodes = cy.nodes().filter(
+    (n) => !pending.has(n.id()) && !n.id().startsWith('__')
+  );
+  const bb = placedNodes.length > 0 ? placedNodes.boundingBox() : { x1: 0, y2: 0 };
+  let col = 0;
+  let row = 0;
+  for (const n of nodes) {
+    if (!pending.has(n.id())) continue;
+    n.position({
+      x: bb.x1 + col * NEW_NODE_GRID_STEP_X,
+      y: bb.y2 + NEW_NODE_PLACE_OFFSET_Y + row * NEW_NODE_GRID_STEP_Y,
+    });
+    pending.delete(n.id());
+    resolveNodeOverlap(n);
+    col++;
+    if (col >= NEW_NODE_GRID_COLS) {
+      col = 0;
+      row++;
+    }
   }
 }
 
@@ -2547,23 +2612,49 @@ async function fetchGraph() {
     if (url) loadBgImageDimensions(n, url);
   });
 
-  let hasPositions = false;
+  // Positioning: restore saved meta.x/y per node, then place the rest.
+  // The old all-or-nothing `hasPositions` flag skipped layout when even ONE
+  // node had saved coordinates, dumping every other node at (0,0) and leaving
+  // resolveAllOverlaps to untangle an N-node pile — measured at 1.2s (and
+  // still unconverged) on a 99-node graph vs 25ms for a real layout. Agent-
+  // created tasks carry no x/y (only human drags persist positions), so
+  // agent-built graphs were the worst case.
+  const unpositioned = [];
+  let positionedCount = 0;
   cy.nodes().forEach((n) => {
     const meta = n.data('meta');
     if (meta && meta.x !== undefined && meta.y !== undefined) {
       n.position({ x: meta.x, y: meta.y });
-      hasPositions = true;
+      positionedCount++;
+    } else {
+      unpositioned.push(n);
     }
   });
 
-  if (!hasPositions && elements.length > 0) {
-    cy.layout({
-      name: 'breadthfirst',
-      directed: true,
-      spacingFactor: 1.0,
-      avoidOverlap: true,
-      nodeDimensionsIncludeLabels: true,
-    }).run();
+  if (unpositioned.length > 0) {
+    if (positionedCount <= unpositioned.length) {
+      // Mostly (or fully) unplaced — the graph hasn't been hand-arranged.
+      // Run the full deterministic layout, then put the hand-placed minority
+      // back where the user left them; resolveAllOverlaps below clears any
+      // collisions between the two.
+      cy.layout({
+        name: 'breadthfirst',
+        directed: true,
+        spacingFactor: 1.0,
+        avoidOverlap: true,
+        nodeDimensionsIncludeLabels: true,
+      }).run();
+      cy.nodes().forEach((n) => {
+        const meta = n.data('meta');
+        if (meta && meta.x !== undefined && meta.y !== undefined) {
+          n.position({ x: meta.x, y: meta.y });
+        }
+      });
+    } else {
+      // Mostly hand-arranged — keep every placed node where it is and slot
+      // the few new (typically agent-created) nodes in near their neighbors.
+      placeUnpositionedNodes(unpositioned);
+    }
   }
 
   resolveAllOverlaps();
@@ -2623,7 +2714,8 @@ function consumePendingNodeFocus() {
 }
 
 async function updateLeafHighlights() {
-  const res = await fetch(`${apiBase()}/tasks/leaves`);
+  // fields=id: highlighting only needs ids; the full rows are ~170KB here.
+  const res = await fetch(`${apiBase()}/tasks/leaves?fields=id`);
   const leaves = await res.json();
   const leafIds = new Set(leaves.map((t) => String(t.id)));
 
@@ -7220,6 +7312,10 @@ let _graphEventSource = null;
 let _graphEventTimer = null;
 // Most recent event payload from this burst, used for agent-follow targeting.
 let _graphEventLastPayload = null;
+// Set while the tab is hidden and a graph event arrives: hidden tabs skip
+// the canvas wipe-and-rebuild (refreshFromEvent defers instead) and this
+// holds the payload to replay on the next visibilitychange → visible.
+let _hiddenGraphResync = null;
 
 // Track the last user-driven interaction (mousedown / keydown / wheel)
 // so agent-follow doesn't yank the camera mid-drag or while typing. Idle
@@ -8173,6 +8269,18 @@ function peerCursorRefresh() {
 // boxes and slot-pick around neighbouring nodes to avoid overlaps.
 function peerCursorRefreshGraph(groups) {
   if (!cy) return;
+  // This runs on EVERY node 'position' event (drags, layout runs, overlap
+  // resolution), so the no-cursor case must stay cheap: the bbox scan below
+  // touches every node on the canvas. With nothing to draw, just clear any
+  // leftover markers and bail before the scan. (During the old (0,0)-pile
+  // untangle this scan ran 14k times and was half the total load cost.)
+  if (groups.size === 0) {
+    for (const key of Array.from(_peerCursorSlots.keys())) {
+      _peerCursorSlots.get(key).el.remove();
+      _peerCursorSlots.delete(key);
+    }
+    return;
+  }
   // 2. Render each group; collect anchor bboxes for slot picking. Build the
   // "other nodes" bbox list once.
   const allBboxes = cy.nodes().map((n) => ({ id: n.id(), bb: n.renderedBoundingBox() }));
@@ -8307,6 +8415,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && activeGraphId) {
     presenceAnnounce(activeGraphId);
   }
+  // Replay the graph refresh this tab skipped while hidden (see the
+  // document.hidden gate in refreshFromEvent).
+  if (document.visibilityState === 'visible' && _hiddenGraphResync) {
+    const payload = _hiddenGraphResync;
+    _hiddenGraphResync = null;
+    refreshFromEvent(payload);
+  }
 });
 
 function openGraphEventStream(id) {
@@ -8314,6 +8429,9 @@ function openGraphEventStream(id) {
     try { _graphEventSource.close(); } catch {}
     _graphEventSource = null;
   }
+  // A deferred refresh belongs to the graph whose stream queued it; don't
+  // let it leak into the graph we're switching to.
+  _hiddenGraphResync = null;
   if (!id) return;
   const es = new EventSource(`/api/graphs/${id}/events`);
   es.onopen = () => {
@@ -8373,6 +8491,17 @@ function openGraphEventStream(id) {
 
 async function refreshFromEvent(payload) {
   if (!cy) return;
+  // A hidden tab skips the wipe-and-rebuild entirely (measured >1s of main-
+  // thread work per event on a ~100-node graph — with agents writing, every
+  // background tab was burning a core re-rendering a canvas nobody could
+  // see). Remember the newest payload and replay it when the tab is next
+  // shown. A graphs-row event pins the slot: its branch refetches the graph
+  // row AND the canvas, a superset of a task/edge refresh.
+  if (document.hidden) {
+    const pinnedGraphs = _hiddenGraphResync && _hiddenGraphResync.kind === 'graphs';
+    if (!pinnedGraphs) _hiddenGraphResync = payload || { kind: 'tasks' };
+    return;
+  }
   // Let the active view react to the task event (kanban queues a flash +
   // scroll-into-view on its next render; graph relies on the canvas refresh
   // below). The view owns its own INSERT/UPDATE handling.

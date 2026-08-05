@@ -65,6 +65,12 @@ describe('API integration', () => {
     const leaves = await request(app).get(`${tasksUrl()}/leaves`);
     const ids = leaves.body.map((t) => t.id).sort();
     expect(ids).toEqual([a.body.id]);
+
+    // ?fields=id trims rows to bare ids (what the canvas highlighter uses);
+    // same rows, no content/meta payload.
+    const slim = await request(app).get(`${tasksUrl()}/leaves?fields=id`);
+    expect(slim.status).toBe(200);
+    expect(slim.body).toEqual([{ id: a.body.id }]);
   });
 
   it('should prevent cycles in dependencies', async () => {

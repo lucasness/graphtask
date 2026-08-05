@@ -64,8 +64,13 @@ router.get('/', async (req, res) => {
 // /leaves must come before /:id so the literal route wins
 router.get('/leaves', async (req, res) => {
   const { gid } = req.params;
+  // ?fields=id trims each row to a bare { id }. The canvas only needs ids
+  // for leaf highlighting, and the full rows (markdown content included)
+  // measured 4x the size of the entire /graph payload. Default shape stays
+  // the full row so existing consumers are unaffected.
+  const idsOnly = req.query.fields === 'id';
   const result = await pool.query(
-    `SELECT t.* FROM tasks t
+    `SELECT ${idsOnly ? 't.id' : 't.*'} FROM tasks t
      WHERE t.graph_id = $1
        AND NOT EXISTS (
          SELECT 1 FROM edges e
