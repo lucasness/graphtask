@@ -2276,6 +2276,28 @@ function resolveAllOverlaps() {
   }
 }
 
+// Same multi-pass settle as resolveAllOverlaps, but only for the nodes that
+// actually moved. resolveAllOverlaps is O(passes × N × iter × N) because every
+// node is re-tested against every other; on a refresh where one agent-created
+// node appeared, all but one of those tests re-prove an arrangement that was
+// already settled. Scoping to the movers makes an incremental refresh O(k × N).
+// Anything the movers displace is picked up because resolveNodeOverlap pushes
+// the MOVER, never the node it collided with.
+function resolveOverlapsFor(nodes) {
+  const movers = (nodes || []).filter(
+    (n) => n && !n.removed() && !n.id().startsWith('__')
+  );
+  if (movers.length === 0) return;
+  for (let pass = 0; pass < 5; pass++) {
+    let changed = false;
+    for (const n of movers) {
+      if (n.removed()) continue;
+      if (resolveNodeOverlap(n)) changed = true;
+    }
+    if (!changed) break;
+  }
+}
+
 // Place nodes that have no saved position without disturbing the ones that
 // do (used by fetchGraph when most of the graph IS hand-arranged). New nodes
 // cascade in next to their already-placed neighbors — each round places every
@@ -2387,6 +2409,120 @@ function roundCurve(value) {
 // Canonical {distance, weight} for an edge or link. Tolerates the legacy
 // number form (perpendicular offset only, weight implicitly 0.5) so old
 // data and any in-flight requests keep working.
+// ---- Incremental canvas reconciliation -----------------------------------
+// A full refresh is `cy.elements().remove()` + `cy.add(...)`: every node and
+// edge is destroyed and rebuilt, every position recomputed, and the whole
+// arrangement re-settled — measured at ~1321ms per SSE event on a ~100-node
+// graph. That cost is paid by the VISIBLE tab, so it lands on a user watching
+// an agent work. But an agent event almost always changes one row, and the
+// other 99 nodes are identical before and after.
+//
+// applyGraphDiff reconciles instead: remove what's gone, add what's new, and
+// write only the data fields that actually differ. Beyond being cheaper it is
+// also less lossy — element classes (.selected, .leaf, peer-selected/editing)
+// live ON the cy elements, so surviving nodes keep them instead of having them
+// stripped and re-applied, and zoom/pan need no save/restore.
+//
+// Returns the newly-added nodes plus any that moved, so the caller can place
+// and de-overlap just those instead of the whole graph.
+function applyGraphDiff(elements) {
+  const wantNodes = new Map();
+  const wantEdges = new Map();
+  for (const el of elements) {
+    if (el.group === 'nodes') wantNodes.set(el.data.id, el.data);
+    else wantEdges.set(el.data.id, el.data);
+  }
+
+  // --- removals ---
+  // Transient ghosts (__pending__, __edge_target__) are client-only and never
+  // appear in server data; leave them alone.
+  const doomed = [];
+  cy.nodes().forEach((n) => {
+    if (n.id().startsWith('__')) return;
+    if (!wantNodes.has(n.id())) doomed.push(n);
+  });
+  cy.edges().forEach((e) => {
+    if (e.id().startsWith('__')) return;
+    const want = wantEdges.get(e.id());
+    // cytoscape can't repoint an existing edge's source/target, so a repointed
+    // edge has to be dropped here and re-added below as a new element.
+    if (!want || e.source().id() !== want.source || e.target().id() !== want.target) {
+      doomed.push(e);
+    }
+  });
+  if (doomed.length) cy.remove(doomed.reduce((acc, el) => acc.union(el), cy.collection()));
+
+  // --- additions ---
+  const toAdd = [];
+  for (const [id, data] of wantNodes) {
+    if (cy.getElementById(id).empty()) toAdd.push({ group: 'nodes', data });
+  }
+  // Edges are added after nodes exist, otherwise cytoscape rejects the endpoint.
+  for (const [id, data] of wantEdges) {
+    if (cy.getElementById(id).empty()) toAdd.push({ group: 'edges', data });
+  }
+  const addedNodeIds = new Set(
+    toAdd.filter((el) => el.group === 'nodes').map((el) => el.data.id)
+  );
+  if (toAdd.length) cy.add(toAdd);
+
+  // --- in-place field updates on survivors ---
+  // Only write when the value actually differs: every `.data()` write marks the
+  // element dirty and schedules a style recalc, so blindly re-setting identical
+  // values would give back much of what the diff saves.
+  const setIfChanged = (el, key, value) => {
+    if (el.data(key) !== value) el.data(key, value);
+  };
+  const moved = [];
+  for (const [id, data] of wantNodes) {
+    if (addedNodeIds.has(id)) continue;
+    const n = cy.getElementById(id);
+    if (n.empty()) continue;
+    setIfChanged(n, 'title', data.title);
+    setIfChanged(n, 'description', data.description);
+    setIfChanged(n, 'status', data.status);
+    setIfChanged(n, 'color', data.color);
+    setIfChanged(n, 'taskId', data.taskId);
+    // meta is an object; `version` is the server's own change counter, so it is
+    // a sound and cheap proxy for "this row was rewritten".
+    if (n.data('version') !== data.version) {
+      n.data('meta', data.meta);
+      n.data('version', data.version);
+    }
+    // Background image drives node geometry, so route through the same helpers
+    // the single-node updater uses rather than writing the key directly.
+    const bg = data.backgroundImage;
+    if (bg) {
+      if (n.data('backgroundImage') !== bg) setBgImageData(n, bg);
+    } else if (n.data('backgroundImage')) {
+      clearBgImageData(n);
+    }
+    // A human drag elsewhere persists meta.x/y; honor it and mark the node as
+    // moved so the caller re-settles overlaps around its new home.
+    const meta = data.meta || {};
+    if (meta.x !== undefined && meta.y !== undefined) {
+      const pos = n.position();
+      if (Math.abs(pos.x - meta.x) > 0.5 || Math.abs(pos.y - meta.y) > 0.5) {
+        n.position({ x: meta.x, y: meta.y });
+        moved.push(n);
+      }
+    }
+  }
+  for (const [id, data] of wantEdges) {
+    const e = cy.getElementById(id);
+    if (e.empty() || e.data('version') === data.version) continue;
+    setIfChanged(e, 'edgeType', data.edgeType);
+    setIfChanged(e, 'color', data.color);
+    setIfChanged(e, 'curveDistance', data.curveDistance);
+    setIfChanged(e, 'curveWeight', data.curveWeight);
+    e.data('meta', data.meta);
+    e.data('version', data.version);
+  }
+
+  const addedNodes = [...addedNodeIds].map((id) => cy.getElementById(id)).filter((n) => !n.empty());
+  return { addedNodes, moved, removedCount: doomed.length };
+}
+
 function getEdgeCurveData(edgeOrLink) {
   const meta = typeof edgeOrLink.data === 'function'
     ? edgeOrLink.data('meta')
@@ -2620,7 +2756,13 @@ function addGraphEdge(edge) {
   });
 }
 
-async function fetchGraph() {
+// `diff: true` reconciles the existing canvas against the fetched data instead
+// of wiping and rebuilding it — see applyGraphDiff. Used by refreshFromEvent,
+// which fires on every SSE event and is the one refresh a user sits through.
+// Every other caller (boot, graph switch, explicit reload) wants the full
+// rebuild, since there is nothing to diff against or the arrangement should be
+// recomputed from scratch.
+async function fetchGraph({ diff = false } = {}) {
   const wasAccessDenied = accessDenied;
   const res = await fetch(`${apiBase()}/graph`);
   if (!res.ok) {
@@ -2693,6 +2835,40 @@ async function fetchGraph() {
   const savedPan = { ...cy.pan() };
 
   hideCurveHandle();
+
+  // Incremental path: nothing is destroyed, so positions, zoom/pan and element
+  // classes all survive, and only the elements that appeared or moved need
+  // placing and de-overlapping.
+  if (diff && !isFirstLoad) {
+    const { addedNodes, moved } = applyGraphDiff(elements);
+    const unplaced = [];
+    for (const n of addedNodes) {
+      const meta = n.data('meta');
+      if (meta && meta.x !== undefined && meta.y !== undefined) {
+        n.position({ x: meta.x, y: meta.y });
+        moved.push(n);
+      } else {
+        unplaced.push(n);
+      }
+    }
+    // placeUnpositionedNodes cascades new nodes off their already-placed
+    // neighbors, which is exactly the situation here: everything else is placed.
+    if (unplaced.length) placeUnpositionedNodes(unplaced);
+    resolveOverlapsFor([...unplaced, ...moved]);
+    for (const n of addedNodes) {
+      const url = n.data('backgroundImage');
+      if (url) loadBgImageDimensions(n, url);
+    }
+    updateEmptyState();
+    updateLeafHighlights();
+    updateToolbar();
+    renderKanban();
+    invalidateSearchDocs();
+    refreshOpenSearch();
+    consumePendingNodeFocus();
+    return;
+  }
+
   cy.elements().remove();
   cy.add(elements);
   // After the rebuild, kick off image-dimension loads for every node that
@@ -8672,7 +8848,10 @@ async function refreshFromEvent(payload) {
     pendingNode && !pendingNode.removed() && pendingNode.id() !== '__pending__'
       ? pendingNode.id()
       : null;
-  await fetchGraph();
+  // Incremental: surviving elements keep their identity, so the save/restore of
+  // selection and pendingNode below mostly no-ops. It stays because the diff
+  // still removes genuinely-deleted rows, and that case must behave as before.
+  await fetchGraph({ diff: true });
   if (pendingNodeId) {
     const refreshed = cy.getElementById(pendingNodeId);
     if (refreshed && !refreshed.empty()) {
@@ -9226,6 +9405,17 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   startPanelClassObserver();
   wireFollowToggleButton();
+  // Phones repaint the whole canvas on every pan/zoom frame at 2-3x device
+  // pixel ratio, which is where the remaining mobile cost lives. These two
+  // flags are cytoscape's own answer: during a viewport gesture it blits a
+  // cached texture and drops edges, then does one sharp repaint when the
+  // gesture ends. The tradeoff is a briefly soft canvas WHILE dragging, which
+  // is why it's mobile-only — on desktop the full-fidelity repaint is
+  // affordable and the softness would be a visible regression.
+  // `pointer: coarse` keys off input type rather than width, so a narrow
+  // desktop window doesn't get the degraded path.
+  const coarsePointer =
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   cy = cytoscape({
     container: document.getElementById('cy'),
     style: cytoscapeStyle(appSettings.theme),
@@ -9235,6 +9425,8 @@ document.addEventListener('DOMContentLoaded', () => {
     selectionType: 'additive',
     minZoom: 0.2,
     maxZoom: 1.5,
+    textureOnViewport: coarsePointer,
+    hideEdgesOnViewport: coarsePointer,
   });
   // Own-selection color is the local user's avatar color, not the historical
   // orange — applied once after cy init and again on every full re-style.
