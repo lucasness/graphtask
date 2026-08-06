@@ -905,6 +905,13 @@ body.view-reader #reader-list { display: block; }
    Note this page loads the Toast VIEWER css (10KB) rather than the editor's
    (165KB); both define .toastui-editor-contents identically, which is what
    lets the body rule below mirror #reader-body exactly. */
+/* Undo the app's scroll lock. `body { overflow: hidden }` is correct for the
+   SPA — everything there is fixed to the viewport (#sidebar, #cy, #kanban, and
+   #reader, which scrolls its own inner column) — but this page is ordinary
+   document flow and has to scroll the DOCUMENT. It inherits the lock because
+   `html` sets no overflow of its own, so body's value is what propagates to the
+   viewport; without this, a node longer than one screen simply can't be read. */
+body.view-node { overflow: visible; }
 #node-page {
   min-height: 100vh;
   background: var(--canvas-bg);
