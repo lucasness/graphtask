@@ -28,6 +28,36 @@ describe.each(['index.html', 'node.html'])('%s — elements that start hidden', 
   });
 });
 
+// A bare element selector here is never only about chrome. This stylesheet
+// dresses both pages AND the markdown they render, so `tag { ... }` is really a
+// rule about everyone's prose. `kbd` is how that bit: written for the toolbar's
+// keycaps, it also restyled any <kbd> a node body wrote — 11px chrome inside
+// 16px reading text, stripped of surrounding bold or italic by the `font`
+// shorthand. Keep this list short and deliberate; adding to it is a decision
+// that content gets the rule too.
+const ALLOWED_BARE_SELECTORS = new Set([
+  '*', 'html', 'body', // document-level resets
+  'button', // form-control chrome; the markdown sanitizer emits none
+  'form label', 'form input', 'form textarea', 'form select',
+  'kbd', // app chrome; neutralised for content by `.toastui-editor-contents kbd`
+]);
+
+describe('style.css keeps its global reach deliberate', () => {
+  it('styles no element type outside the allowed list', () => {
+    const css = read('style.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const bare = new Set();
+    for (const block of css.matchAll(/(?:^|\}|\{)\s*([^{}@]+?)\s*\{/g)) {
+      for (const sel of block[1].split(',').map((s) => s.trim())) {
+        // Anything carrying a class, id, attribute or pseudo is already scoped;
+        // `from` / `to` / `50%` are @keyframes stops, not selectors.
+        if (!sel || /[.#[:%]/.test(sel) || sel === 'from' || sel === 'to') continue;
+        bare.add(sel);
+      }
+    }
+    expect([...bare].filter((s) => !ALLOWED_BARE_SELECTORS.has(s))).toEqual([]);
+  });
+});
+
 // The SPA pins everything to the viewport (#sidebar, #cy, #kanban, and #reader,
 // which scrolls its own inner column), so `body { overflow: hidden }` is right
 // for it. node.html is ordinary document flow and must scroll the DOCUMENT — and

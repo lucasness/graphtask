@@ -3105,6 +3105,22 @@ kbd {
   border: 1px solid var(--color-mist);
   border-radius: 4px;
 }
+/* The rule above is app chrome — toolbar keycaps and settings-menu shortcuts —
+   but it is a bare element selector, so it also reaches every <kbd> a node body
+   writes into its markdown, on the reader and the node permalink alike. At
+   chrome size that is 11px inside 16px prose, the `font` shorthand drops any
+   surrounding bold or italic, and inline-flex makes an atomic box that can't
+   break across lines. Content keeps the keycap look, at reading scale. */
+.toastui-editor-contents kbd {
+  display: inline;
+  padding: 0.1em 0.4em;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 0.9em;
+  font-weight: inherit;
+  font-style: inherit;
+  line-height: inherit;
+  color: var(--tx-2);
+}
 
 /* Inline node title input overlay — sits inside the cytoscape node */
 #node-title-overlay {
