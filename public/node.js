@@ -9,6 +9,7 @@
 //
 // Reads only. Nothing here writes to the graph, joins presence, or opens SSE.
 import { resolveNodeRoute, nodeHref } from '/route-parse.js';
+import { withReaderParam } from '/reader-pick.js';
 
 const FENCE = '---';
 
@@ -159,7 +160,11 @@ async function main() {
 
   if (from === 'report') {
     const back = $('node-back');
-    back.href = `/g/${encodeURIComponent(gid)}?view=reader`;
+    // Built through reader-pick, which is the single home for `view=reader` —
+    // not re-typed here. A second hand-written copy of that literal drifts the
+    // moment the param changes, and this link would then quietly land on the
+    // canvas instead of the report, with nothing to signal it.
+    back.href = `/g/${encodeURIComponent(gid)}${withReaderParam('', true)}`;
     back.textContent = '← Back to the report';
     back.classList.remove('hidden');
   }
