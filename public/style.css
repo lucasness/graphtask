@@ -850,11 +850,18 @@ body.view-reader #reader-list { display: block; }
   margin-bottom: 6px;
 }
 #reader-cite-tooltip .cite-tip-url:hover { text-decoration: underline; }
+/* The second of the card's two link rows — "the source" above, "the node" here.
+   It is a real anchor: it carries the ember of the superscripts it describes, so
+   it must behave like the link that colour promises. */
 #reader-cite-tooltip .cite-tip-hint {
+  display: block;
   font-family: var(--font-ui);
   font-size: 11px;
   color: var(--color-ember-orange);
+  text-decoration: none;
+  cursor: pointer;
 }
+#reader-cite-tooltip .cite-tip-hint:hover { text-decoration: underline; }
 /* Numbered References list at the foot of the report. */
 #reader-references {
   margin-top: 40px;

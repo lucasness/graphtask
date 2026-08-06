@@ -1684,6 +1684,13 @@ function transformCitesInDom(root, re, nums, gid) {
         if (i > 0) sup.appendChild(document.createTextNode(','));
         const a = document.createElement('a');
         a.className = 'cite-ref';
+        // A real href, so modifier-click / middle-click / "open in new tab" and
+        // the status-bar URL preview all work. Without one this was a JS-only
+        // left-click target that silently ignored every other way of following
+        // a link.
+        a.href = citeNodeHref(gid, id);
+        a.target = '_blank';
+        a.rel = 'noopener';
         a.dataset.nodeId = id;
         a.dataset.gid = gid;
         a.textContent = String(nums.get(id) ?? '?');
@@ -1729,8 +1736,12 @@ function buildReferencesList(nums, nodeMap, gid) {
   refsEl.classList.remove('hidden');
 }
 
-// Hover tooltip + click-through for the inline cite superscripts. A cite click
-// opens the cited node's PERMALINK in a new tab — a standalone reading page
+// Hover tooltip for the inline cite superscripts. The click-through itself is
+// native: transformCitesInDom gives each superscript a real href + target, so
+// following it needs no JS, and focus/Enter/modifier-clicks come free from the
+// anchor rather than from hand-rolled tabIndex, role and key handlers.
+//
+// A cite lands on the cited node's PERMALINK — a standalone reading page
 // (public/node.html) that renders just that node's markdown plus its edges.
 // It used to open /g/:gid?node=:id, which cold-boots the whole SPA (cytoscape,
 // the 534KB editor bundle, the graphs list, the graph, SSE, presence) and paints
@@ -1739,16 +1750,11 @@ function wireCiteInteractions(bodyEl, nodeMap, gid) {
   for (const a of bodyEl.querySelectorAll('a.cite-ref')) {
     const id = a.dataset.nodeId;
     const meta = nodeMap.get(id);
-    a.tabIndex = 0;
-    a.setAttribute('role', 'link');
     a.title = meta?.title || `Node #${id}`; // native fallback
     a.addEventListener('mouseenter', () => showCiteTooltip(a, id, meta, gid));
     a.addEventListener('mouseleave', scheduleHideCiteTooltip);
     a.addEventListener('focus', () => showCiteTooltip(a, id, meta, gid));
     a.addEventListener('blur', scheduleHideCiteTooltip);
-    const open = () => window.open(citeNodeHref(gid, id), '_blank', 'noopener');
-    a.addEventListener('click', (e) => { e.preventDefault(); open(); });
-    a.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
   }
 }
 
@@ -1834,8 +1840,15 @@ function showCiteTooltip(anchor, id, meta, gid) {
     desc.textContent = meta.description;
     tip.appendChild(desc);
   }
-  const hint = document.createElement('div');
+  // A real link, not a label. The card is deliberately pointer-reachable (see
+  // the delay below), so by the time this line is read the pointer is INSIDE the
+  // card and "Click to open the node" reads as an instruction about itself. As a
+  // bare div it was inert — link-coloured text that did nothing when clicked.
+  const hint = document.createElement('a');
   hint.className = 'cite-tip-hint';
+  hint.href = citeNodeHref(gid, id);
+  hint.target = '_blank';
+  hint.rel = 'noopener';
   hint.textContent = 'Click to open the node →';
   tip.appendChild(hint);
   tip.classList.remove('hidden');
