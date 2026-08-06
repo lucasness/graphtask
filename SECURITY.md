@@ -55,7 +55,16 @@ once are called out below.
 - **Socket for GitHub App** scans every dependency-changing pull request
   (malware, typosquats, install scripts, 70+ risk types) and reports on
   the PR. Its enforcement moment is the PR; it does not gate direct
-  pushes to `main` — that is what the pre-push gate is for.
+  pushes to `main` — the pre-push gate and the CI gate cover those.
+- **CI gate** (`.github/workflows/supply-chain.yml`) runs the *same*
+  `.githooks/supply_chain_gate.py` on every push to `main` and every PR.
+  This exists because the pre-push hook is opt-in per clone (see step 1
+  above) and silently does nothing in a clone that skipped it — so the
+  check that matters most is the one easiest to miss. Note the division
+  of labour: the **local hook prevents** (it blocks before the push
+  leaves your machine); **CI detects** (a workflow runs after the push
+  has landed and can only mark it red). To make CI preventive too,
+  require PRs into `main` with this check marked required.
 - **Pre-push gate** (`.githooks/`, stdlib Python 3, ecosystem-aware).
   Before any push:
   - every pin in `package-lock.json` (and `requirements*.txt` / `uv.lock`
