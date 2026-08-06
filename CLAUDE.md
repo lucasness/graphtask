@@ -5,11 +5,23 @@ detail lives in the linked files.
 
 ## Layout at a glance
 
-- `public/` — the entire client. Static assets served by Express. The
-  app is a single-page vanilla-JS UI; no build step, no bundler.
-  - `index.html` — markup + asset links.
-  - `style.css` — **all** CSS (tokens + components). One file, ~2800 lines.
-  - `app.js` — all client JS.
+- `public/` — the entire client. Static assets served by Express. Vanilla
+  JS; no build step, no bundler.
+  - `index.html` + `app.js` — the SPA (graph / kanban / reader views).
+    Nearly all client JS lives in `app.js`.
+  - `node.html` + `node.js` — a **second, standalone page** at
+    `/g/<gid>/n/<id>`: one node's markdown plus its edges, rendered off a
+    single API read with no cytoscape and no editor bundle. It's where the
+    reader's citation click-throughs land. Deliberately NOT part of the SPA
+    — the whole point is not paying the app's boot cost to read one node.
+    Loads the Toast UI *viewer* bundle, not the editor one.
+  - `style.css` — **all** CSS for **both** pages (tokens + components).
+    One file, ~3000 lines.
+  - The small pure ES modules (`reader-*.js`, `route-parse.js`,
+    `search-*.js`) are the shared, unit-tested logic: the browser hangs
+    them on `window.*` via a `<script type="module">` shim in
+    `index.html`, and vitest imports them directly. Put testable logic
+    here rather than in `app.js`.
 - `src/` — Node/Express server (auth, graphs, SSE, REST endpoints).
 - `db/` — schema + migrations. Postgres.
 - `design/DESIGN.md` — prose design spec (see below).
@@ -19,6 +31,13 @@ detail lives in the linked files.
 
 **Source of truth: `public/style.css`.**
 
+- **`.hidden` is an INERT marker class.** `style.css` declares `.hidden {}`
+  empty on purpose; each component supplies its own
+  `#thing.hidden { display: none; }`. Ship an element with
+  `class="hidden"` and no such rule and it is simply *visible*, silently —
+  that's how the "No report yet" placeholder ended up pinned under every
+  rendered report. `tests/hidden-class-rules.test.js` now fails the build
+  on a missing rule; add yours when you add the markup.
 - The top of the file declares every CSS custom property the app uses:
   `--space-*`, `--text-*`, `--color-*`, `--font-*`, `--radius-*`,
   `--shadow-*`. Both `light` and `dark` themes redefine the full token

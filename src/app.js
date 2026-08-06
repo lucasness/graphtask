@@ -152,6 +152,17 @@ selectionState.onChange((graphId, op, payload) => {
   broadcastPresence(graphId, { graph_id: graphId, kind: 'selection', op, ...payload });
 });
 
+// Single-node permalink (/g/:gid/n/:id) — a standalone reading page, NOT the
+// SPA. It renders one node's markdown off a single API read instead of booting
+// cytoscape + the editor bundle + SSE to show you one node, which is what the
+// reader's citation click-throughs target. Must sit above the SPA fallback
+// below, which would otherwise hand this path index.html. Access control is
+// unchanged: the page is a shell, and the /api reads it makes are gated exactly
+// as before (a viewer with no access gets a 403 and the page says so).
+app.get('/g/:gid/n/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'node.html'));
+});
+
 // SPA fallback: client-side routes like /g/:gid only exist in the frontend.
 // On a fresh page load (paste URL, refresh, bookmark) the browser does a real
 // GET and would otherwise 404. Serve index.html instead so the JS can read

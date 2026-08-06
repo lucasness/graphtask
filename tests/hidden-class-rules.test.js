@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const read = (p) => readFileSync(fileURLToPath(new URL(`../public/${p}`, import.meta.url)), 'utf8');
 
-describe.each(['index.html'])('%s — elements that start hidden', (page) => {
+describe.each(['index.html', 'node.html'])('%s — elements that start hidden', (page) => {
   it('every class="hidden" element is actually hidden by style.css', () => {
     const html = read(page);
     const css = read('style.css');

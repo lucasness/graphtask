@@ -1715,7 +1715,9 @@ function buildReferencesList(nums, nodeMap, gid) {
     const meta = nodeMap.get(id);
     const a = document.createElement('a');
     a.className = 'cite-ref-link';
-    a.href = `/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`;
+    // Same permalink the inline superscripts open — the References list IS the
+    // citation list, so both must land on the same page.
+    a.href = citeNodeHref(gid, id);
     a.target = '_blank';
     a.rel = 'noopener';
     a.appendChild(document.createTextNode(meta?.title || `Node #${id}`)); // XSS-safe
@@ -1728,8 +1730,11 @@ function buildReferencesList(nums, nodeMap, gid) {
 }
 
 // Hover tooltip + click-through for the inline cite superscripts. A cite click
-// opens the SAME graph in a NEW TAB in graph mode with the node selected
-// (/g/:gid?node=:id forces graph view on load — see switchActiveGraph).
+// opens the cited node's PERMALINK in a new tab — a standalone reading page
+// (public/node.html) that renders just that node's markdown plus its edges.
+// It used to open /g/:gid?node=:id, which cold-boots the whole SPA (cytoscape,
+// the 534KB editor bundle, the graphs list, the graph, SSE, presence) and paints
+// three visible stages before showing the one node you asked for.
 function wireCiteInteractions(bodyEl, nodeMap, gid) {
   for (const a of bodyEl.querySelectorAll('a.cite-ref')) {
     const id = a.dataset.nodeId;
@@ -1737,14 +1742,20 @@ function wireCiteInteractions(bodyEl, nodeMap, gid) {
     a.tabIndex = 0;
     a.setAttribute('role', 'link');
     a.title = meta?.title || `Node #${id}`; // native fallback
-    a.addEventListener('mouseenter', () => showCiteTooltip(a, id, meta));
-    a.addEventListener('mouseleave', hideCiteTooltip);
-    a.addEventListener('focus', () => showCiteTooltip(a, id, meta));
-    a.addEventListener('blur', hideCiteTooltip);
-    const open = () => window.open(`/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`, '_blank', 'noopener');
+    a.addEventListener('mouseenter', () => showCiteTooltip(a, id, meta, gid));
+    a.addEventListener('mouseleave', scheduleHideCiteTooltip);
+    a.addEventListener('focus', () => showCiteTooltip(a, id, meta, gid));
+    a.addEventListener('blur', scheduleHideCiteTooltip);
+    const open = () => window.open(citeNodeHref(gid, id), '_blank', 'noopener');
     a.addEventListener('click', (e) => { e.preventDefault(); open(); });
     a.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
   }
+}
+
+// `from=report` tells the node page to offer "← Back to the report".
+function citeNodeHref(gid, id) {
+  return window.RouteParse?.nodeHref?.(gid, id, 'report')
+    ?? `/g/${encodeURIComponent(gid)}/n/${encodeURIComponent(id)}?from=report`;
 }
 
 function ensureCiteTooltip() {
@@ -1753,13 +1764,65 @@ function ensureCiteTooltip() {
     tip = document.createElement('div');
     tip.id = 'reader-cite-tooltip';
     tip.className = 'hidden';
+    // The card holds a real link (a source's URL), so the pointer has to be able
+    // to travel INTO it — which means it can no longer hide the instant the
+    // superscript is left. Wired once here, not per-render: the tooltip element
+    // is reused across every citation on the page.
+    tip.addEventListener('mouseenter', cancelHideCiteTooltip);
+    tip.addEventListener('mouseleave', scheduleHideCiteTooltip);
+    tip.addEventListener('focusin', cancelHideCiteTooltip);
+    tip.addEventListener('focusout', scheduleHideCiteTooltip);
     document.body.appendChild(tip);
   }
   return tip;
 }
 
-function showCiteTooltip(anchor, id, meta) {
+// Which node the visible tooltip is describing. Guards the async URL fill-in
+// below: by the time a fetch lands, the pointer may have moved to another cite.
+let _citeTooltipFor = null;
+let _citeTooltipHideTimer = null;
+
+// Long enough to cross the 6px gap between the superscript and the card without
+// the card vanishing mid-reach; short enough that it doesn't linger.
+const CITE_TOOLTIP_HIDE_MS = 180;
+
+function scheduleHideCiteTooltip() {
+  cancelHideCiteTooltip();
+  _citeTooltipHideTimer = setTimeout(hideCiteTooltip, CITE_TOOLTIP_HIDE_MS);
+}
+
+function cancelHideCiteTooltip() {
+  if (_citeTooltipHideTimer) {
+    clearTimeout(_citeTooltipHideTimer);
+    _citeTooltipHideTimer = null;
+  }
+}
+
+// gid:id -> url | null. A reference node keeps its source URL in its markdown
+// BODY, which the reader's /graph read doesn't carry — so the body is fetched
+// lazily on first hover and cached. Null is cached too: a source with no URL is
+// a normal state, and re-asking on every hover would be pure waste.
+const _citeUrlCache = new Map();
+
+async function loadCiteSourceUrl(gid, id) {
+  const key = `${gid}:${id}`;
+  if (_citeUrlCache.has(key)) return _citeUrlCache.get(key);
+  let url = null;
+  try {
+    const res = await fetch(`/api/graphs/${encodeURIComponent(gid)}/tasks/${encodeURIComponent(id)}`);
+    if (res.ok) {
+      const task = await res.json();
+      url = window.ReaderCite?.extractFirstUrl?.(task.content || '') ?? null;
+    }
+  } catch { /* offline or denied — the tooltip just won't offer a source link */ }
+  _citeUrlCache.set(key, url);
+  return url;
+}
+
+function showCiteTooltip(anchor, id, meta, gid) {
+  cancelHideCiteTooltip();
   const tip = ensureCiteTooltip();
+  _citeTooltipFor = `${gid}:${id}`;
   tip.innerHTML = '';
   const title = document.createElement('div');
   title.className = 'cite-tip-title';
@@ -1773,10 +1836,35 @@ function showCiteTooltip(anchor, id, meta) {
   }
   const hint = document.createElement('div');
   hint.className = 'cite-tip-hint';
-  hint.textContent = 'Click to open in the graph →';
+  hint.textContent = 'Click to open the node →';
   tip.appendChild(hint);
   tip.classList.remove('hidden');
-  // Position below the superscript, clamped to the viewport; flip above if needed.
+  positionCiteTooltip(anchor, tip);
+
+  // Fill the source link in behind the paint. The card is useful immediately;
+  // the URL row appears a beat later if this node has one.
+  loadCiteSourceUrl(gid, id).then((url) => {
+    if (!url || _citeTooltipFor !== `${gid}:${id}` || tip.classList.contains('hidden')) return;
+    if (tip.querySelector('.cite-tip-url')) return;
+    const link = document.createElement('a');
+    link.className = 'cite-tip-url';
+    link.href = url;
+    link.target = '_blank';
+    // noreferrer as well as noopener: this is an outbound hop to a third-party
+    // source, not an in-app link.
+    link.rel = 'noopener noreferrer';
+    link.title = url;
+    link.appendChild(document.createTextNode(url)); // textContent — XSS-safe
+    // Above the hint, so the two click targets read as "the source" then "the node".
+    tip.insertBefore(link, hint);
+    // The card just grew — re-clamp so a flipped-above tooltip doesn't slide
+    // off the top or overlap the text it's anchored to.
+    positionCiteTooltip(anchor, tip);
+  });
+}
+
+// Below the superscript, clamped to the viewport; flips above when it won't fit.
+function positionCiteTooltip(anchor, tip) {
   const r = anchor.getBoundingClientRect();
   const tw = tip.offsetWidth;
   const th = tip.offsetHeight;
@@ -1784,11 +1872,14 @@ function showCiteTooltip(anchor, id, meta) {
   if (left < 8) left = 8;
   let top = r.bottom + 6;
   if (top + th > window.innerHeight - 8) top = r.top - th - 6;
+  if (top < 8) top = 8;
   tip.style.left = `${Math.round(left)}px`;
   tip.style.top = `${Math.round(top)}px`;
 }
 
 function hideCiteTooltip() {
+  cancelHideCiteTooltip();
+  _citeTooltipFor = null;
   const tip = document.getElementById('reader-cite-tooltip');
   if (tip) tip.classList.add('hidden');
 }

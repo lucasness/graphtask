@@ -804,7 +804,10 @@ body.view-reader #reader-list { display: block; }
 .reader-cite .cite-ref:hover,
 .reader-cite .cite-ref:focus-visible { text-decoration: underline; outline: none; }
 .reader-cite sub, .reader-cite sup { font-size: 11px; }
-/* Hover card for a citation: node title + description + open hint. */
+/* Hover card for a citation: node title + description + source URL + open hint.
+   NOT pointer-events:none — the card holds a real outbound link to the cited
+   source, so the pointer has to be able to reach it. app.js pairs this with a
+   short close delay so crossing the gap doesn't dismiss the card. */
 #reader-cite-tooltip {
   position: fixed;
   z-index: 30;
@@ -814,7 +817,6 @@ body.view-reader #reader-list { display: block; }
   border: 1px solid var(--color-mist);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
-  pointer-events: none;
 }
 #reader-cite-tooltip.hidden { display: none; }
 #reader-cite-tooltip .cite-tip-title {
@@ -831,6 +833,23 @@ body.view-reader #reader-list { display: block; }
   color: var(--tx-2);
   margin-bottom: 6px;
 }
+/* The cited source's own URL — present only when the node's body has one (a
+   first-party table or an interview legitimately has none). Truncates rather
+   than wrapping so a long URL can't stretch the card into a paragraph; the
+   full value stays in the title attribute and the href. */
+#reader-cite-tooltip .cite-tip-url {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--color-cobalt-link);
+  text-decoration: none;
+  margin-bottom: 6px;
+}
+#reader-cite-tooltip .cite-tip-url:hover { text-decoration: underline; }
 #reader-cite-tooltip .cite-tip-hint {
   font-family: var(--font-ui);
   font-size: 11px;
@@ -874,6 +893,169 @@ body.view-reader #reader-list { display: block; }
 }
 @media (max-width: 768px) {
   #reader { padding: 72px 16px; }
+}
+
+/* === Single-node reading page (public/node.html, /g/<gid>/n/<id>) ===
+   The reader's calm column, standing alone: a citation click-through lands here
+   instead of cold-booting the SPA to show one node. It deliberately REUSES the
+   reader's type scale and measure (68ch, Playfair title, DM Sans body) rather
+   than inventing a second reading voice — arriving from the report should feel
+   like turning a page, not switching apps. Its own page, so there is no
+   sidebar to clear: the 80px reader top-padding drops to a plain 64px.
+   Note this page loads the Toast VIEWER css (10KB) rather than the editor's
+   (165KB); both define .toastui-editor-contents identically, which is what
+   lets the body rule below mirror #reader-body exactly. */
+#node-page {
+  min-height: 100vh;
+  background: var(--canvas-bg);
+  padding: 64px 32px 96px;
+  box-sizing: border-box;
+}
+#node-article {
+  max-width: 68ch;
+  margin: 0 auto;
+}
+#node-back {
+  display: inline-block;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--tx-3);
+  text-decoration: none;
+  margin-bottom: 24px;
+}
+#node-back:hover { color: var(--color-ember-orange); }
+#node-back.hidden { display: none; }
+/* Section Eyebrow (DESIGN.md → Components): the node's `type` — 'reference',
+   'decision' — the one meta field that changes how you read what follows. */
+#node-eyebrow {
+  font-family: var(--font-label);
+  font-size: var(--text-body);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.125em;
+  color: var(--color-ember-orange);
+  margin-bottom: 12px;
+}
+#node-eyebrow.hidden { display: none; }
+#node-header.hidden { display: none; }
+#node-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  color: var(--tx);
+  margin: 0 0 8px;
+}
+#node-desc {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--tx-2);
+  margin: 0 0 6px;
+}
+#node-desc:empty { display: none; }
+#node-meta {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--tx-3);
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 16px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+/* Status reads at a glance off the same --status-* tokens the canvas and
+   kanban use, so a node's colour means the same thing in all three places. */
+.node-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: baseline;
+  background: var(--status-todo-stroke);
+}
+.node-status-dot[data-status="in_progress"] { background: var(--status-in-progress-stroke); }
+.node-status-dot[data-status="review"]      { background: var(--status-review-stroke); }
+.node-status-dot[data-status="done"]        { background: var(--status-done-stroke); }
+#node-body .toastui-editor-contents {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+}
+.node-body-empty {
+  font-family: var(--font-body);
+  font-size: 15px;
+  color: var(--tx-3);
+  font-style: italic;
+  margin: 0;
+}
+/* Connections — the node's edges as text. This is the context the canvas used
+   to be the only way to see, so it earns the same weight as the report's
+   References block it visually rhymes with. */
+#node-connections {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+#node-connections.hidden { display: none; }
+#node-connections h2 {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  color: var(--tx);
+  margin: 0 0 16px;
+}
+.node-conn-group { margin-bottom: 16px; }
+.node-conn-label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tx-3);
+  margin-bottom: 4px;
+}
+.node-conn-group ul {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.node-conn-group li { margin-bottom: 2px; }
+.node-conn-group a {
+  color: var(--color-cobalt-link);
+  text-decoration: none;
+  font-weight: 500;
+}
+.node-conn-group a:hover { text-decoration: underline; }
+#node-footer {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+#node-footer.hidden { display: none; }
+#node-open-graph {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--color-ember-orange);
+  text-decoration: none;
+}
+#node-open-graph:hover { text-decoration: underline; }
+/* Error / no-such-node state — the reader's empty-state register. */
+#node-status {
+  text-align: center;
+  padding-top: 20vh;
+  font-family: var(--font-display);
+  font-size: var(--text-heading);
+  letter-spacing: -0.02em;
+  color: var(--tx-2);
+}
+#node-status.hidden { display: none; }
+#node-status p { margin: 0; }
+@media (max-width: 768px) {
+  #node-page { padding: 40px 16px 64px; }
 }
 
 /* Left sidebar */

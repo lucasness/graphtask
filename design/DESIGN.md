@@ -286,6 +286,17 @@ Reader mode is a **client-only third canvas view**, toggled from the sidebar hea
 - **Contents rail.** An auto table of contents (h2–h4) fixed in the left margin with scroll-spy — the entry nearest the top takes an ember left-border + ember text (the active-tool treatment); other entries sit in `--color-steel`. Hidden below ~1280px (reading-first) and when a report has fewer than two headings.
 - **Staleness banner.** When the graph changed after the report was generated, a low-key amber note (ember left-border on `--color-blush-tint`) sits above the body. Copy is capability-aware: an editor is invited to regenerate; a read-only / anon viewer sees a plain "may be out of date". Same rule governs the empty state ("No report yet" — with the "ask your agent to generate one" CTA only for editors).
 - **Cross-graph rail.** In reader mode the sidebar's graph list is swapped for a report browser — one row per graph (owned or member) that has a report, reusing the `.sb-item` row with an amber `.sb-dot` on stale reports. Clicking a row loads that report without repointing the active graph.
+- **Citation hover card.** A cited node's title + description, its source URL when the node body has one (cobalt link, single-line truncated — a source with no URL is normal, and the row is simply absent), and an ember "Click to open the node →" hint. The card is **interactive**, not a passive tooltip: it holds a real outbound link, so it takes pointer events and stays open for a beat after the pointer leaves, letting you reach the URL.
+
+### Node Page (single-node permalink)
+**Role:** One node, read on its own — the landing surface for a citation click
+
+`/g/<gid>/n/<id>`, served as a **standalone page** (`public/node.html`), not a view of the SPA. It exists because clicking a citation used to cold-boot the entire app in a new tab — cytoscape, the 534KB editor bundle, the graphs list, the graph, SSE, presence — and paint three visible stages before showing the one node you asked for. This renders off a single API read with no canvas at all.
+
+- **Same reading voice as the report.** Deliberately reuses the reader's measure and type scale (68ch, Playfair title, DM Sans body) so arriving from a citation feels like turning a page, not switching apps. It loads the Toast UI **viewer** bundle (141KB JS / 10KB CSS) rather than the editor's (534KB / 165KB); both emit `.toastui-editor-contents`, which is what makes the typography match for free instead of being re-implemented.
+- **Header.** Optional ember Section Eyebrow for the node's `type` (`reference`, `decision`) — the one meta field that changes how you read what follows. Then the title, description, and a metadata line: a status dot in the shared `--status-*` colors, then confidence and updated date, hairline rule beneath.
+- **Connections.** The node's edges as text, grouped by how each reads *from this node's side* — an incoming `supports` is "Supported by", not "Supports". Evidence groups first, then dependency, then the catch-all. Each row links to that node's own permalink, so the graph is walkable without ever loading the canvas.
+- **Ways out.** A "← Back to the report" link, shown only when arrival carried `?from=report` (a cold-pasted permalink promises no back), and an ember "Open in the graph →" for when you do want the canvas.
 
 ## Do's and Don'ts
 
