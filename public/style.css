@@ -728,7 +728,7 @@ body.view-reader #reader-list { display: block; }
   padding: 10px 14px;
   border-left: 3px solid var(--color-ember-orange);
   background: var(--color-blush-tint);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.5;
@@ -2979,7 +2979,7 @@ button {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--color-ember);
+  color: var(--color-ember-orange);
 }
 .color-palette-grid {
   display: grid;
