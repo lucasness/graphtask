@@ -646,6 +646,7 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   max-width: 68ch;
   margin: 0 auto;
 }
+#reader-report-header.hidden { display: none; }
 #reader-title {
   font-family: var(--font-display);
   font-size: 28px;
@@ -684,6 +685,7 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   letter-spacing: -0.02em;
   color: var(--tx-2);
 }
+#reader-empty.hidden { display: none; }
 /* Reader has no create/fit/tidy actions — hide the bottom toolbar wholesale
    (heavier gate than kanban's per-button hiding: nothing in it applies). */
 body.view-reader #bottom-bar { display: none; }
