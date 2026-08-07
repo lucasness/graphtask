@@ -1241,6 +1241,23 @@ function applyPanelEditability() {
   document.body.classList.toggle('panel-readonly', ro);
 }
 
+// Give a div-based click target the keyboard behaviour a <button> gets free.
+// These stay divs for layout reasons (drag handles, grid children), so they
+// look and click correctly but are unreachable by keyboard without this.
+// Activation goes through el.click() rather than a copy of the handler, so
+// delegated listeners (the kanban board's, for one) fire on exactly the path a
+// mouse would take and the two can't drift.
+function makeKeyActivatable(el, label) {
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  if (label) el.setAttribute('aria-label', label);
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault(); // Space would otherwise scroll the container
+    el.click();
+  });
+}
+
 // Reactive fallback: if any write returns 403 on the active graph (e.g.
 // SSE is wedged and the kick frame never landed), re-probe the graph so
 // fetchGraph's 403 branch downgrades us into the access-denied state.
@@ -2109,6 +2126,7 @@ function makeReportItem(report) {
     + (report.graph_id === readerReportGid ? ' active' : '')
     + (stale ? ' stale' : '');
   item.dataset.graphId = String(report.graph_id);
+  makeKeyActivatable(item);
   if (report.description) item.title = report.description;
 
   const dot = document.createElement('span');
@@ -5851,6 +5869,7 @@ function renderKanbanCard(task) {
   card.className = 'kb-card';
   card.draggable = true;
   card.dataset.taskId = String(task.id);
+  makeKeyActivatable(card);
   const meta = task.meta || {};
   if (meta.color) card.style.setProperty('--card-color', meta.color);
 
@@ -6827,6 +6846,7 @@ function makeSidebarItem(graphLike, { source }) {
   const item = document.createElement('div');
   item.className = 'sb-item' + (graphLike.id === activeGraphId ? ' active' : '');
   item.dataset.graphId = String(graphLike.id);
+  makeKeyActivatable(item);
   if (graphLike.description) item.title = graphLike.description;
 
   // Status dot in the left gutter, on the title row. Orange when this is the
@@ -6973,6 +6993,7 @@ function openGraphEditModal(graph) {
   createdEl.addEventListener('mouseenter', onCreatedEnter);
   createdEl.addEventListener('mouseleave', onCreatedLeave);
   createdEl.addEventListener('click', onCreatedClick);
+  makeKeyActivatable(createdEl, 'Toggle created date format');
 
   // Per-graph appearance overrides. Each per-key state has two pieces:
   //   customized → did the user explicitly set this key (vs. inheriting)?
@@ -7910,6 +7931,7 @@ function presenceAvatarEl(writer, isOwn) {
   el.textContent = writer.type === 'agent' ? '🤖' : initialsFromName(writer.name);
   if (isOwn) {
     el.addEventListener('click', openRenameModal);
+    makeKeyActivatable(el, 'Change your display name');
   }
   return el;
 }
