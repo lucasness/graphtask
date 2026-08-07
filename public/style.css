@@ -981,12 +981,68 @@ body.view-node { overflow: visible; }
 #node-desc:empty { display: none; }
 #node-meta {
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--tx-3);
   font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
   padding-bottom: 16px;
   margin-bottom: 32px;
   border-bottom: 1px solid var(--border);
+}
+/* One field per row: a fixed-width glyph slot (Phosphor icon, or the status
+   dot) + "Label: value". Hovering or focusing a row reveals a small explainer
+   of what the field MEANS — the reserved-field vocabulary is graph jargon a
+   reader arriving from a shared link has never met. */
+.node-meta-row {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: default;
+}
+.node-meta-row:focus-visible {
+  outline: 1px solid var(--color-ember-orange);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.node-meta-glyph {
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+}
+.node-meta-glyph .ph { font-size: 15px; color: var(--tx-3); }
+.node-meta-row[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  width: max-content;
+  max-width: 300px;
+  padding: 8px 10px;
+  background: var(--color-pure-white);
+  border: 1px solid var(--color-mist);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  color: var(--tx-2);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: normal;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+.node-meta-row[data-tip]:hover::after,
+.node-meta-row[data-tip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
 }
 /* Status reads at a glance off the same --status-* tokens the canvas and
    kanban use, so a node's colour means the same thing in all three places. */
@@ -995,7 +1051,6 @@ body.view-node { overflow: visible; }
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  margin-right: 6px;
   vertical-align: baseline;
   background: var(--status-todo-stroke);
 }

@@ -77,28 +77,74 @@ function formatUtc(ts) {
   });
 }
 
-function renderMeta(meta, task) {
-  const el = $('node-meta');
-  el.textContent = '';
-  const status = meta.status;
+// Field explainers, shown as a small tooltip on hover/focus. The copy is the
+// reserved-field vocabulary from the skill's schema table — graph jargon a
+// reader arriving from a shared link has never met, so the page teaches what
+// it renders. Keep these in step with SKILL.md if the vocabulary shifts.
+const META_TIPS = {
+  status: 'Where this node sits in the workflow: to do → in progress → review → done. Review means finished and awaiting human confirmation.',
+  confidence: 'How sure we are this claim holds, from 0 to 1 (on a source: its reliability). Only claims and sources carry confidence — open questions never do.',
+  significance: 'How much this node matters to the graph, from 0 to 1. Weighs into what surfaces first for attention and re-checking.',
+  verified: 'When this claim was last deliberately re-checked against its sources. Distinct from Updated, which any edit bumps.',
+  decided: 'When this decision was committed.',
+  updated: 'When this node last changed, for any reason.',
+};
+
+// One meta field as a row: a glyph (Phosphor icon — or the status dot, which
+// is the one field whose colour IS its meaning) + "Label: value". The glyph
+// slot is fixed-width so the dot and the icons align down the list.
+function metaRow({ status, icon, label, value, tip }) {
+  const row = document.createElement('div');
+  row.className = 'node-meta-row';
+  if (tip) {
+    row.dataset.tip = tip;
+    row.tabIndex = 0; // keyboard users get the explainer on focus
+  }
+  const glyph = document.createElement('span');
+  glyph.className = 'node-meta-glyph';
   if (status) {
     const dot = document.createElement('span');
     dot.className = 'node-status-dot';
     dot.dataset.status = status;
-    el.appendChild(dot);
-    el.appendChild(document.createTextNode(STATUS_LABELS[status] || status));
+    glyph.appendChild(dot);
+  } else if (icon) {
+    const i = document.createElement('i');
+    i.className = `ph ph-${icon}`;
+    i.setAttribute('aria-hidden', 'true');
+    glyph.appendChild(i);
   }
-  const bits = [];
-  // A bare 0.9 reads as a version number; the graph's own vocabulary is a
-  // confidence score, so say so.
+  row.appendChild(glyph);
+  const text = document.createElement('span');
+  // "Confidence: 0.8" — a bare 0.8 reads as a version number; the label says
+  // which vocabulary the number belongs to. Status skips the label: its value
+  // ("Review") already names the field.
+  text.textContent = label ? `${label}: ${value}` : String(value);
+  row.appendChild(text);
+  return row;
+}
+
+function renderMeta(meta, task) {
+  const el = $('node-meta');
+  el.textContent = '';
+  if (meta.status) {
+    el.appendChild(metaRow({
+      status: meta.status,
+      value: STATUS_LABELS[meta.status] || meta.status,
+      tip: META_TIPS.status,
+    }));
+  }
   if (meta.confidence != null && meta.confidence !== '') {
-    bits.push(`confidence ${meta.confidence}`);
+    el.appendChild(metaRow({ icon: 'gauge', label: 'Confidence', value: meta.confidence, tip: META_TIPS.confidence }));
   }
+  if (meta.significance != null && meta.significance !== '') {
+    el.appendChild(metaRow({ icon: 'star', label: 'Significance', value: meta.significance, tip: META_TIPS.significance }));
+  }
+  const verified = formatUtc(meta.verified_at);
+  if (verified) el.appendChild(metaRow({ icon: 'seal-check', label: 'Verified', value: verified, tip: META_TIPS.verified }));
+  const decided = formatUtc(meta.decided_at);
+  if (decided) el.appendChild(metaRow({ icon: 'scales', label: 'Decided', value: decided, tip: META_TIPS.decided }));
   const updated = formatUtc(task.updated_at);
-  if (updated) bits.push(`updated ${updated}`);
-  if (bits.length) {
-    el.appendChild(document.createTextNode((status ? ' · ' : '') + bits.join(' · ')));
-  }
+  if (updated) el.appendChild(metaRow({ icon: 'clock', label: 'Updated', value: updated, tip: META_TIPS.updated }));
 }
 
 // Wiki-links in the rendered body ([[3417]], [[todo:fanout-claim-lease]] —
