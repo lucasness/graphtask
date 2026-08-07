@@ -10,6 +10,7 @@
 // Reads only. Nothing here writes to the graph, joins presence, or opens SSE.
 import { resolveNodeRoute, nodeHref } from '/route-parse.js';
 import { withReaderParam } from '/reader-pick.js';
+import { splitWikiLinks } from '/node-links.js';
 
 const FENCE = '---';
 
@@ -95,6 +96,80 @@ function renderMeta(meta, task) {
   if (updated) bits.push(`updated ${updated}`);
   if (bits.length) {
     el.appendChild(document.createTextNode((status ? ' · ' : '') + bits.join(' · ')));
+  }
+}
+
+// Wiki-links in the rendered body ([[3417]], [[todo:fanout-claim-lease]] —
+// the graph's authoring convention) become links to those nodes' permalinks.
+// Runs AFTER the Viewer has sanitized and rendered: we walk the emitted text
+// nodes and swap matches for elements built with createElement/textContent,
+// so this stays inside the page's no-markup-from-content contract. Code and
+// pre are skipped — a [[ref]] inside a fence is illustration, not a link
+// (same stance reader-cite.js takes on fenced URLs).
+//
+// Numeric refs link immediately (the permalink is derivable from the id
+// alone). External-id refs can't resolve without the /graph read, so they're
+// wrapped in a marker span and upgraded by hydrateWikiRefs once it lands —
+// the body must not wait on the heavier read (see the fetch comment below).
+function linkifyWikiRefs(root, gid, from) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const candidates = [];
+  while (walker.nextNode()) {
+    const n = walker.currentNode;
+    if (!n.nodeValue || !n.nodeValue.includes('[[')) continue;
+    if (n.parentElement && n.parentElement.closest('code, pre, a')) continue;
+    candidates.push(n);
+  }
+  for (const n of candidates) {
+    const parts = splitWikiLinks(n.nodeValue);
+    if (!parts.some((p) => p.type === 'ref')) continue;
+    const frag = document.createDocumentFragment();
+    for (const p of parts) {
+      if (p.type === 'text') {
+        frag.appendChild(document.createTextNode(p.value));
+      } else if (p.numeric) {
+        const a = document.createElement('a');
+        a.className = 'node-wiki-link';
+        a.href = nodeHref(gid, p.ref, from);
+        a.dataset.wikiId = p.ref; // hydrateWikiRefs adds the title tooltip
+        a.textContent = p.raw;
+        frag.appendChild(a);
+      } else {
+        const span = document.createElement('span');
+        span.dataset.wikiExt = p.ref;
+        span.textContent = p.raw;
+        frag.appendChild(span);
+      }
+    }
+    n.parentNode.replaceChild(frag, n);
+  }
+}
+
+// Second pass, once /graph is in: external-id refs that resolve become links,
+// and every wiki-link gains the target's title as its tooltip. Refs that don't
+// resolve (deleted node, typo, a name that only exists in another graph) stay
+// plain text — a link that 404s on click would be worse than no link.
+function hydrateWikiRefs(root, graph, gid, from) {
+  const titles = new Map();
+  const byExt = new Map();
+  for (const n of graph.nodes || []) {
+    titles.set(String(n.id), n.title);
+    if (n.external_id) byExt.set(n.external_id, String(n.id));
+  }
+  for (const a of root.querySelectorAll('a[data-wiki-id]')) {
+    const t = titles.get(a.dataset.wikiId);
+    if (t) a.title = t;
+  }
+  for (const span of root.querySelectorAll('span[data-wiki-ext]')) {
+    const id = byExt.get(span.dataset.wikiExt);
+    if (!id) continue;
+    const a = document.createElement('a');
+    a.className = 'node-wiki-link';
+    a.href = nodeHref(gid, id, from);
+    a.textContent = span.textContent;
+    const t = titles.get(id);
+    if (t) a.title = t;
+    span.parentNode.replaceChild(a, span);
   }
 }
 
@@ -216,6 +291,7 @@ async function main() {
       initialValue: body,
       usageStatistics: false,
     });
+    linkifyWikiRefs($('node-body'), gid, from);
   } else {
     const empty = document.createElement('p');
     empty.className = 'node-body-empty';
@@ -225,7 +301,10 @@ async function main() {
   $('node-footer').classList.remove('hidden');
 
   const graph = await graphReq;
-  if (graph) renderConnections(graph, id, gid, from);
+  if (graph) {
+    hydrateWikiRefs($('node-body'), graph, gid, from);
+    renderConnections(graph, id, gid, from);
+  }
 }
 
 main();

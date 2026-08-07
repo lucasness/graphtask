@@ -57,8 +57,12 @@ router.get('/shortest-path', async (req, res) => {
 router.get('/', async (req, res) => {
   const { gid } = req.params;
   const nodes = await pool.query(
+    // external_id rides along so the node page can resolve wiki-links like
+    // [[todo:fanout-claim-lease]] to a task id client-side (node.js
+    // hydrateWikiRefs) without a second endpoint. Additive — the canvas
+    // ignores it.
     `SELECT id, meta->>'title' AS title, meta->>'description' AS description,
-            meta->>'status' AS status, meta, version
+            meta->>'status' AS status, meta, version, external_id
      FROM tasks WHERE graph_id = $1 ORDER BY id`,
     [gid]
   );
