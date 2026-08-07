@@ -152,15 +152,32 @@ selectionState.onChange((graphId, op, payload) => {
   broadcastPresence(graphId, { graph_id: graphId, kind: 'selection', op, ...payload });
 });
 
-// Single-node permalink (/g/:gid/n/:id) — a standalone reading page, NOT the
-// SPA. It renders one node's markdown off a single API read instead of booting
-// cytoscape + the editor bundle + SSE to show you one node, which is what the
-// reader's citation click-throughs target. Must sit above the SPA fallback
-// below, which would otherwise hand this path index.html. Access control is
-// unchanged: the page is a shell, and the /api reads it makes are gated exactly
-// as before (a viewer with no access gets a 403 and the page says so).
+// Single-node permalink — ONE naming system for nodes (owner decision
+// 2026-08-07): /g/:gid?node=<id> IS the node link, and it renders the
+// standalone reading page (public/node.html), NOT the SPA — a shared node
+// link opens as readable markdown for everyone, whatever view the sender was
+// in. It shows one node's markdown off a single API read instead of booting
+// cytoscape + the editor bundle + SSE. Any explicit ?view= (graph, reader)
+// means "open the SPA in that view" — the reading page's "Open graph" mints
+// ?node=<id>&view=graph, and the canvas keeps that shape in the bar while a
+// node is selected so refresh stays on the canvas. Non-numeric ?node= values
+// fall through to the SPA too, whose deep-link handler just won't match them.
+// Must sit above the SPA fallback below. Access control is unchanged: the
+// page is a shell, and the /api reads it makes are gated exactly as before
+// (a viewer with no access gets a 403 and the page says so).
+app.get('/g/:gid', (req, res, next) => {
+  const nodeId = req.query.node;
+  if (typeof nodeId === 'string' && /^[0-9]+$/.test(nodeId) && !req.query.view) {
+    return res.sendFile(path.join(__dirname, '..', 'public', 'node.html'));
+  }
+  next();
+});
+
+// The retired /g/:gid/n/:id path shape. Permanent redirect so links minted
+// before the query shape (old tabs, pasted chats, bookmarks) keep landing on
+// the same reading page.
 app.get('/g/:gid/n/:id', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'node.html'));
+  res.redirect(301, `/g/${encodeURIComponent(req.params.gid)}?node=${encodeURIComponent(req.params.id)}`);
 });
 
 // SPA fallback: client-side routes like /g/:gid only exist in the frontend.

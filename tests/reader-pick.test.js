@@ -41,12 +41,12 @@ describe('withReaderParam', () => {
 // report — no error, no console message, just the wrong page. The value itself
 // is covered by the withReaderParam cases above, so this only has to pin that
 // node.js goes through them. (The suite has no jsdom harness; read the source.)
-describe("the node page's back-to-the-report link", () => {
+describe("the node page's open-report link", () => {
   const src = readFileSync(fileURLToPath(new URL('../public/node.js', import.meta.url)), 'utf8');
 
   it('builds the reader param through this module', () => {
     expect(src).toMatch(/import\s*\{[^}]*\bwithReaderParam\b[^}]*\}\s*from\s*'\/reader-pick\.js'/);
-    expect(src).toMatch(/back\.href\s*=[^;]*withReaderParam\(/);
+    expect(src).toMatch(/a\.href\s*=[^;]*withReaderParam\(/);
   });
 
   it('keeps no second copy of the view=reader literal', () => {

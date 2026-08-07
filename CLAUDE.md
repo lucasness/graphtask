@@ -10,11 +10,15 @@ detail lives in the linked files.
   - `index.html` + `app.js` — the SPA (graph / kanban / reader views).
     Nearly all client JS lives in `app.js`.
   - `node.html` + `node.js` — a **second, standalone page** at
-    `/g/<gid>/n/<id>`: one node's markdown plus its edges, rendered off a
-    single API read with no cytoscape and no editor bundle. It's where the
-    reader's citation click-throughs land. Deliberately NOT part of the SPA
-    — the whole point is not paying the app's boot cost to read one node.
-    Loads the Toast UI *viewer* bundle, not the editor one.
+    `/g/<gid>?node=<id>` (the ONE node-link shape; the old `/n/<id>` path
+    301-redirects here): one node's markdown plus its edges, rendered off a
+    single API read with no cytoscape and no editor bundle. Citation
+    click-throughs and wiki-links land here. Adding `&view=graph` opens the
+    SPA canvas with the node selected instead — that's what the page's "Open
+    graph" action mints and what the canvas keeps in the bar while a node is
+    selected. Deliberately NOT part of the SPA — the whole point is not
+    paying the app's boot cost to read one node. Loads the Toast UI *viewer*
+    bundle, not the editor one.
   - `style.css` — **all** CSS for **both** pages (tokens + components).
     One file, ~3000 lines.
   - The small pure ES modules (`reader-*.js`, `route-parse.js`,

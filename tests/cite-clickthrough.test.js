@@ -10,6 +10,7 @@
 // hidden-class-rules.test.js reads the stylesheet.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { nodeHref } from '../public/route-parse.js';
 
 const read = (p) => readFileSync(fileURLToPath(new URL(`../public/${p}`, import.meta.url)), 'utf8');
 
@@ -71,23 +72,28 @@ describe('reader citations are followable links', () => {
     );
   });
 
-  // `from` is written by app.js and read by node.js, two files that never
-  // import each other — so the value is agreed by convention alone. If one side
-  // is renamed and the other isn't, nothing errors: the node page just stops
-  // offering "← Back to the report" and no one finds out.
-  it('the from value app.js emits is the one node.js accepts', () => {
-    const emitted = new Set([
-      ...src.matchAll(/nodeHref\?\.\((?:[^,]+,){2}\s*'([^']+)'\)/g),
-      ...src.matchAll(/\?from=([a-z]+)`/g),
-    ].map((m) => m[1]));
-    const nodeSrc = read('node.js');
-    const accepted = new Set([...nodeSrc.matchAll(/from === '([^']+)'/g)].map((m) => m[1]));
+  // The node permalink shape (/g/<gid>?node=<id>) is agreed across files that
+  // never import each other at runtime: route-parse.js builds it, app.js's
+  // citeNodeHref fallback re-types it for when the module shim didn't load,
+  // and src/app.js's routing serves the reading page for exactly that shape.
+  // If the fallback drifts, citations quietly start booting the SPA (or 404)
+  // only for users whose RouteParse import failed — invisible in normal runs.
+  it('the citation fallback href matches the permalink shape route-parse owns', () => {
+    expect(nodeHref('g1', 7)).toBe('/g/g1?node=7');
+    const body = functionBody(src, 'citeNodeHref');
+    expect(
+      body.includes('`/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`'),
+      'citeNodeHref fallback must re-type the exact nodeHref shape',
+    ).toBe(true);
+  });
 
-    expect(emitted.size, 'app.js should emit exactly one `from` value').toBe(1);
-    expect([...accepted]).toEqual([...emitted]);
-    // Pinned to the view vocabulary (graph | kanban | reader), not the content
-    // that view renders — see the VIEWS map in app.js.
-    expect([...emitted]).toEqual(['reader']);
+  // The from= convention is retired (2026-08-07): the node page derives its
+  // "Open report" affordance from the report's own citations, so navigation
+  // history no longer needs to be smuggled through the URL. Keep it dead —
+  // a reintroduction on one side only would silently do nothing.
+  it('the retired from= convention stays retired on both sides', () => {
+    expect(src).not.toMatch(/\?from=/);
+    expect(read('node.js')).not.toMatch(/from === '/);
   });
 
   // Ember is the colour this app uses for citation links; wearing it without

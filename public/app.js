@@ -1790,11 +1790,10 @@ function buildReferencesList(nums, nodeMap, gid) {
 // following it needs no JS, and focus/Enter/modifier-clicks come free from the
 // anchor rather than from hand-rolled tabIndex, role and key handlers.
 //
-// A cite lands on the cited node's PERMALINK — a standalone reading page
-// (public/node.html) that renders just that node's markdown plus its edges.
-// It used to open /g/:gid?node=:id, which cold-boots the whole SPA (cytoscape,
-// the 534KB editor bundle, the graphs list, the graph, SSE, presence) and paints
-// three visible stages before showing the one node you asked for.
+// A cite lands on the cited node's PERMALINK (/g/:gid?node=:id) — since the
+// 2026-08-07 one-URL-system decision that shape serves the standalone reading
+// page (public/node.html), which renders just that node's markdown plus its
+// edges off one API read, instead of cold-booting the whole SPA to show it.
 function wireCiteInteractions(bodyEl, nodeMap, gid) {
   for (const a of bodyEl.querySelectorAll('a.cite-ref')) {
     const id = a.dataset.nodeId;
@@ -1807,12 +1806,12 @@ function wireCiteInteractions(bodyEl, nodeMap, gid) {
   }
 }
 
-// `from=reader` tells the node page to offer "← Back to the report". The value
-// names the VIEW you came from, matching `?view=reader` and the graph/kanban/
-// reader vocabulary in VIEWS — not the report that view happened to be showing.
+// The node's permalink (/g/<gid>?node=<id>). No from-param: the node page
+// derives its "Open report" affordance from the report's own citations, so a
+// reader-originated click and a cold-pasted link get the identical page.
 function citeNodeHref(gid, id) {
-  return window.RouteParse?.nodeHref?.(gid, id, 'reader')
-    ?? `/g/${encodeURIComponent(gid)}/n/${encodeURIComponent(id)}?from=reader`;
+  return window.RouteParse?.nodeHref?.(gid, id)
+    ?? `/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`;
 }
 
 function ensureCiteTooltip() {
@@ -3011,9 +3010,35 @@ async function fetchGraph({ diff = false } = {}) {
   consumePendingNodeFocus();
 }
 
-// Deep-link node focus (?node=<id>, also set by cross-graph search commits):
-// once the graph has rendered, select + open the requested node, then strip
-// the param so refresh/share of the cleaned URL behaves normally.
+// Keep the bar in sync with the canvas's node selection (owner decision
+// 2026-08-07): a selected node shows as ?node=<id>&view=graph. view=graph is
+// what makes a REFRESH land back on this canvas — the bare ?node=<id> shape
+// is the node's shareable permalink and renders the standalone reading page
+// (see src/app.js routing + public/route-parse.js). Every link the app MINTS
+// for a node (citations, wiki-links, connections) uses the bare shape, so a
+// shared node always opens as readable markdown; the bar's &view=graph copy
+// is the one deliberate exception, matching ?view=reader's "the bar carries
+// what you're looking at" rule. replaceState, so selections never pile up in
+// history. Other params (e.g. a future one) are preserved.
+function syncNodeParamInBar(nodeId) {
+  try {
+    const url = new URL(location.href);
+    if (nodeId != null) {
+      url.searchParams.set('node', String(nodeId));
+      url.searchParams.set('view', 'graph');
+    } else {
+      url.searchParams.delete('node');
+      if (url.searchParams.get('view') === 'graph') url.searchParams.delete('view');
+    }
+    history.replaceState({ graphId: activeGraphId }, '', url.pathname + (url.search || ''));
+  } catch { /* URL API hiccup — the bar is cosmetic, never block the panel */ }
+}
+
+// Deep-link node focus (?node=<id>&view=graph, also set by cross-graph search
+// commits): once the graph has rendered, select + open the requested node.
+// The param stays in the bar (syncNodeParamInBar via showPanel) — it now IS
+// the shareable state; only a dangling param for a node that no longer
+// exists gets cleaned up.
 let _pendingNodeFocus = (() => {
   try {
     const id = new URLSearchParams(location.search).get('node');
@@ -3037,11 +3062,11 @@ function consumePendingNodeFocus() {
       _searchEditorLoadedHook = () => highlightCommittedMatch(pending.row, pending.query || '');
     }
     showPanel(node, { programmatic: true });
-  }
-  if (location.search.includes('node=')) {
-    const url = new URL(location.href);
-    url.searchParams.delete('node');
-    history.replaceState({ graphId: activeGraphId }, '', url.pathname + url.search);
+  } else if (location.search.includes('node=')) {
+    // The deep-linked node doesn't exist in this graph — drop the dangling
+    // param (and its view=graph rider) so the bar doesn't promise a
+    // selection the canvas can't show.
+    syncNodeParamInBar(null);
   }
 }
 
@@ -4991,6 +5016,11 @@ function showPanel(task, opts = {}) {
   // every node, and the panel can open after the access state was last applied.
   applyPanelEditability();
   panel.classList.remove('hidden');
+  // The bar mirrors the editing target: an existing node shows as
+  // ?node=<id>&view=graph (shareable, refresh-stable); a New Task panel
+  // clears any stale node param — the bar must never point at a node that
+  // isn't the editing target.
+  if (typeof syncNodeParamInBar === 'function') syncNodeParamInBar(taskId ?? null);
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   // Camera pan is graph-view only — kanban cards are already visible in their column.
   if (isCyNode) centerNodeInVisibleArea(task);
@@ -5024,6 +5054,7 @@ function hidePanel() {
   if (typeof updateKanbanToolbar === 'function') updateKanbanToolbar();
   editingTaskId = null;
   _panelOpenedProgrammatically = false;
+  if (typeof syncNodeParamInBar === 'function') syncNodeParamInBar(null);
   if (typeof postLocalSelection === 'function') postLocalSelection();
   if (typeof peerCursorRefresh === 'function') peerCursorRefresh();
   hideTitleOverlay();
@@ -10610,9 +10641,18 @@ document.addEventListener('DOMContentLoaded', () => {
     readerBtns.forEach((b) => b.setAttribute('aria-pressed', on ? 'true' : 'false'));
     applyView(on ? 'reader' : getViewPref(activeGraphId));
     // Keep the bar shareable: sync ?view=reader with the toggle (preserving
-    // other params). replaceState, so param flips never pile up in history.
-    const search = window.ReaderPick?.withReaderParam?.(location.search, on);
+    // other params). Entering the reader also drops any ?node= selection —
+    // the reader shows the report, and a lingering node param would make the
+    // copied link open the node's reading page instead of the reader.
+    // replaceState, so param flips never pile up in history.
+    let search = window.ReaderPick?.withReaderParam?.(location.search, on);
     if (search !== undefined) {
+      if (on) {
+        const p = new URLSearchParams(search);
+        p.delete('node');
+        const s = p.toString();
+        search = s ? `?${s}` : '';
+      }
       history.replaceState(history.state, '', location.pathname + search);
     }
   }

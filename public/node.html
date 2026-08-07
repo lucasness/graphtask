@@ -20,6 +20,9 @@
        (If dark theme is re-enabled, add theme/toastui-editor-dark.min.css here
        the way index.html does — see loadSettings() in app.js.) -->
   <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor-viewer.min.css">
+  <!-- Same Phosphor icon set index.html loads — the action row's graph/book
+       glyphs come from it. -->
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
   <!-- Same typefaces as the app: the reader's --font-display / --font-body
        tokens resolve to Playfair Display / DM Sans, so without these the page
        would render the right structure in the wrong voice. -->
@@ -36,9 +39,15 @@
        nothing here writes to the graph. -->
   <main id="node-page">
     <article id="node-article">
-      <!-- Back to wherever the click came from (?from=reader). Hidden on a
-           cold-pasted permalink, where there is no "back" to promise. -->
-      <a id="node-back" class="hidden" href="#"></a>
+      <!-- Mode actions. "Open graph" is the same node in the SPA canvas,
+           selected (?node=<id>&view=graph). "Open report" appears only when
+           this graph's report actually CITES this node — node.js checks the
+           report body — and opens the reader. Both are plain anchors: new-tab,
+           middle-click and keyboard behaviors come free. -->
+      <nav id="node-actions">
+        <a id="node-open-graph" href="#"><i class="ph ph-graph" aria-hidden="true"></i>Open graph</a>
+        <a id="node-open-report" class="hidden" href="#"><i class="ph ph-book-open" aria-hidden="true"></i>Open report</a>
+      </nav>
 
       <header id="node-header" class="hidden">
         <div id="node-eyebrow" class="hidden"></div>
@@ -54,10 +63,6 @@
            to be the only way to see: what this node supports, contradicts, or
            is required for. Each row links to that node's own permalink. -->
       <section id="node-connections" class="hidden"></section>
-
-      <footer id="node-footer" class="hidden">
-        <a id="node-open-graph" href="#">Open in the graph &rarr;</a>
-      </footer>
 
       <div id="node-status" class="hidden"><p></p></div>
     </article>

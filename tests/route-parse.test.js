@@ -4,7 +4,7 @@
 // paths are told apart from root so the boot fallback can't leave a bogus
 // path displayed over an unrelated graph.
 import { describe, it, expect } from 'vitest';
-import { resolveRoute, resolveNodeRoute, nodeHref } from '../public/route-parse.js';
+import { resolveRoute, resolveNodeRoute, nodeHref, nodeGraphHref } from '../public/route-parse.js';
 
 describe('resolveRoute', () => {
   it('canonical /g/<id> resolves, canonical path round-trips', () => {
@@ -34,39 +34,60 @@ describe('resolveRoute', () => {
 });
 
 describe('resolveNodeRoute (single-node permalink)', () => {
-  it('resolves /g/<gid>/n/<id>, with or without a trailing slash', () => {
-    expect(resolveNodeRoute('/g/abc123/n/3171'))
-      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123/n/3171' });
-    expect(resolveNodeRoute('/g/abc123/n/3171/'))
-      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123/n/3171' });
+  it('resolves the canonical query shape /g/<gid>?node=<id>', () => {
+    expect(resolveNodeRoute('/g/abc123', '?node=3171'))
+      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123?node=3171' });
+    expect(resolveNodeRoute('/g/abc123/', '?node=3171'))
+      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123?node=3171' });
+    // Other params don't confuse it.
+    expect(resolveNodeRoute('/g/abc123', '?utm=x&node=7'))
+      .toEqual({ gid: 'abc123', id: '7', canonical: '/g/abc123?node=7' });
   });
 
-  it('returns null for anything else, so a bad path can never render a node page', () => {
-    expect(resolveNodeRoute('/g/abc123')).toBeNull();       // plain graph route
+  it('still recognizes the retired /n/ path shape, canonicalizing to the query shape', () => {
+    expect(resolveNodeRoute('/g/abc123/n/3171'))
+      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123?node=3171' });
+    expect(resolveNodeRoute('/g/abc123/n/3171/'))
+      .toEqual({ gid: 'abc123', id: '3171', canonical: '/g/abc123?node=3171' });
+  });
+
+  it('returns null for anything else, so a bad URL can never render a node page', () => {
+    expect(resolveNodeRoute('/g/abc123')).toBeNull();            // no node param
+    expect(resolveNodeRoute('/g/abc123', '')).toBeNull();
+    expect(resolveNodeRoute('/g/abc123', '?node=')).toBeNull();
+    expect(resolveNodeRoute('/g/abc123', '?node=abc')).toBeNull(); // ids are numeric
+    expect(resolveNodeRoute('/g/ABC', '?node=1')).toBeNull();      // gids are [a-z0-9]
+    expect(resolveNodeRoute('/graph/abc123', '?node=1')).toBeNull(); // canonical /g only
     expect(resolveNodeRoute('/g/abc123/n/')).toBeNull();
-    expect(resolveNodeRoute('/g/abc123/n/abc')).toBeNull(); // ids are numeric
-    expect(resolveNodeRoute('/g/ABC/n/1')).toBeNull();      // gids are [a-z0-9]
-    expect(resolveNodeRoute('/graph/abc123/n/1')).toBeNull(); // canonical /g only
+    expect(resolveNodeRoute('/g/abc123/n/abc')).toBeNull();
     expect(resolveNodeRoute('/g/abc/n/1/extra')).toBeNull();
     expect(resolveNodeRoute('')).toBeNull();
   });
 
-  it('the two resolvers never both claim a path', () => {
-    for (const p of ['/g/abc123', '/g/abc123/n/7', '/graph/abc123', '/', '/nope']) {
+  it('a graph PATH is only a node link when the node param rides along', () => {
+    // The same pathname serves both surfaces; the query decides. The server
+    // (src/app.js) additionally requires NO explicit ?view= to serve the
+    // reading page — ?view=graph/reader open the SPA.
+    for (const p of ['/g/abc123', '/graph/abc123', '/', '/nope']) {
       const asGraph = resolveRoute(p).kind === 'graph';
       const asNode = resolveNodeRoute(p) !== null;
-      expect(asGraph && asNode).toBe(false);
+      expect(asNode).toBe(false);
+      void asGraph; // pathname-level: node pages never claim a bare path
     }
+    expect(resolveNodeRoute('/g/abc123/n/7')).not.toBeNull(); // legacy path still claims
   });
 });
 
-describe('nodeHref', () => {
-  it('builds the permalink and carries `from` so the back-link survives node→node hops', () => {
-    expect(nodeHref('abc123', 3171)).toBe('/g/abc123/n/3171');
-    expect(nodeHref('abc123', 3171, 'reader')).toBe('/g/abc123/n/3171?from=reader');
+describe('nodeHref / nodeGraphHref', () => {
+  it('nodeHref builds the shareable permalink — always the reading page', () => {
+    expect(nodeHref('abc123', 3171)).toBe('/g/abc123?node=3171');
+  });
+
+  it('nodeGraphHref is the same node opened in the SPA canvas, selected', () => {
+    expect(nodeGraphHref('abc123', 3171)).toBe('/g/abc123?node=3171&view=graph');
   });
 
   it('encodes its inputs', () => {
-    expect(nodeHref('a b', '1', 'a&b')).toBe('/g/a%20b/n/1?from=a%26b');
+    expect(nodeHref('a b', '1&2')).toBe('/g/a%20b?node=1%262');
   });
 });

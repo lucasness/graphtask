@@ -1,16 +1,18 @@
-// Single-node reading page (/g/<gid>/n/<id>) — see public/node.html.
+// Single-node reading page (/g/<gid>?node=<id>) — see public/node.html.
 //
-// Why this page exists: a citation in the reader used to click through to
-// /g/<gid>?node=<id>, which cold-boots the whole SPA in a new tab (cytoscape,
-// the 534KB editor bundle, the graphs list, the graph, SSE, presence) and paints
-// three visible stages — empty canvas, then the graph, then the side panel —
-// before showing you the one node you asked for. This page answers the same
-// question off ONE read, with no canvas at all.
+// One naming system for nodes (owner decision 2026-08-07): the bare query
+// shape IS the node link and always renders THIS page, whatever view the
+// sender was in. &view=graph is the same node opened in the SPA canvas,
+// selected — that's what the "Open graph" action mints. Why a separate page
+// at all: booting the whole SPA (cytoscape, the 534KB editor bundle, the
+// graphs list, SSE, presence) paints three visible stages before showing the
+// one node you asked for; this page answers off ONE read, with no canvas.
 //
 // Reads only. Nothing here writes to the graph, joins presence, or opens SSE.
-import { resolveNodeRoute, nodeHref } from '/route-parse.js';
+import { resolveNodeRoute, nodeHref, nodeGraphHref } from '/route-parse.js';
 import { withReaderParam } from '/reader-pick.js';
 import { splitWikiLinks } from '/node-links.js';
+import { extractCiteIds } from '/reader-cite.js';
 
 const FENCE = '---';
 
@@ -111,7 +113,7 @@ function renderMeta(meta, task) {
 // alone). External-id refs can't resolve without the /graph read, so they're
 // wrapped in a marker span and upgraded by hydrateWikiRefs once it lands —
 // the body must not wait on the heavier read (see the fetch comment below).
-function linkifyWikiRefs(root, gid, from) {
+function linkifyWikiRefs(root, gid) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const candidates = [];
   while (walker.nextNode()) {
@@ -130,7 +132,7 @@ function linkifyWikiRefs(root, gid, from) {
       } else if (p.numeric) {
         const a = document.createElement('a');
         a.className = 'node-wiki-link';
-        a.href = nodeHref(gid, p.ref, from);
+        a.href = nodeHref(gid, p.ref);
         a.dataset.wikiId = p.ref; // hydrateWikiRefs adds the title tooltip
         a.textContent = p.raw;
         frag.appendChild(a);
@@ -149,7 +151,7 @@ function linkifyWikiRefs(root, gid, from) {
 // and every wiki-link gains the target's title as its tooltip. Refs that don't
 // resolve (deleted node, typo, a name that only exists in another graph) stay
 // plain text — a link that 404s on click would be worse than no link.
-function hydrateWikiRefs(root, graph, gid, from) {
+function hydrateWikiRefs(root, graph, gid) {
   const titles = new Map();
   const byExt = new Map();
   for (const n of graph.nodes || []) {
@@ -165,7 +167,7 @@ function hydrateWikiRefs(root, graph, gid, from) {
     if (!id) continue;
     const a = document.createElement('a');
     a.className = 'node-wiki-link';
-    a.href = nodeHref(gid, id, from);
+    a.href = nodeHref(gid, id);
     a.textContent = span.textContent;
     const t = titles.get(id);
     if (t) a.title = t;
@@ -175,7 +177,7 @@ function hydrateWikiRefs(root, graph, gid, from) {
 
 // The node's edges as text rows. `graph` is one /graph read: nodes carry the
 // titles, links carry the edges, so no per-neighbour fetch is needed.
-function renderConnections(graph, id, gid, from) {
+function renderConnections(graph, id, gid) {
   const section = $('node-connections');
   const titles = new Map((graph.nodes || []).map((n) => [String(n.id), n.title]));
   const groups = new Map();
@@ -213,7 +215,7 @@ function renderConnections(graph, id, gid, from) {
     for (const entry of groups.get(label)) {
       const li = document.createElement('li');
       const a = document.createElement('a');
-      a.href = nodeHref(gid, entry.id, from);
+      a.href = nodeHref(gid, entry.id);
       a.appendChild(document.createTextNode(entry.title)); // textContent — XSS-safe
       li.appendChild(a);
       ul.appendChild(li);
@@ -224,29 +226,43 @@ function renderConnections(graph, id, gid, from) {
   section.classList.remove('hidden');
 }
 
+// "Open report" appears only when this graph's report exists AND cites this
+// node — membership is derived from the report body's [[cite:...]] markers
+// (reader-cite.js, the same parser the reader numbers footnotes with), not
+// from navigation history. A reader-originated click and a cold-pasted link
+// therefore get the identical page: if the node is part of the report, the
+// way back to it is always offered.
+async function offerReportLink(gid, id) {
+  let report = null;
+  try {
+    const r = await fetch(`/api/graphs/${encodeURIComponent(gid)}/report`);
+    if (r.ok) report = await r.json();
+  } catch { /* no report link on network failure — the page still works */ }
+  if (!report || !extractCiteIds(report.body).includes(String(id))) return;
+  const a = $('node-open-report');
+  // Built through reader-pick, the single home for `view=reader` — a second
+  // hand-written copy of that literal drifts the moment the param changes.
+  a.href = `/g/${encodeURIComponent(gid)}${withReaderParam('', true)}`;
+  a.classList.remove('hidden');
+}
+
 async function main() {
-  const route = resolveNodeRoute(location.pathname);
+  const route = resolveNodeRoute(location.pathname, location.search);
   if (!route) {
     showStatus('That isn’t a node link.');
     return;
   }
   const { gid, id } = route;
-  const from = new URLSearchParams(location.search).get('from');
-
-  if (from === 'reader') {
-    const back = $('node-back');
-    // Built through reader-pick, which is the single home for `view=reader` —
-    // not re-typed here. A second hand-written copy of that literal drifts the
-    // moment the param changes, and this link would then quietly land on the
-    // canvas instead of the report, with nothing to signal it.
-    back.href = `/g/${encodeURIComponent(gid)}${withReaderParam('', true)}`;
-    back.textContent = '← Back to the report';
-    back.classList.remove('hidden');
+  // A tab still on the retired /n/ path shape canonicalizes to the query
+  // shape without a reload (the server 301s cold hits; this covers bfcache).
+  if (location.pathname !== `/g/${gid}`) {
+    history.replaceState(history.state, '', route.canonical);
   }
-  const openInGraph = $('node-open-graph');
-  openInGraph.href = `/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`;
 
-  // Both reads go out together: the body paints as soon as the task lands and
+  $('node-open-graph').href = nodeGraphHref(gid, id);
+  offerReportLink(gid, id);
+
+  // All reads go out together: the body paints as soon as the task lands and
   // the connections fill in behind it, so the heavier /graph read never gates
   // the thing the reader actually clicked for.
   const taskReq = fetch(`/api/graphs/${encodeURIComponent(gid)}/tasks/${encodeURIComponent(id)}`);
@@ -291,19 +307,18 @@ async function main() {
       initialValue: body,
       usageStatistics: false,
     });
-    linkifyWikiRefs($('node-body'), gid, from);
+    linkifyWikiRefs($('node-body'), gid);
   } else {
     const empty = document.createElement('p');
     empty.className = 'node-body-empty';
     empty.textContent = 'This node has no body yet.';
     $('node-body').appendChild(empty);
   }
-  $('node-footer').classList.remove('hidden');
 
   const graph = await graphReq;
   if (graph) {
-    hydrateWikiRefs($('node-body'), graph, gid, from);
-    renderConnections(graph, id, gid, from);
+    hydrateWikiRefs($('node-body'), graph, gid);
+    renderConnections(graph, id, gid);
   }
 }
 

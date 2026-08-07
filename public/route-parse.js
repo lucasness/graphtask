@@ -19,27 +19,43 @@ export function resolveRoute(pathname) {
   return { kind: 'unknown' };
 }
 
-// Single-node permalink: /g/<gid>/n/<id>. Served by public/node.html — a
-// standalone reading page for ONE node, not a view of the SPA (that's the whole
-// point: it renders a node's markdown without booting cytoscape, the editor
-// bundle, SSE, or presence). Citation click-throughs in the reader target it.
+// Single-node permalink: /g/<gid>?node=<id> — ONE naming system for nodes
+// (owner decision 2026-08-07; the /g/<gid>/n/<id> path shape is retired and
+// 301-redirects here). The bare shape always renders the standalone reading
+// page (public/node.html) — a shared node link opens as readable markdown for
+// everyone, regardless of which view the sender was in. Appending &view=graph
+// is the same node IN the SPA canvas, selected — that's what the reading
+// page's "Open graph" mints, and what the canvas keeps in the bar while a
+// node is selected so refresh stays on the canvas.
 //
 // Deliberately a SEPARATE function rather than another `resolveRoute` branch:
-// resolveRoute drives the SPA's boot, which never runs on this path, and
-// teaching it a fourth `kind` would put a new case in front of bootSidebar for
-// no gain. Ids are numeric (tasks.id is SERIAL) and gids are [a-z0-9] — same
-// shape GRAPH_ROUTE_RE pins.
-const NODE_ROUTE_RE = /^\/g\/([a-z0-9]+)\/n\/([0-9]+)\/?$/;
+// resolveRoute drives the SPA's boot, which never runs on the reading page,
+// and teaching it a fourth `kind` would put a new case in front of
+// bootSidebar for no gain. Ids are numeric (tasks.id is SERIAL) and gids are
+// [a-z0-9] — same shape GRAPH_ROUTE_RE pins.
+const LEGACY_NODE_ROUTE_RE = /^\/g\/([a-z0-9]+)\/n\/([0-9]+)\/?$/;
+const NODE_GID_RE = /^\/g\/([a-z0-9]+)\/?$/;
 
-export function resolveNodeRoute(pathname) {
-  const m = NODE_ROUTE_RE.exec(pathname || '');
-  if (!m) return null;
-  return { gid: m[1], id: m[2], canonical: `/g/${m[1]}/n/${m[2]}` };
+export function resolveNodeRoute(pathname, search) {
+  // Legacy path shape — still resolved client-side so a stale tab or cached
+  // page that missed the server redirect canonicalizes instead of erroring.
+  const legacy = LEGACY_NODE_ROUTE_RE.exec(pathname || '');
+  if (legacy) return { gid: legacy[1], id: legacy[2], canonical: `/g/${legacy[1]}?node=${legacy[2]}` };
+  const g = NODE_GID_RE.exec(pathname || '');
+  if (!g) return null;
+  let id = null;
+  try { id = new URLSearchParams(search || '').get('node'); } catch { return null; }
+  if (!id || !/^[0-9]+$/.test(id)) return null;
+  return { gid: g[1], id, canonical: `/g/${g[1]}?node=${id}` };
 }
 
-// The permalink for a node, preserving `from` so a reader-originated chain of
-// node→node hops keeps offering "Back to report".
-export function nodeHref(gid, id, from) {
-  const base = `/g/${encodeURIComponent(gid)}/n/${encodeURIComponent(id)}`;
-  return from ? `${base}?from=${encodeURIComponent(from)}` : base;
+// The shareable permalink for a node — always the reading page.
+export function nodeHref(gid, id) {
+  return `/g/${encodeURIComponent(gid)}?node=${encodeURIComponent(id)}`;
+}
+
+// The same node opened in the SPA canvas, selected. `view=graph` is what
+// tells the server to serve the SPA instead of the reading page.
+export function nodeGraphHref(gid, id) {
+  return `${nodeHref(gid, id)}&view=graph`;
 }
