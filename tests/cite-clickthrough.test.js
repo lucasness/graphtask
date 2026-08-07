@@ -71,6 +71,25 @@ describe('reader citations are followable links', () => {
     );
   });
 
+  // `from` is written by app.js and read by node.js, two files that never
+  // import each other — so the value is agreed by convention alone. If one side
+  // is renamed and the other isn't, nothing errors: the node page just stops
+  // offering "← Back to the report" and no one finds out.
+  it('the from value app.js emits is the one node.js accepts', () => {
+    const emitted = new Set([
+      ...src.matchAll(/nodeHref\?\.\((?:[^,]+,){2}\s*'([^']+)'\)/g),
+      ...src.matchAll(/\?from=([a-z]+)`/g),
+    ].map((m) => m[1]));
+    const nodeSrc = read('node.js');
+    const accepted = new Set([...nodeSrc.matchAll(/from === '([^']+)'/g)].map((m) => m[1]));
+
+    expect(emitted.size, 'app.js should emit exactly one `from` value').toBe(1);
+    expect([...accepted]).toEqual([...emitted]);
+    // Pinned to the view vocabulary (graph | kanban | reader), not the content
+    // that view renders — see the VIEWS map in app.js.
+    expect([...emitted]).toEqual(['reader']);
+  });
+
   // Ember is the colour this app uses for citation links; wearing it without
   // the pointer cursor is the visual half of the same lie.
   it('the hint looks clickable', () => {

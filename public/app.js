@@ -1758,10 +1758,12 @@ function wireCiteInteractions(bodyEl, nodeMap, gid) {
   }
 }
 
-// `from=report` tells the node page to offer "← Back to the report".
+// `from=reader` tells the node page to offer "← Back to the report". The value
+// names the VIEW you came from, matching `?view=reader` and the graph/kanban/
+// reader vocabulary in VIEWS — not the report that view happened to be showing.
 function citeNodeHref(gid, id) {
-  return window.RouteParse?.nodeHref?.(gid, id, 'report')
-    ?? `/g/${encodeURIComponent(gid)}/n/${encodeURIComponent(id)}?from=report`;
+  return window.RouteParse?.nodeHref?.(gid, id, 'reader')
+    ?? `/g/${encodeURIComponent(gid)}/n/${encodeURIComponent(id)}?from=reader`;
 }
 
 function ensureCiteTooltip() {

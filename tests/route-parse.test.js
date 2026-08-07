@@ -63,7 +63,7 @@ describe('resolveNodeRoute (single-node permalink)', () => {
 describe('nodeHref', () => {
   it('builds the permalink and carries `from` so the back-link survives node→node hops', () => {
     expect(nodeHref('abc123', 3171)).toBe('/g/abc123/n/3171');
-    expect(nodeHref('abc123', 3171, 'report')).toBe('/g/abc123/n/3171?from=report');
+    expect(nodeHref('abc123', 3171, 'reader')).toBe('/g/abc123/n/3171?from=reader');
   });
 
   it('encodes its inputs', () => {

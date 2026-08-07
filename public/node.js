@@ -158,7 +158,7 @@ async function main() {
   const { gid, id } = route;
   const from = new URLSearchParams(location.search).get('from');
 
-  if (from === 'report') {
+  if (from === 'reader') {
     const back = $('node-back');
     // Built through reader-pick, which is the single home for `view=reader` —
     // not re-typed here. A second hand-written copy of that literal drifts the
