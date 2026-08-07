@@ -2453,9 +2453,6 @@ button {
   color: var(--color-graphite-nav);
   border-color: var(--color-graphite-nav);
 }
-#edge-cancel { border-color: transparent; }
-#edge-cancel:hover { border-color: var(--color-mist); }
-
 /* Form-style modal (graph edit) */
 .modal-content-form {
   min-width: 360px;
