@@ -984,15 +984,22 @@ body.view-node { overflow: visible; }
   font-size: 13px;
   color: var(--tx-3);
   font-variant-numeric: tabular-nums;
-  /* Two columns so five-odd fields don't stack into a tall left-hugging
-     tower under the title — reading order stays left-right, top-down. */
+  /* Two SEMANTIC columns (node.js fills them): left = what the node is
+     (status + the 0–1 scores), right = when things happened (the datetime
+     fields, one place, one format). */
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  justify-items: start;
+  align-items: start;
   gap: 8px 24px;
   padding-bottom: 16px;
   margin-bottom: 32px;
   border-bottom: 1px solid var(--border);
+}
+.node-meta-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 /* One column again when the measure gets phone-narrow — two crowded columns
    read worse than one calm one. */

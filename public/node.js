@@ -126,25 +126,36 @@ function metaRow({ status, icon, label, value, tip }) {
 function renderMeta(meta, task) {
   const el = $('node-meta');
   el.textContent = '';
+  // Two semantic columns, not row-flow: the left column is what the node IS
+  // (status + the 0–1 scores), the right column is WHEN things happened (the
+  // datetime fields, all in one place and one format).
+  const state = document.createElement('div');
+  state.className = 'node-meta-col';
+  const dates = document.createElement('div');
+  dates.className = 'node-meta-col';
+
   if (meta.status) {
-    el.appendChild(metaRow({
+    state.appendChild(metaRow({
       status: meta.status,
       value: STATUS_LABELS[meta.status] || meta.status,
       tip: META_TIPS.status,
     }));
   }
   if (meta.confidence != null && meta.confidence !== '') {
-    el.appendChild(metaRow({ icon: 'gauge', label: 'Confidence', value: meta.confidence, tip: META_TIPS.confidence }));
+    state.appendChild(metaRow({ icon: 'gauge', label: 'Confidence', value: meta.confidence, tip: META_TIPS.confidence }));
   }
   if (meta.significance != null && meta.significance !== '') {
-    el.appendChild(metaRow({ icon: 'star', label: 'Significance', value: meta.significance, tip: META_TIPS.significance }));
+    state.appendChild(metaRow({ icon: 'star', label: 'Significance', value: meta.significance, tip: META_TIPS.significance }));
   }
   const verified = formatUtc(meta.verified_at);
-  if (verified) el.appendChild(metaRow({ icon: 'seal-check', label: 'Verified', value: verified, tip: META_TIPS.verified }));
+  if (verified) dates.appendChild(metaRow({ icon: 'seal-check', label: 'Verified', value: verified, tip: META_TIPS.verified }));
   const decided = formatUtc(meta.decided_at);
-  if (decided) el.appendChild(metaRow({ icon: 'scales', label: 'Decided', value: decided, tip: META_TIPS.decided }));
+  if (decided) dates.appendChild(metaRow({ icon: 'scales', label: 'Decided', value: decided, tip: META_TIPS.decided }));
   const updated = formatUtc(task.updated_at);
-  if (updated) el.appendChild(metaRow({ icon: 'clock', label: 'Updated', value: updated, tip: META_TIPS.updated }));
+  if (updated) dates.appendChild(metaRow({ icon: 'clock', label: 'Updated', value: updated, tip: META_TIPS.updated }));
+
+  if (state.childNodes.length) el.appendChild(state);
+  if (dates.childNodes.length) el.appendChild(dates);
 }
 
 // Wiki-links in the rendered body ([[3417]], [[todo:fanout-claim-lease]] —
