@@ -984,13 +984,20 @@ body.view-node { overflow: visible; }
   font-size: 13px;
   color: var(--tx-3);
   font-variant-numeric: tabular-nums;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  /* Two columns so five-odd fields don't stack into a tall left-hugging
+     tower under the title — reading order stays left-right, top-down. */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-items: start;
+  gap: 8px 24px;
   padding-bottom: 16px;
   margin-bottom: 32px;
   border-bottom: 1px solid var(--border);
+}
+/* One column again when the measure gets phone-narrow — two crowded columns
+   read worse than one calm one. */
+@media (max-width: 520px) {
+  #node-meta { grid-template-columns: minmax(0, 1fr); }
 }
 /* One field per row: a fixed-width glyph slot (Phosphor icon, or the status
    dot) + "Label: value". Hovering or focusing a row reveals a small explainer
