@@ -305,6 +305,7 @@ function applyReadOnlyState() {
   const canEdit = !accessDenied && currentGraph?.viewer_can_edit !== false; // null/undefined → allow (back-compat)
   document.body.classList.toggle('forbidden', accessDenied);
   document.body.classList.toggle('readonly', !accessDenied && !canEdit);
+  applyPanelEditability();
   const dismissed = isReadOnlyBannerDismissed(activeGraphId);
   if (banner) banner.classList.toggle('hidden', accessDenied || canEdit || dismissed);
   if (signinBtn) {
@@ -1207,6 +1208,37 @@ function stopAccessDeniedPoll() {
 // "Save failed" toasts on every interaction.
 function isReadOnly() {
   return !accessDenied && currentGraph?.viewer_can_edit === false;
+}
+
+// The server refuses a read-only viewer's writes outright — every non-GET on
+// tasks/edges runs through canEdit and 403s (src/auth/access.js). So an
+// inspector that still accepts typing is worse than useless: it invites someone
+// to write a body they will lose. Disable rather than hide, so the panel stays
+// the node's readable record instead of vanishing.
+const PANEL_EDIT_CONTROLS = [
+  'field-title', 'field-status', 'raw-editor',
+  'panel-delete', 'bg-image-input', 'bg-image-clear',
+];
+function applyPanelEditability() {
+  const ro = isReadOnly();
+  for (const id of PANEL_EDIT_CONTROLS) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = ro;
+  }
+  // The background-image field is a div wearing role="button", so `disabled`
+  // means nothing to it — take it out of the tab order instead. Its click and
+  // keydown handlers early-out on isReadOnly() as the real guard.
+  const bg = document.getElementById('bg-image-field');
+  if (bg) {
+    bg.setAttribute('aria-disabled', ro ? 'true' : 'false');
+    if (ro) bg.removeAttribute('tabindex');
+    else bg.setAttribute('tabindex', '0');
+  }
+  // ProseMirror owns the WYSIWYG surface; `editable` is its supported switch,
+  // and it survives setMarkdown. Same view syncToolbarActiveMarks reaches for.
+  const inner = richEditor?.getCurrentModeEditor?.();
+  if (inner?.view?.setProps) inner.view.setProps({ editable: () => !ro });
+  document.body.classList.toggle('panel-readonly', ro);
 }
 
 // Reactive fallback: if any write returns 403 on the active graph (e.g.
@@ -4937,6 +4969,9 @@ function showPanel(task, opts = {}) {
   if (footer) footer.classList.toggle('hidden', !task);
 
   setEditorMode('rich');
+  // Re-assert on every open: the editor is one long-lived instance shared by
+  // every node, and the panel can open after the access state was last applied.
+  applyPanelEditability();
   panel.classList.remove('hidden');
   if (typeof adjustPresenceBarOffset === 'function') adjustPresenceBarOffset();
   // Camera pan is graph-view only — kanban cards are already visible in their column.
@@ -10209,10 +10244,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const bgField = document.getElementById('bg-image-field');
   const bgClearBtn = document.getElementById('bg-image-clear');
   bgField.addEventListener('click', (e) => {
+    if (isReadOnly()) return; // the div can't be `disabled`; this is the guard
     if (e.target === bgClearBtn || bgClearBtn.contains(e.target)) return;
     bgFileInput.click();
   });
   bgField.addEventListener('keydown', (e) => {
+    if (isReadOnly()) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       bgFileInput.click();

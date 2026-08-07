@@ -1711,6 +1711,17 @@ body.readonly #empty-state {
   display: none !important;
 }
 
+/* Read-only inspector. The panel still opens and still reads as the node's
+   record — the fields are just visibly inert, because the server will refuse
+   any write anyway. The editor toolbar goes entirely: its buttons aren't form
+   controls so they can't be disabled, and a row of no-op buttons reads as more
+   of a promise than no toolbar at all. */
+body.panel-readonly .toastui-editor-defaultUI-toolbar { display: none; }
+body.panel-readonly #panel :disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Access-denied state — applied when the viewer is forbidden from the
    active graph (anon_role=none and not a member). Stronger than readonly:
    no banner (sign-in won't help), no edit affordances, canvas inert. */
