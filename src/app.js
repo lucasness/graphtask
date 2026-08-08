@@ -13,6 +13,8 @@ import graphPrefsRouter from './routes/graphPrefs.js';
 import selectionRouter from './routes/selection.js';
 import uploadsRouter from './routes/uploads.js';
 import reportsRouter from './routes/reports.js';
+import refreshRouter from './routes/refresh.js';
+import refreshesAllRouter from './routes/refreshesAll.js';
 import searchRouter from './routes/search.js';
 import searchAllRouter from './routes/searchAll.js';
 import reportsAllRouter from './routes/reportsAll.js';
@@ -130,6 +132,13 @@ app.use('/api/graphs/:gid/uploads', requireGraphForMethod, uploadsRouter);
 // PUT=upsert report), so the method-pick guard: a viewer/anon reads, an editor
 // writes. The report lives outside tasks/edges, so this never mutates the graph.
 app.use('/api/graphs/:gid/report', requireGraphForMethod, reportsRouter);
+// Scheduled refresh (3834): per-graph schedule + purpose prompt. Same
+// isolation rule as /report — config writes never touch the graph itself.
+// Method-pick guard: a viewer reads the schedule, an editor sets/completes it.
+app.use('/api/graphs/:gid/refresh', requireGraphForMethod, refreshRouter);
+// The executor poll surface: which of MY graphs are due? Derives its own
+// scope (owned + member) from req.user like /api/reports; anon gets [].
+app.use('/api/refreshes', refreshesAllRouter);
 app.use('/api/graphs/:gid/members', membersRouter);
 app.use('/api/me', meRouter);
 

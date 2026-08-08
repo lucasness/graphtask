@@ -617,3 +617,29 @@ END $$;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claimed_by_name TEXT;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;
+
+-- Scheduled graph refresh (node 3834): a per-graph SCHEDULE + PURPOSE PROMPT,
+-- the product primitive replacing hand-rolled per-graph session crons. One row
+-- per graph. Lives OUTSIDE tasks/edges (the E16 reports pattern) and has NO
+-- trigger: writing a schedule must never bump graphs.updated_at/version or
+-- fire SSE — a schedule change is not a graph edit. "Due" is DERIVED
+-- (enabled AND last_run_at older than interval_days — see /api/refreshes/due),
+-- never stored, so there is no scheduler daemon to keep honest: any harness
+-- cron polls due-ness and runs the refresh checklist (frontier + decisions
+-- at-risk + the purpose prompt), lands changes at review, then POSTs
+-- /refresh/complete which stamps last_run_at.
+CREATE TABLE IF NOT EXISTS graph_refreshes (
+  graph_id TEXT PRIMARY KEY REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  interval_days INTEGER NOT NULL,
+  purpose TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_run_at TIMESTAMPTZ,
+  last_run_summary TEXT,
+  last_run_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT refresh_interval_range CHECK (interval_days BETWEEN 1 AND 365),
+  CONSTRAINT refresh_purpose_required CHECK (length(trim(purpose)) > 0),
+  CONSTRAINT refresh_purpose_length CHECK (length(purpose) <= 2000),
+  CONSTRAINT refresh_summary_length CHECK (last_run_summary IS NULL OR length(last_run_summary) <= 4000)
+);

@@ -901,6 +901,29 @@ curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/decisions/at-risk" -H 'Content-Typ
 
 All params optional (defaults shown). Ranked by the decision's out-degree (blast radius). A healthy cluster returns nothing — the queue only speaks when something actually degraded, so run it at every resume without noise. When it fires: surface the decision + reasons to the human; reopening (status back from `done`, rationale APPENDED never rewritten) is the human's call — see [Decision records](#decision-records-e17).
 
+### Scheduled refresh — the standing loop that works those queues
+
+A graph can carry a per-graph **schedule + purpose prompt** (node-3834 primitive): "every N days, re-check this graph with this intent." The server stores the config and derives due-ness; **execution is yours** — any cron/scheduled session is the executor. The purpose prompt is the judgment half a query can't compute: *is the goal still the right goal, did the landscape move* — read it and take it seriously, don't just mechanically re-verify.
+
+```bash
+# Which of my graphs are due? (owned + member scope; the executor's poll)
+curl -sS "$GT_BASE/api/refreshes/due" "${READ_HEADERS[@]}"
+
+# The refresh pass, per due graph: work the computed queues + the purpose prompt.
+#   1. POST /frontier            → re-verify stale/low-confidence load-bearing claims
+#   2. POST /decisions/at-risk   → surface decisions whose grounds shifted
+#   3. The purpose prompt        → the landscape / goal re-check (skill-judged)
+# Land EVERY change at review (never done), then stamp the run:
+curl -sS -X POST "$GT_BASE/api/graphs/<gid>/refresh/complete" "${WRITE_HEADERS[@]}" \
+  -d '{"summary":"<one paragraph: what was re-verified, what flipped, what surfaced>","run_id":"<run id>"}'
+
+# Set or change a graph's schedule (PUT is an upsert; DELETE removes it):
+curl -sS -X PUT "$GT_BASE/api/graphs/<gid>/refresh" "${WRITE_HEADERS[@]}" \
+  -d '{"interval_days":30,"purpose":"Re-verify fast-moving external claims; re-question whether the target still makes sense."}'
+```
+
+Only an explicit `/complete` moves `last_run_at` — a run that dies mid-checklist leaves the graph due, so the next poll retries it. Never stamp complete before the pass actually finished.
+
 ### Inconsistency scan — "where does the graph contradict itself"
 
 `POST /inconsistencies` finds DIRECTED cycles in the supports/contradicts subgraph with an ODD number of `contradicts` edges (signed-graph balance). Even-contradicts (mutual disagreement) and pure-supports (circular reasoning) are NOT flagged.
