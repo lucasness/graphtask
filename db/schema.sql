@@ -605,3 +605,15 @@ BEGIN
     RAISE NOTICE 'pgvector not available — skipping task_chunks (dense store deferred; eval runs in-memory)';
   END IF;
 END $$;
+
+-- Agent claim/lease on tasks (node 3829 — fleet coordination). An atomic
+-- claim flips todo → in_progress and records WHO holds the work and until
+-- WHEN, so N agents pulling from /tasks/ready can't double-grab a task.
+-- Claimability is DERIVED, never swept: an expired lease simply makes the
+-- row match /ready's claimable predicate again (see src/routes/tasks.js).
+-- All three columns are additive and NULL for every task outside a claim;
+-- claimed_by is the writer id (X-Writer-Id — the presence identity), not a
+-- users FK, because unauthenticated fleet agents have no user row.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claimed_by_name TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;

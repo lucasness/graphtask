@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import pool from '../db.js';
+import pool, { withTx } from '../db.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
 import { mergeFields } from '../merge.js';
 import { requireIntegerParam } from './_validate.js';
@@ -95,6 +95,15 @@ router.get('/leaves', async (req, res) => {
 // require `confidence IS NULL` here so a knowledge node that carries a
 // confidence value never masquerades as ready work — even legacy/mislabeled
 // rows that still sit at todo (the write side is permissive for human drags).
+//
+// Claim/lease interplay (3829): a claim flips the task to in_progress, so
+// actively-claimed work already drops out of the todo branch — nothing extra
+// to exclude. The second branch is the DERIVED revival: an in_progress task
+// whose lease has EXPIRED is abandoned work, and surfacing it here is what
+// makes a dead agent's claim self-release with no sweeper. A human-set
+// in_progress (no claim fields) never matches — that's someone's active work,
+// exactly as before. The todo branch deliberately ignores claim fields:
+// a human dragging a claimed card back to todo IS the release/override.
 router.get('/ready', async (req, res) => {
   const { gid } = req.params;
   const result = await pool.query(
@@ -111,8 +120,12 @@ router.get('/ready', async (req, res) => {
      )
      SELECT t.* FROM tasks t
       WHERE t.graph_id = $1
-        AND t.meta->>'status' = 'todo'
-        AND t.meta->>'confidence' IS NULL
+        AND (
+          (t.meta->>'status' = 'todo' AND t.meta->>'confidence' IS NULL)
+          OR (t.meta->>'status' = 'in_progress'
+              AND t.claimed_by IS NOT NULL
+              AND t.claim_expires_at < NOW())
+        )
         AND NOT EXISTS (
           SELECT 1 FROM prereqs p
           JOIN tasks tp ON tp.id = p.prereq
@@ -249,6 +262,149 @@ router.delete('/:id', validateId, async (req, res) => {
   );
   if (result.rows.length === 0) return res.status(404).json({ error: 'not found' });
   res.json({ deleted: result.rows[0].id });
+});
+
+// ---- claim/lease (fleet coordination — node 3829) ----
+// N agents pulling from /ready can otherwise double-grab the same task:
+// OCC merge prevents write corruption but not duplicated work, and presence
+// is advisory. POST /:id/claim is the atomic take: inside one row-locked
+// transaction it flips todo → in_progress and records holder + lease expiry,
+// so exactly one of two racing claimants wins (the loser's predicate fails on
+// the committed state and gets a 409 naming the holder). The same holder
+// POSTing again RENEWS the lease. Claimability is DERIVED from
+// (status, claimed_by, claim_expires_at) — no sweeper: an expired lease just
+// makes the task match /ready's claimable predicate again.
+//
+// Humans always override without this API: editing status is enough (a card
+// dragged back to todo is claimable regardless of any lease — /ready's todo
+// branch ignores claim fields on purpose). DELETE /:id/claim is the
+// programmatic release for graceful abandonment and reassignment; it's
+// edit-gated like every task write and deliberately NOT holder-only.
+
+const CLAIM_DEFAULT_TTL_S = 30 * 60;
+const CLAIM_MIN_TTL_S = 60;
+const CLAIM_MAX_TTL_S = 4 * 60 * 60;
+
+router.post('/:id/claim', validateId, async (req, res) => {
+  const { gid, id } = req.params;
+  const holder = req.writer?.id;
+  // A lease without an identifiable holder can't be renewed or attributed —
+  // same rule the presence/selection routes apply.
+  if (!holder) return res.status(400).json({ error: 'X-Writer-Id is required to claim' });
+  let ttl = CLAIM_DEFAULT_TTL_S;
+  if (req.body && req.body.ttl_seconds !== undefined) {
+    ttl = Number(req.body.ttl_seconds);
+    if (!Number.isFinite(ttl)) return res.status(400).json({ error: 'ttl_seconds must be a number' });
+    ttl = Math.min(CLAIM_MAX_TTL_S, Math.max(CLAIM_MIN_TTL_S, Math.round(ttl)));
+  }
+
+  const out = await withTx(async (client) => {
+    const cur = await client.query(
+      'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
+      [id, gid],
+    );
+    if (cur.rows.length === 0) return { code: 404, body: { error: 'not found' } };
+    const row = cur.rows[0];
+    const meta = row.meta || {};
+    const expired = row.claim_expires_at && new Date(row.claim_expires_at).getTime() < Date.now();
+
+    // Renewal: the current holder keeps working — extend, don't re-acquire.
+    // Allowed even just past expiry as long as nobody else took it (the row
+    // lock serializes us against a competing acquire).
+    if (meta.status === 'in_progress' && row.claimed_by === holder) {
+      const upd = await client.query(
+        `UPDATE tasks
+            SET claim_expires_at = NOW() + make_interval(secs => $1),
+                claimed_by_name = COALESCE($2, claimed_by_name)
+          WHERE id = $3 RETURNING *`,
+        [ttl, req.writer?.name ?? null, row.id],
+      );
+      return { code: 200, body: { claimed: true, renewed: true, task: upd.rows[0] } };
+    }
+
+    // Acquire: an open question at todo (same work predicate /ready uses —
+    // confidence-bearing findings are never claimable work), or abandoned
+    // in_progress work whose lease ran out.
+    const claimableTodo = meta.status === 'todo' && meta.confidence == null;
+    const claimableExpired = meta.status === 'in_progress' && row.claimed_by && expired;
+    if (!claimableTodo && !claimableExpired) {
+      return {
+        code: 409,
+        body: {
+          error: 'task is not claimable',
+          status: meta.status ?? null,
+          claimed_by: row.claimed_by ?? null,
+          claimed_by_name: row.claimed_by_name ?? null,
+          claim_expires_at: row.claim_expires_at ?? null,
+        },
+      };
+    }
+    // Status flips in BOTH meta and content — they must never drift — and the
+    // write carries normal attribution + version bump, so SSE, OCC and
+    // last-modified provenance all see an ordinary edit.
+    const parsed = parseMarkdown(row.content);
+    const newMeta = { ...applyDefaults(parsed.meta), status: 'in_progress' };
+    const normalized = serializeMarkdown(newMeta, parsed.body);
+    const upd = await client.query(
+      `UPDATE tasks
+          SET content = $1, meta = $2,
+              claimed_by = $3, claimed_by_name = $4,
+              claim_expires_at = NOW() + make_interval(secs => $5),
+              version = version + 1,
+              last_modified_by = $6, last_modified_by_user = $7,
+              updated_at = NOW()
+        WHERE id = $8 RETURNING *`,
+      [
+        normalized, JSON.stringify(newMeta),
+        holder, req.writer?.name ?? null, ttl,
+        req.writerType, req.user?.id ?? null, row.id,
+      ],
+    );
+    return { code: 200, body: { claimed: true, renewed: false, task: upd.rows[0] } };
+  });
+  res.status(out.code).json(out.body);
+});
+
+router.delete('/:id/claim', validateId, async (req, res) => {
+  const { gid, id } = req.params;
+  const out = await withTx(async (client) => {
+    const cur = await client.query(
+      'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
+      [id, gid],
+    );
+    if (cur.rows.length === 0) return { code: 404, body: { error: 'not found' } };
+    const row = cur.rows[0];
+    if (!row.claimed_by) return { code: 404, body: { error: 'no active claim' } };
+    const meta = row.meta || {};
+    // Work abandoned mid-lease goes back to todo so /ready re-surfaces it
+    // immediately; a task already moved on (review/done, or human-retargeted)
+    // just sheds the stale lease fields.
+    if (meta.status === 'in_progress') {
+      const parsed = parseMarkdown(row.content);
+      const newMeta = { ...applyDefaults(parsed.meta), status: 'todo' };
+      const normalized = serializeMarkdown(newMeta, parsed.body);
+      const upd = await client.query(
+        `UPDATE tasks
+            SET content = $1, meta = $2,
+                claimed_by = NULL, claimed_by_name = NULL, claim_expires_at = NULL,
+                version = version + 1,
+                last_modified_by = $3, last_modified_by_user = $4,
+                updated_at = NOW()
+          WHERE id = $5 RETURNING *`,
+        [normalized, JSON.stringify(newMeta), req.writerType, req.user?.id ?? null, row.id],
+      );
+      return { code: 200, body: { released: true, task: upd.rows[0] } };
+    }
+    const upd = await client.query(
+      `UPDATE tasks
+          SET claimed_by = NULL, claimed_by_name = NULL, claim_expires_at = NULL,
+              version = version + 1
+        WHERE id = $1 RETURNING *`,
+      [row.id],
+    );
+    return { code: 200, body: { released: true, task: upd.rows[0] } };
+  });
+  res.status(out.code).json(out.body);
 });
 
 // ---- graph traversal queries ----

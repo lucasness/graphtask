@@ -686,6 +686,28 @@ curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
 
 `/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (plus `/frontier` for stale knowledge and `/decisions/at-risk` for committed decisions whose grounds shifted — both are cheap and quiet when healthy) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
 
+### Claiming work when agents run in parallel (claim/lease)
+
+When more than one agent works the same graph (fanout, a fleet, a teammate's session), `/ready` alone is a race: two agents can pull the same task. **Claim before you start**:
+
+```bash
+# Atomically take the task: flips todo → in_progress and records you as the
+# holder with a lease (default 30 min, ttl_seconds 60–14400). Requires your
+# X-Writer-Id (WRITE_HEADERS carries it). 200 = yours; 409 = someone else
+# holds it — the body names the holder and expiry; pull the next /ready task.
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/claim" "${WRITE_HEADERS[@]}" -d '{}'
+
+# Long task? POST again before the lease runs out — same call renews it.
+# If your lease EXPIRES, the task resurfaces in /ready (still in_progress,
+# claimed_by set) and anyone may take it over — a crashed agent never wedges
+# the queue. Finished? A normal PATCH to review ends the work; the stale lease
+# fields are harmless. Abandoning instead? Release it:
+curl -sS -X DELETE "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/claim" "${WRITE_HEADERS[@]}"
+# → back to todo, claim cleared, /ready re-surfaces it immediately.
+```
+
+Claiming is only for genuinely parallel contexts — a solo session editing its own graph can keep flipping status with normal PATCHes as before. Humans override any lease by just editing status (a card dragged back to `todo` is claimable regardless).
+
 For raw structural traversal (no status filtering):
 
 ```bash

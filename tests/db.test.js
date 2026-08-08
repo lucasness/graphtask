@@ -50,6 +50,7 @@ describe('Database schema', () => {
       'id', 'graph_id', 'content', 'meta', 'created_at', 'updated_at',
       'version', 'last_modified_by', 'last_modified_by_user',
       'external_id', 'run_id',
+      'claimed_by', 'claimed_by_name', 'claim_expires_at',
     ]);
   });
 

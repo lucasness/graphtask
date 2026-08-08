@@ -708,7 +708,9 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | PATCH | `/api/graphs/:gid/tasks/:id` | Body: `{content}` |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to edges |
 | GET | `/api/graphs/:gid/tasks/leaves` | Tasks with no incoming dependency edges |
-| GET | `/api/graphs/:gid/tasks/ready` | Open questions ready to start: `status:todo` AND **no `confidence` set** AND every recursive prereq is `done` (treats `review`/`in_progress` as not-yet-done). A confidence-bearing todo node is a claim/finding, not ready work — its re-checking is `/frontier`'s job, so it never appears here. |
+| GET | `/api/graphs/:gid/tasks/ready` | Open questions ready to start: `status:todo` AND **no `confidence` set** AND every recursive prereq is `done` (treats `review`/`in_progress` as not-yet-done). A confidence-bearing todo node is a claim/finding, not ready work — its re-checking is `/frontier`'s job, so it never appears here. Also revives abandoned claims: an `in_progress` task whose **lease expired** (see `/claim`) resurfaces here with its `claimed_by` fields intact. |
+| POST | `/api/graphs/:gid/tasks/:id/claim` | Atomic work lease for parallel agents: flips `todo` → `in_progress` and records holder (`X-Writer-Id`) + expiry (`ttl_seconds` 60–14400, default 1800) in one row-locked txn, so racing claimants can't double-grab — the loser gets 409 naming the holder. Same holder POSTing again renews. Expired lease = claimable by anyone, no sweeper. |
+| DELETE | `/api/graphs/:gid/tasks/:id/claim` | Release a lease (abandon / human override): claim cleared; if still `in_progress` the task returns to `todo` and `/ready` re-surfaces it. Not holder-only by design. |
 | GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites |
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
@@ -1345,12 +1347,13 @@ and benchmarks have their own design doc: [design/SEARCH.md](design/SEARCH.md).
   habits to teach the skill *when built* (provenance on edges, hub nodes, one
   concept per node) are tracked in the project graph; does **not** depend on the
   search work.
-- [ ] **Subagent fanout** — parallel subagents claiming ready tasks. The `Agent`
-  tool already works today (subagents inherit the parent's
-  `.graphtask/agent-session.json` and share its `writer_id`, so writes are safe;
-  same-task concurrent PATCHes fall to last-write-wins). The gap is a
-  coordination layer (hand out ready tasks, prevent double-claims) and
-  per-subagent avatar identity.
+- [x] **Subagent fanout — claim/lease shipped** (2026-08-08). `POST
+  /tasks/:id/claim` is the atomic take (todo → in_progress + holder + lease in
+  one row-locked txn; racing claimants get 409-with-holder), same-holder POST
+  renews, expired leases resurface in `/tasks/ready` with no sweeper, DELETE
+  releases, and a human editing status always overrides. Remaining from the
+  original scope: per-subagent avatar identity (subagents still share the
+  parent's `writer_id`).
 - [ ] **True pause/play** — today the toggle is local-only (stops the viewer's
   camera). Future: use the broadcast `announce_focus` as an ack point so the
   server holds the next PATCH from that writer until resumed.
