@@ -89,6 +89,28 @@ describe('per-graph refresh config', () => {
     expect(g.body.due).toBe(true);
   });
 
+  it('dismiss silences the cycle honestly — clock moves, but the record says no refresh ran', async () => {
+    await put({ interval_days: 30, purpose: 'check things' });
+    const d = await request(app).post(`${url()}/dismiss`).send({});
+    expect(d.status).toBe(200);
+    expect(d.body.due).toBe(false);
+    expect(d.body.last_run_kind).toBe('dismissed');
+    expect(d.body.last_run_summary).toContain('no refresh ran');
+    expect(d.body.last_run_id).toBeNull();
+    // A real run afterwards overwrites the kind — the two states never blur.
+    const c = await request(app).post(`${url()}/complete`).send({ summary: 'actually ran' });
+    expect(c.body.last_run_kind).toBe('run');
+    // And dismissal honors the same interval: backdate past it → due again.
+    await pool.query(
+      "UPDATE graph_refreshes SET last_run_at = NOW() - interval '31 days', last_run_kind = 'dismissed' WHERE graph_id = $1", [gid]);
+    const g = await request(app).get(url());
+    expect(g.body.due).toBe(true);
+  });
+
+  it('dismiss 404s when no schedule exists', async () => {
+    expect((await request(app).post(`${url()}/dismiss`).send({})).status).toBe(404);
+  });
+
   it('a schedule write never masquerades as a graph edit (no version/updated_at bump)', async () => {
     const before = await pool.query('SELECT version, updated_at FROM graphs WHERE id = $1', [gid]);
     await put({ interval_days: 30, purpose: 'isolation check' });

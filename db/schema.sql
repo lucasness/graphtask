@@ -643,3 +643,15 @@ CREATE TABLE IF NOT EXISTS graph_refreshes (
   CONSTRAINT refresh_purpose_length CHECK (length(purpose) <= 2000),
   CONSTRAINT refresh_summary_length CHECK (last_run_summary IS NULL OR length(last_run_summary) <= 4000)
 );
+
+-- Refresh dismissal (owner decision 2026-08-08): the schedule's clock can be
+-- silenced for one cycle WITHOUT a refresh actually running — the user saying
+-- "not this month". last_run_kind keeps the two honest: 'run' = a real pass
+-- happened; 'dismissed' = the user waved it off. Both move last_run_at (the
+-- due-ness clock); neither is inferable from the other's absence.
+ALTER TABLE graph_refreshes ADD COLUMN IF NOT EXISTS last_run_kind TEXT;
+DO $$ BEGIN
+  ALTER TABLE graph_refreshes DROP CONSTRAINT IF EXISTS refresh_last_run_kind_valid;
+  ALTER TABLE graph_refreshes ADD CONSTRAINT refresh_last_run_kind_valid
+    CHECK (last_run_kind IS NULL OR last_run_kind IN ('run', 'dismissed'));
+END $$;

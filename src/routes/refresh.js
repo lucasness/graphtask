@@ -86,10 +86,36 @@ router.post('/complete', async (req, res) => {
         SET last_run_at = NOW(),
             last_run_summary = $2,
             last_run_id = $3,
+            last_run_kind = 'run',
             updated_at = NOW()
       WHERE graph_id = $1
       RETURNING *, ${DUE_EXPR} AS due`,
     [gid, summary || null, runId || null],
+  );
+  if (r.rows.length === 0) return res.status(404).json({ error: 'no refresh schedule' });
+  res.json(r.rows[0]);
+});
+
+// "Not this cycle" (owner decision 2026-08-08): silences the due flag until
+// the next interval WITHOUT claiming a refresh ran — last_run_kind records
+// the difference, so "when did this graph last actually get checked?" stays
+// answerable. Same clock, honest label.
+router.post('/dismiss', async (req, res) => {
+  const { gid } = req.params;
+  const body = req.body || {};
+  const note = typeof body.note === 'string' && body.note.trim()
+    ? body.note.trim().slice(0, MAX_SUMMARY)
+    : '(dismissed — no refresh ran this cycle)';
+  const r = await pool.query(
+    `UPDATE graph_refreshes
+        SET last_run_at = NOW(),
+            last_run_summary = $2,
+            last_run_id = NULL,
+            last_run_kind = 'dismissed',
+            updated_at = NOW()
+      WHERE graph_id = $1
+      RETURNING *, ${DUE_EXPR} AS due`,
+    [gid, note],
   );
   if (r.rows.length === 0) return res.status(404).json({ error: 'no refresh schedule' });
   res.json(r.rows[0]);

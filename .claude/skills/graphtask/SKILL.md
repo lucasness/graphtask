@@ -686,6 +686,8 @@ curl -sS "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/unblocks" "${READ_HEADERS[@]}"
 
 `/ready` is also the **resume mechanism**: a fresh session or an agent hand-off orients by running `/ready` + `/blockers` (plus `/frontier` for stale knowledge and `/decisions/at-risk` for committed decisions whose grounds shifted — both are cheap and quiet when healthy) — never by hunting for, or creating, a narrative "RESUME / START HERE" node. See the no-meta-nodes rule in §2.
 
+**Resume also checks the refresh clock.** When you start working a graph, `GET /api/graphs/<gid>/refresh` (404 = no schedule, fine, move on). If `due:true`, tell the user ONCE, plainly — "this graph's <interval_days>-day refresh is overdue (purpose: <purpose>); want me to run it, or dismiss until next cycle?" — then do what they say: run the pass in [Scheduled refresh](#scheduled-refresh--the-standing-loop-that-works-those-queues) and stamp `/complete`, or `POST /refresh/dismiss`. **Never auto-run and never auto-dismiss** — the refresh spends real effort and the dismissal spends real staleness; both are the user's to choose. Don't re-ask in the same session after they've answered.
+
 ### Claiming work when agents run in parallel (claim/lease)
 
 When more than one agent works the same graph (fanout, a fleet, a teammate's session), `/ready` alone is a race: two agents can pull the same task. **Claim before you start**:
@@ -923,6 +925,13 @@ curl -sS -X PUT "$GT_BASE/api/graphs/<gid>/refresh" "${WRITE_HEADERS[@]}" \
 ```
 
 Only an explicit `/complete` moves `last_run_at` — a run that dies mid-checklist leaves the graph due, so the next poll retries it. Never stamp complete before the pass actually finished.
+
+**There is no automatic executor (owner decision 2026-08-08).** Due-ness just accumulates until a human acts on it — the surfacing lives in the resume flow (§5): when a graph you're working reads `due:true`, offer the user *run now* or *dismiss this cycle*. Dismissal is its own endpoint so it never impersonates a run — `last_run_kind` says which one happened:
+
+```bash
+# User said "not this cycle" — silences due until the next interval, honestly labeled:
+curl -sS -X POST "$GT_BASE/api/graphs/<gid>/refresh/dismiss" "${WRITE_HEADERS[@]}" -d '{}'
+```
 
 ### Inconsistency scan — "where does the graph contradict itself"
 

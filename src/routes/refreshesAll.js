@@ -19,7 +19,7 @@ async function listForViewer(req, res, onlyDue) {
   if (!req.user) return res.json([]);
   const { rows } = await pool.query(
     `SELECT r.graph_id, r.interval_days, r.purpose, r.enabled,
-            r.last_run_at, r.last_run_summary, r.last_run_id,
+            r.last_run_at, r.last_run_summary, r.last_run_id, r.last_run_kind,
             ${DUE_EXPR} AS due,
             g.name AS graph_name, g.updated_at AS graph_updated_at
        FROM graph_refreshes r
