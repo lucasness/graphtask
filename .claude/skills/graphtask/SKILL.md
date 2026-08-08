@@ -708,6 +708,8 @@ curl -sS -X DELETE "$GT_BASE/api/graphs/$GT_GID/tasks/$T1/claim" "${WRITE_HEADER
 
 Claiming is only for genuinely parallel contexts — a solo session editing its own graph can keep flipping status with normal PATCHes as before. Humans override any lease by just editing status (a card dragged back to `todo` is claimable regardless).
 
+**Fleet strategy — don't all grab the first task.** Load-tested 2026-08-08 (scripts/load-test.mjs): with every worker claiming `ready[0]`, doubling a fleet from 8 to 16 agents made the same queue drain SLOWER (409 churn dominates). Pick randomly among the first ~K ready tasks (K ≈ fleet size) instead; a 409 is normal — just try another, never retry the same id in a loop.
+
 For raw structural traversal (no status filtering):
 
 ```bash
