@@ -261,18 +261,6 @@ Your writes drop `🤖 <operator>'s Claude` into the canvas avatar bar (the oper
 
 You don't manage the hooks yourself. The thing you DO need to do — keep doing — is appending touched gids to `.graphtask/agent-session-graphs` after every write so the hook (if present) knows which graphs to depart from.
 
-## Referencing nodes in replies — give the user a clickable way in
-
-A bare node id (`3834`) means nothing to the user — it's agent-internal vocabulary. When a node reference matters in a reply (review packets, "what's next", anything the user might want to open), pair it with its **reading-page permalink**: `<GT_BASE>/g/<gid>?node=<id>`, where `<gid>` is the graph that node lives in — not necessarily `$GT_GID` when referencing another graph. That URL renders the node's markdown off one read, with "Open graph" one click away.
-
-**Do NOT use OSC 8 escape sequences** (`ESC]8;;…`). Tested 2026-08-08 in Claude Code: the renderer strips the ESC bytes and leaks the rest as mojibake (`]8;;https://…3834]8;;`). Markdown `[3834](url)` doesn't render as a hidden-URL anchor either — it displays as `3834 (url)`. The URL itself, printed plainly, is the only reliable click target (most terminals/apps auto-linkify bare URLs).
-
-House style, to keep prose readable:
-
-- Dense prose / many references: keep bare ids inline, then close with a short link list — one `<id> — <url>` per line — for just the nodes the user is likely to open.
-- A single node the reply centers on: put its URL right there on first mention.
-- Never wrap ids in escape sequences anywhere; never put URLs-for-the-user inside node bodies, commit messages, or API payloads.
-
 ## Listing graphs and naming
 
 `GET /api/graphs` returns the graphs the **current authenticated viewer** can see (owned + member-of). On a no-auth instance it returns `[]` — there is no signed-in viewer to scope to, so nothing is listed; legacy un-owned graphs stay reachable only by their id/URL. It is not a public directory; private graphs only reachable by id stay reachable by id.
