@@ -13,7 +13,7 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { SearchService } from '../search/service.js';
-import { configFromEnv } from '../search/config.js';
+import { configFromEnv, assertConfig } from '../search/config.js';
 import { compileFilter } from '../metaFilter.js';
 
 const router = Router({ mergeParams: true });
@@ -42,27 +42,45 @@ export function warmupDefaultService() {
   });
 }
 
-// OOM guard (#436 incident, 2026-06-12): a per-request `config` naming a
-// local-onnx backend used to make the ad-hoc SearchService load a SECOND copy
-// of the ONNX models inside the serving process — on the 2.9GB box that
+// IN-PROCESS backends and the fields that identify one pooled instance. These
+// hold their weights in THIS process: local-onnx an ONNX session, static a
+// quantized embedding table (a 31MB artifact + tokenizer read from disk).
+// Constructing a second one per request is the #436 OOM shape — and for
+// `static` it also throws away the exact property that backend exists for,
+// instant availability after a worker wake, by paying the artifact read on
+// every single request. HTTP-contract backends hold no weights and are cheap
+// to build per request, so they are deliberately absent here.
+const POOLED_BACKENDS = {
+  'local-onnx': ['model', 'dtype'],
+  static: ['model', 'staticDir'],
+};
+
+// OOM guard (#436 incident, 2026-06-12): a per-request `config` naming an
+// in-process backend used to make the ad-hoc SearchService load a SECOND copy
+// of the weights inside the serving process — on the 2.9GB box that
 // OOM-killed the app mid-request. This process pools exactly one in-memory
-// copy per provider (the default service's). An ad-hoc config asking for
-// local-onnx gets that pooled instance when it matches the deployed identity
-// (model + dtype), and a 400 when it doesn't — a different model can't be
-// served from this process; use an http backend for that experiment.
+// copy per provider (the default service's). An ad-hoc config asking for one
+// gets that pooled instance when it matches the deployed identity, and a 400
+// when it doesn't — a different model can't be served from this process; use
+// an http backend for that experiment.
+//
+// Pass the MERGED config (see the route below), not the raw request body: once
+// a partial config inherits the deployment's provider block, that inherited
+// backend is exactly what must resolve to the pooled instance rather than a
+// fresh load.
 export function pooledAdHocDeps(config, def = getDefaultService()) {
   const deps = {};
   const kinds = [['embedding', 'embeddingProvider'], ['rerank', 'rerankProvider']];
   for (const [kind, depKey] of kinds) {
     const requested = config?.providers?.[kind];
-    if (!requested || requested.backend !== 'local-onnx') continue;
+    const identityKeys = requested && POOLED_BACKENDS[requested.backend];
+    if (!identityKeys) continue;
     const deployed = def.config.providers?.[kind] || {};
-    const samePooledModel = deployed.backend === 'local-onnx'
-      && (requested.model ?? null) === (deployed.model ?? null)
-      && (requested.dtype ?? null) === (deployed.dtype ?? null);
+    const samePooledModel = deployed.backend === requested.backend
+      && identityKeys.every((k) => (requested[k] ?? null) === (deployed[k] ?? null));
     if (!samePooledModel) {
       const err = new Error(
-        `providers.${kind}: ad-hoc local-onnx configs can only reuse the deployed model `
+        `providers.${kind}: ad-hoc ${requested.backend} configs can only reuse the deployed model `
         + '(one pooled in-process copy; loading another risks OOM) — '
         + 'omit the override or use an http backend',
       );
@@ -73,6 +91,20 @@ export function pooledAdHocDeps(config, def = getDefaultService()) {
     deps[depKey] = def.providers[kind];
   }
   return deps;
+}
+
+// Build the service for one request. With no `config` that's the pooled
+// default service; with one, an ad-hoc service whose config is normalized over
+// the DEPLOYED config — never the library default, which would silently strip
+// this deployment's dense leg, graph expansion and tuned top-K and hand back
+// keyword-only results with no error (the bug fixed 2026-08-08). Providers are
+// pooled off the merged config so inheriting the deployed backend costs no
+// second copy of the weights.
+export function serviceForRequest(config, pool) {
+  const def = getDefaultService();
+  if (!config) return def;
+  const merged = assertConfig(config, def.config);
+  return new SearchService({ config: merged, pool, deps: pooledAdHocDeps(merged, def) });
 }
 
 router.post('/', async (req, res, next) => {
@@ -90,7 +122,7 @@ router.post('/', async (req, res, next) => {
 
   let service;
   try {
-    service = config ? new SearchService({ config, pool, deps: pooledAdHocDeps(config) }) : getDefaultService();
+    service = serviceForRequest(config, pool);
   } catch (err) {
     if (err.status === 400) return res.status(400).json({ error: err.message, errors: err.errors });
     return next(err);

@@ -7,7 +7,7 @@
 //
 // Mounted under requireGraph('read') in app.js (mirrors /search): it READS the
 // graph and never mutates, so a viewer can call it. The query-seeded path reuses
-// the ONE pooled SearchService (getDefaultService / pooledAdHocDeps) so we never
+// the ONE pooled SearchService (serviceForRequest) so we never
 // load a second ONNX copy into the serving process (#436 OOM incident).
 //
 // The selection algorithm is pure (search/contextPack.js) — this router is the
@@ -20,8 +20,7 @@ import pool from '../db.js';
 import { parseMarkdown } from '../markdown.js';
 import { EDGE_TYPES } from '../search/types.js';
 import { buildNeighborhood } from '../search/contextPack.js';
-import { getDefaultService, pooledAdHocDeps } from './search.js';
-import { SearchService } from '../search/service.js';
+import { serviceForRequest } from './search.js';
 import { compileFilter } from '../metaFilter.js';
 
 const router = Router({ mergeParams: true });
@@ -164,9 +163,10 @@ router.post('/', async (req, res, next) => {
   if (p.query) {
     let service;
     try {
-      service = p.config
-        ? new SearchService({ config: p.config, pool, deps: pooledAdHocDeps(p.config) })
-        : getDefaultService();
+      // Same merge rule as /search: a partial config normalizes over the
+      // DEPLOYED config, so asking for one knob here can't silently drop the
+      // dense leg this deployment runs on.
+      service = serviceForRequest(p.config, pool);
     } catch (err) {
       if (err.status === 400) return res.status(400).json({ error: err.message, errors: err.errors });
       return next(err);

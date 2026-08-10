@@ -95,3 +95,51 @@ describe('configFromEnv', () => {
     expect(configFromEnv({ DENSE_CHUNK_TOPK: '150' }).dense.chunkTopK).toBe(150);
   });
 });
+
+// The silent-downgrade bug (fixed 2026-08-08). validateConfig's `base` decides
+// what an OMITTED key inherits, and the library default is deliberately Tier-0
+// (lexical only, no providers, topK 10). Validating a partial REQUEST config
+// against that base stripped whatever the deployment had enabled — the dense
+// leg, graph expansion, the tuned top-K — and returned keyword-only results
+// with no error, no warning, and an empty timings.errors. The route must merge
+// over the DEPLOYED config instead; these pin the mechanism that lets it.
+describe('validateConfig base (deployed-config merge)', () => {
+  const deployed = {
+    ...defaultConfig(),
+    retrievers: ['lexical', 'dense'],
+    postprocessors: ['graphExpand'],
+    topK: 50,
+    providers: {
+      embedding: { backend: 'static', model: 'static-retrieval-mrl-en-v1-int8-d1024' },
+      rerank: { backend: 'none' },
+    },
+  };
+
+  it('a partial config inherits the deployment stack, not the Tier-0 default', () => {
+    const { config, errors } = validateConfig({ topK: 100 }, deployed);
+    expect(errors).toEqual([]);
+    expect(config.topK).toBe(100);              // the caller's one knob applies
+    expect(config.retrievers).toEqual(['lexical', 'dense']); // dense survives
+    expect(config.postprocessors).toEqual(['graphExpand']);  // expansion survives
+    expect(config.providers.embedding.backend).toBe('static'); // provider survives
+  });
+
+  it('without a base it still yields the vanilla shape (self-host / tests)', () => {
+    expect(validateConfig({ topK: 100 }).config.retrievers).toEqual(['lexical']);
+  });
+
+  it('an explicit override still wins over the deployed value', () => {
+    const { config } = validateConfig({ retrievers: ['lexical'] }, deployed);
+    expect(config.retrievers).toEqual(['lexical']);
+  });
+
+  it('rejects unknown top-level keys loudly instead of degrading silently', () => {
+    // `alpha` is a /context body param, not a search config key — passing it
+    // here used to be accepted and quietly halve the engine.
+    const { errors } = validateConfig({ alpha: 0.5 }, deployed);
+    expect(errors.join()).toMatch(/unknown config key "alpha"/);
+    expect(validateConfig({ bogusKey: 123 }, deployed).errors.join()).toMatch(/unknown config key/);
+    // A real config round-trips clean through the strict check.
+    expect(validateConfig(deployed, deployed).errors).toEqual([]);
+  });
+});

@@ -145,4 +145,47 @@ describe('pooledAdHocDeps (OOM guard unit)', () => {
     );
     expect(deps).toEqual({});
   });
+
+  // The `static` backend is in-process too: its weights are a quantized table
+  // read from disk (~31MB + tokenizer). Before this was pooled, a merged
+  // config inheriting the deployed static backend built a FRESH provider per
+  // request — paying that read every time and destroying the instant-start
+  // property the backend exists for.
+  describe('static backend pooling', () => {
+    const STATIC_EMB = { modelId: 'deployed-static', embed: async () => [] };
+    const staticDefault = {
+      config: {
+        providers: {
+          embedding: { backend: 'static', model: 'static-retrieval-mrl-en-v1-int8-d1024' },
+          rerank: { backend: 'none' },
+        },
+      },
+      providers: { embedding: STATIC_EMB, rerank: null },
+    };
+
+    it('reuses the deployed static table instead of loading a second copy', () => {
+      const deps = pooledAdHocDeps(
+        { providers: { embedding: { backend: 'static', model: 'static-retrieval-mrl-en-v1-int8-d1024' } } },
+        staticDefault,
+      );
+      expect(deps.embeddingProvider).toBe(STATIC_EMB);
+    });
+
+    it('rejects a static override naming a different artifact or directory', () => {
+      for (const override of [{ model: 'static-retrieval-mrl-en-v1-int8-d256' }, { staticDir: '/elsewhere' }]) {
+        expect(() => pooledAdHocDeps(
+          {
+            providers: {
+              embedding: {
+                backend: 'static',
+                model: 'static-retrieval-mrl-en-v1-int8-d1024',
+                ...override,
+              },
+            },
+          },
+          staticDefault,
+        )).toThrow(/deployed model/);
+      }
+    });
+  });
 });

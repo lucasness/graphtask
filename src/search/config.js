@@ -61,19 +61,45 @@ function validateProvider(label, p, errors) {
   }
 }
 
+/** Every top-level key a config may carry — the allow-list for the
+ *  unknown-key check below. Kept adjacent to defaultConfig(), whose shape it
+ *  mirrors: a new knob must appear in both. */
+const CONFIG_KEYS = [
+  'retrievers', 'fusion', 'postprocessors', 'topK',
+  'providers', 'graphExpand', 'dense', 'lexical', 'queryRewrite',
+];
+
 /**
  * Validate a config object. Returns `{ config, errors }` — `config` is the
- * input normalized over the defaults, `errors` is a (possibly empty) array of
+ * input normalized over `base`, `errors` is a (possibly empty) array of
  * human-readable messages. Callers decide whether to throw (route: 400) or
- * fall back (service: default). Unknown stage NAMES are errors here rather than
- * silently dropped, so a typo surfaces loudly; a known-but-unimplemented stage
- * is the pipeline's graceful-degradation concern, not config's.
+ * fall back (service: default). Unknown stage NAMES — and unknown top-level
+ * KEYS — are errors here rather than silently dropped, so a typo surfaces
+ * loudly; a known-but-unimplemented stage is the pipeline's
+ * graceful-degradation concern, not config's.
+ *
+ * `base` is what an OMITTED key falls back to, and passing the right one is
+ * load-bearing: the library default is deliberately Tier-0 (lexical only, no
+ * providers, topK 10), so validating a partial request config against it
+ * silently strips whatever the DEPLOYMENT enabled via configFromEnv — the
+ * dense leg, graph expansion, the tuned top-K. Routes serving a live
+ * deployment must pass that deployment's config as the base (see
+ * routes/search.js); only a caller that genuinely wants the vanilla shape
+ * (tests, a self-host smoke run) should take the default.
+ *
+ * @param {Object} [input] partial config to normalize
+ * @param {Object} [base] what omitted keys inherit (default: the Tier-0 shape)
  */
-export function validateConfig(input = {}) {
+export function validateConfig(input = {}, base = defaultConfig()) {
   const errors = [];
-  const base = defaultConfig();
   if (!isPlainObject(input)) {
     return { config: base, errors: ['config must be an object'] };
+  }
+
+  for (const key of Object.keys(input)) {
+    if (!CONFIG_KEYS.includes(key)) {
+      errors.push(`unknown config key "${key}" (known: ${CONFIG_KEYS.join(', ')})`);
+    }
   }
 
   const cfg = {
@@ -158,9 +184,10 @@ export function validateConfig(input = {}) {
   return { config: cfg, errors };
 }
 
-/** Throwing variant for callers that treat a bad config as fatal. */
-export function assertConfig(input) {
-  const { config, errors } = validateConfig(input);
+/** Throwing variant for callers that treat a bad config as fatal. `base` has
+ *  the same meaning (and the same footgun) as in validateConfig. */
+export function assertConfig(input, base = defaultConfig()) {
+  const { config, errors } = validateConfig(input, base);
   if (errors.length) {
     const err = new Error(`invalid search config: ${errors.join('; ')}`);
     err.status = 400;
