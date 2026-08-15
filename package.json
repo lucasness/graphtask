@@ -22,5 +22,18 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0"
+  },
+  "overrides": {
+    "rolldown": "1.2.3",
+    "nanoid": "3.3.17",
+    "postcss": "8.5.25",
+    "vite": "8.2.0",
+    "@clerk/shared": "4.26.0",
+    "body-parser": {
+      "content-type": "2.0.0"
+    },
+    "type-is": {
+      "content-type": "2.0.0"
+    }
   }
 }
