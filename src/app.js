@@ -33,7 +33,25 @@ import * as selectionState from './selectionState.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json());
+
+// JSON body cap. Express's own default is 100 KB, which is too small for this
+// API's legitimate payloads: a /batch write of a few hundred nodes and their
+// edges, or a PUT of a long-form report, both exceed it and 413 before the
+// handler runs. Reports are the hard case — a report is one PUT that replaces
+// the whole body, so unlike /batch it cannot be split into smaller requests.
+// 2 MB clears both with headroom while still bounding a hostile body; the real
+// work limits live downstream (batch caps nodes/edges per call), so this is a
+// transport guard, not a throughput one. Self-hosters can override via
+// GRAPHTASK_JSON_MAX_BYTES (raw bytes), mirroring GRAPHTASK_UPLOAD_MAX_BYTES.
+const DEFAULT_JSON_MAX_BYTES = 2 * 1024 * 1024;
+const JSON_MAX_BYTES = (() => {
+  const raw = process.env.GRAPHTASK_JSON_MAX_BYTES;
+  if (!raw) return DEFAULT_JSON_MAX_BYTES;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_JSON_MAX_BYTES;
+  return parsed;
+})();
+app.use(express.json({ limit: JSON_MAX_BYTES }));
 app.use(writerType);
 
 // Auth wiring. The adapter is selected once at boot from AUTH_PROVIDER; its
