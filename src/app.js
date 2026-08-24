@@ -23,6 +23,7 @@ import frontierRouter from './routes/frontier.js';
 import decisionsAtRiskRouter from './routes/decisionsAtRisk.js';
 import inconsistencyRouter from './routes/inconsistency.js';
 import structureRouter from './routes/structure.js';
+import exportRouter from './routes/export.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
@@ -142,6 +143,10 @@ app.use('/api/graphs/:gid/frontier', requireGraph('read'), frontierRouter);
 app.use('/api/graphs/:gid/decisions/at-risk', requireGraph('read'), decisionsAtRiskRouter);
 app.use('/api/graphs/:gid/inconsistencies', requireGraph('read'), inconsistencyRouter);
 app.use('/api/graphs/:gid/structure', requireGraph('read'), structureRouter);
+// OKF v0.2 bundle export: a read-only snapshot of the whole graph as markdown
+// + YAML frontmatter (JSON envelope by default, ?format=tar for a ustar
+// download). Read-scoped like /graph — a viewer or anon-viewer can export.
+app.use('/api/graphs/:gid/export', requireGraph('read'), exportRouter);
 app.use('/api/graphs/:gid/presence', requireGraph('read'), presenceRouter);
 app.use('/api/graphs/:gid/selection', requireGraph('read'), selectionRouter);
 app.use('/api/graphs/:gid/prefs', requireGraph('read'), graphPrefsRouter);
