@@ -139,6 +139,50 @@
   --r-lg: 8px;
   --r-xl: 12px;
 
+  /* --- Workflow status colors — DARK values ---
+     Same class of omission: these were declared only in the light block while
+     the kanban column titles, the kanban flash keyframes and the node page's
+     .node-status-dot use them with no fallback — so in dark mode all four
+     statuses rendered colorless. `fill` tiers are tinted backgrounds (dim
+     washes on this ground); `stroke` tiers stay legible as line/text. */
+  --status-todo-stroke:        var(--color-subtle-gray);
+  --status-in-progress-stroke: #e8a24b;
+  --status-in-progress-fill:   rgba(232, 138, 27, 0.16);
+  --status-review-stroke:      #5fcf90;
+  --status-review-fill:        rgba(73, 202, 128, 0.16);
+  --status-done-stroke:        #8b83f0;
+  --status-done-fill:          rgba(79, 70, 229, 0.20);
+
+  /* Status — orange family */
+  --orange-light:  rgba(254, 114, 51, 0.14);
+  --orange-medium: #a8562c;
+  --orange-strong: #ff8a4c;
+
+  /* Status — purple family */
+  --purple-light:  rgba(164, 95, 255, 0.14);
+  --purple-medium: #7a4bb8;
+  --purple-strong: #b98cff;
+
+  /* Status — green family */
+  --green-light:  rgba(73, 202, 128, 0.14);
+  --green-medium: #3a8659;
+  --green-strong: #5fcf90;
+
+  /* Status — blue family */
+  --blue-light:  rgba(67, 172, 230, 0.14);
+  --blue-medium: #35708f;
+  --blue-strong: #63c0f0;
+
+  /* Status — red family */
+  --red-light:  rgba(239, 50, 48, 0.14);
+  --red-medium: #a3453c;
+  --red-strong: #f4675f;
+
+  /* Status — yellow family */
+  --yellow-light:  rgba(246, 197, 62, 0.14);
+  --yellow-medium: #9c7f33;
+  --yellow-strong: #f3ce5e;
+
   /* Theme-scoped semantic accents */
   --orange: var(--color-action-orange);
   --blue: var(--color-action-orange);
