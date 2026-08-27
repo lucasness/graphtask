@@ -35,6 +35,63 @@
   --cyan: #3AA99F;
   --purple: #8B7EC8;
   --magenta: #CE5D97;
+
+  /* === TYPOGRAPHY — theme-invariant ==========================================
+   * A theme is a PALETTE. It decides what colour things are, never what
+   * typeface or size they are. These four faces and both size scales are
+   * therefore declared once here and are identical in light and dark; only
+   * the colours they render in change.
+   *
+   * This used to be false: the dark block redefined all four --font-* tokens
+   * to Helvetica Neue, so the entire type system — the serif display face, the
+   * uppercase label face, the reading face — silently collapsed to one sans in
+   * dark mode. tests/theme-blocks-are-colour-only.test.js now fails the build
+   * if a typography token reappears inside a [data-theme] block.
+   *
+   * Roles (see design/DESIGN.md § Tokens — Typography):
+   *   --font-display  Playfair Display — display headings, report h2, stat values
+   *   --font-label    Nunito           — UPPERCASE eyebrows + pill labels ONLY
+   *   --font-body     DM Sans          — body copy, captions, reading surfaces
+   *   --font-ui       Inter            — controls, lists, app chrome
+   * ========================================================================= */
+  --font-display: 'Playfair Display', 'EB Garamond', Garamond, 'Times New Roman', serif;
+  --font-label:   'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body:    'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-ui:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* --- UI type scale — app chrome. Pick the token whose ROLE matches; don't
+     hardcode px. See design/DESIGN.md § Type Scale. --- */
+  --text-meta: 11px;
+  --text-body-sm: 13px;
+  --text-body: 14px;
+  --text-section: 15px;
+  --text-heading: 22px;
+  --text-heading-lg: 24px;
+  /* Legacy aliases — prefer the canonical names above in new code. */
+  --text-caption: var(--text-body-sm);
+  --text-subheading: var(--text-body);
+  --text-heading-sm: var(--text-heading);
+
+  /* --- Leading + tracking. Typography, so theme-invariant. The dark block
+     used to run looser (1.7 / 0.15px) to compensate for the Helvetica Neue
+     substitution; with the real faces restored in both themes that hack is
+     obsolete and both themes use the documented values. --- */
+  --leading-caption: 1.55;
+  --leading-body-sm: 1.55;
+  --leading-body: 1.55;
+  --tracking-body-sm: normal;
+
+  /* --- Prose scale — long-form reading surfaces (report + node bodies).
+     Separate from the UI scale above, whose roles are chips and form labels
+     and which stops at 24px. See design/DESIGN.md § Report Prose. --- */
+  --prose-h2: 26px;
+  --prose-h3: 17px;
+  --prose-h4: 15px;
+  --prose-body: 16px;
+  --prose-small: 14px;
+  --prose-caption: 13px;
+  --prose-leading: 1.75;
+  --prose-measure: 68ch;
 }
 
 /* ---------- DARK (default) — Cron Calendar reference ---------- */
@@ -50,7 +107,6 @@
   --color-deep-ember: #8b2e09;
 
   /* Reference fonts (Helvetica Neue universally) */
-  --font-helvetica-neue: 'Helvetica Neue', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 
   /* === TYPE SCALE — single source of truth for text sizing ====================
    * Every font-size in the codebase should pick one of these four tokens. If
@@ -67,22 +123,9 @@
    * Font *family* and *color* are intentionally separate tokens (--font-*,
    * --color-*) so app-level + graph-level overrides keep working.
    * ========================================================================= */
-  --text-meta: 11px;
-  --text-body-sm: 13px;
-  --text-body: 14px;
-  --text-section: 15px;
-  --text-heading: 22px;
-  --text-heading-lg: 24px;
 
   /* Legacy tokens kept as aliases so existing callers don't break while the
      audit migrates them. Prefer the five above for new code. */
-  --text-caption: var(--text-body-sm);
-  --leading-caption: 1.7;
-  --leading-body-sm: 1.7;
-  --tracking-body-sm: 0.15px;
-  --leading-body: 1.5;
-  --text-subheading: var(--text-body);
-  --text-heading-sm: var(--text-heading);
 
   /* Reference radii (flat surfaces, 4px buttons, 9999px pills) */
   --radius-md: 4px;
@@ -110,10 +153,6 @@
   --color-cobalt-link:    var(--color-action-orange);
 
   /* All four legacy font tokens collapse to Helvetica Neue */
-  --font-display: var(--font-helvetica-neue);
-  --font-label:   var(--font-helvetica-neue);
-  --font-body:    var(--font-helvetica-neue);
-  --font-ui:      var(--font-helvetica-neue);
 
   /* Legacy radius aliases — cron is flatter than mymind */
   --radius-cards:    8px;
@@ -212,14 +251,6 @@
    * both blocks only because the file has no shared non-color block for them);
    * see design/DESIGN.md § Report Prose for the roles.
    * ========================================================================= */
-  --prose-h2: 26px;
-  --prose-h3: 17px;
-  --prose-h4: 15px;
-  --prose-body: 16px;
-  --prose-small: 14px;
-  --prose-caption: 13px;
-  --prose-leading: 1.75;
-  --prose-measure: 68ch;
 
   /* === CHART RAMP ===========================================================
    * The ONLY colors a report figure may use. Inline SVG in a report body
@@ -241,7 +272,7 @@
 
   /* Layout / per-graph appearance defaults */
   --canvas-bg: var(--color-cron-black);
-  --app-font: var(--font-helvetica-neue);
+  --app-font: var(--font-ui);
   --app-font-color: var(--color-bright-white);
 }
 
@@ -341,29 +372,11 @@
   --color-action-orange:  var(--color-ember-orange);
   --color-soft-ember:     #ffe6df;
   --color-deep-ember:     var(--color-ember-orange);
-  --font-helvetica-neue:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
   /* Reference fonts */
-  --font-display: 'Playfair Display', 'EB Garamond', Garamond, 'Times New Roman', serif;
-  --font-label:   'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-body:    'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-ui:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
   /* Type scale — see the master block at the top of the file for the spec.
      This light-theme override resolves to the same values. */
-  --text-meta: 11px;
-  --text-body-sm: 13px;
-  --text-body: 14px;
-  --text-section: 15px;
-  --text-heading: 22px;
-  --text-heading-lg: 24px;
-  --text-caption: var(--text-body-sm);
-  --leading-caption: 1.55;
-  --leading-body-sm: 1.55;
-  --tracking-body-sm: normal;
-  --leading-body: 1.55;
-  --text-subheading: var(--text-body);
-  --text-heading-sm: var(--text-heading);
 
   /* Reference radii */
   --radius-md: 12px;
@@ -408,14 +421,6 @@
 
   /* Prose scale — see the dark block for the roles. Same sizes in both
      themes; only the colors these compose with differ. */
-  --prose-h2: 26px;
-  --prose-h3: 17px;
-  --prose-h4: 15px;
-  --prose-body: 16px;
-  --prose-small: 14px;
-  --prose-caption: 13px;
-  --prose-leading: 1.75;
-  --prose-measure: 68ch;
 
   /* Chart ramp — same roles, re-resolved against the light palette. */
   --chart-1: var(--color-ember-orange);

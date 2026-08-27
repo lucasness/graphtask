@@ -103,6 +103,10 @@ The graph view's cytoscape `style` array can't take CSS variables directly (it's
 
 Four typefaces, each with a clear role. Typeface choice does the hierarchy work — weight contrast within a family is minimal.
 
+> **Typography is theme-invariant.** A theme is a *palette*: it decides what colour things are, never what typeface or size they are. All four `--font-*` faces, both size scales (`--text-*` chrome, `--prose-*` reading) and the leading/tracking tokens are declared **once** in the base `:root` and are identical in light and dark — only the colours they render in change. This was previously false: the dark block re-pointed all four faces to Helvetica Neue, collapsing the whole type system to a single sans, and duplicated both size scales so they could drift. `tests/theme-blocks-are-colour-only.test.js` fails the build if a typography token reappears inside a `[data-theme]` block, and asserts every weight the CSS uses is actually requested from Google Fonts (an unloaded weight gets synthesised into smeared letterforms rather than the real cut).
+>
+> The one category still deliberately theme-scoped is **shape** (`--radius-*`, `--r-*`): dark is flat (4px buttons) where light is round (100px pills). That's the same category error, but unifying it restyles every button and card, so it's a design decision rather than a cleanup — the test tracks it as a named exception rather than letting it spread.
+
 ### Playfair Display — Display headings · `--font-display`
 - **Stack:** `'Playfair Display', 'EB Garamond', Garamond, 'Times New Roman', serif`
 - **Weights:** 400
