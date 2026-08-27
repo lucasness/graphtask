@@ -984,6 +984,124 @@ Do **not** add `related to` to that list hoping for more coverage. It is the pro
 - *"does the graph contradict itself / is claim X contested"* → `/inconsistencies` (graph-wide / per-claim).
 - *"what supports or contradicts N"* → `GET /graph`, then filter N's links by `purpose`.
 
+## Report prose: the house style
+
+Everything below governs the **body of a report** (`PUT /report`) and, where it
+applies, long node bodies. It exists because the reader renders through a real
+design system now — `design/DESIGN.md` § Report Prose specifies the visual side;
+this is the authoring side. Follow it whatever harness you run in.
+
+### The sanitizer contract (read first)
+
+The reader passes every body through DOMPurify with
+`FORBID_TAGS: [input, script, textarea, form, button, select, meta, style, link, title, object, base]`.
+Consequences you must design around:
+
+- **You cannot ship CSS.** No `<style>` blocks, and don't reach for `style="…"`
+  attributes either — inline color would bypass the theme and break in one of
+  the two themes. Use the `gt-` classes below; they are the whole palette.
+- **You can ship structure.** `div`, `span`, `p`, `figure`, `figcaption`,
+  `table`, `svg` and the `class` attribute all survive. That is what makes the
+  vocabulary possible.
+- **Inline SVG works and themes itself**, because it reads CSS custom
+  properties. This is the ONLY way to put a chart in a report.
+
+### Emphasis
+
+| Device | Use for | Don't |
+|---|---|---|
+| **Bold** | A defined term at first use, or the one load-bearing number in a paragraph. At most a couple per paragraph — bold everything and nothing is bold. | Whole sentences. Bold is a pointer, not a highlighter. |
+| *Italic* | A contrast or pivot the sentence turns on ("the beat was never the variable — *guidance* was"), and titles of works. | Emphasis you could get from better word order. |
+| `Code` | Identifiers, endpoints, literal values, file paths. | Ordinary nouns. |
+| UPPERCASE | **Never in body prose.** Caps is the eyebrow/pill language (`.gt-eyebrow`, `.gt-pill`); using it in a sentence collides with the component vocabulary and reads as shouting. | — |
+
+### Structure is information
+
+Every structural device must encode something true, or it's decoration:
+
+- An eyebrow names what the section **is** ("Question 2 — is the premise
+  right?"), not that a section exists.
+- Numbered markers (01 / 02) only when the content genuinely **is** a sequence —
+  a real process, an ordered timeline. Don't number a set of parallel findings.
+- A callout variant is a claim about severity. `.warn` means *read this before
+  acting on the section*. Don't reach for it to make a paragraph look important.
+- A table `<caption>` states the **takeaway** ("Comps improved for eight
+  straight quarters before the market re-rated"), never the column list — the
+  columns are already visible.
+
+### The `gt-` vocabulary
+
+Only these classes exist. Anything else renders unstyled.
+
+| Class | Use when |
+|---|---|
+| `.gt-eyebrow` (`+ .muted`) | Labelling a section with its question or role, above the `##` heading. |
+| `.gt-note` (`+ .warn`, `+ .key`) | An aside that would break the paragraph's flow. `.warn` = caveat that changes how to read the section; `.key` = the finding itself. Inner `<p class="h">` is its uppercase label. |
+| `.gt-stats` › `.gt-stat` › `.k`/`.v`/`.s` | Three-to-six headline numbers scanned together. `.v` takes `.up`/`.down` for direction. Not for one number — put that in the prose. |
+| `.gt-pill` (`+ .good`/`.bad`/`.flag`) | An inline status chip beside a name or row. |
+| `.gt-fig` › `<svg>` + `<figcaption>` | Any chart or diagram. Always with a caption. |
+| `.gt-legend` › `<span><i></i>…` | Series key above a multi-series chart. |
+| `.gt-scroll` | **Wraps every table.** The reading measure is 68ch; an unwrapped wide table scrolls the whole page. |
+| `.gt-cols.two` › `.gt-card` › `.h` | Genuinely paired content — for/against, before/after. Not a generic card grid. |
+| `.num` | On a `<td>`/`<th>` holding figures: right-aligns and stops wrapping. |
+
+### Charts
+
+Inline SVG only. **Never upload a raster (PNG/JPG) for data** — it can't follow
+the theme, can't be read by a screen reader, and goes blurry on retina.
+
+- Color comes **exclusively** from `--chart-1` … `--chart-6` (categorical, in
+  order), with `--chart-grid` for gridlines and `--chart-label` for axis text.
+  Never a literal hex — a hex works in one theme and fails in the other.
+- Always `viewBox="0 0 W H"` plus `width="100%"`, so it scales.
+- Always `role="img"` and an `aria-label` that states what the data *shows*
+  ("Comparable sales by quarter, improving from −11% to +5%"), not what it is
+  ("a line chart").
+- Keep it to what SVG does well: lines, areas, bars, simple scatter. If it needs
+  a rendering engine, it doesn't belong in a report.
+
+```markdown
+## What the graph actually says
+
+<p class="gt-eyebrow">Question 2 — where is the work concentrated?</p>
+
+<div class="gt-stats">
+  <div class="gt-stat"><div class="k">Ready now</div><div class="v up">12</div><div class="s">of 47 open</div></div>
+  <div class="gt-stat"><div class="k">Blocked</div><div class="v down">9</div><div class="s">on 3 seams</div></div>
+</div>
+
+Most of the remaining work sits behind **three seam nodes** — sever any one and
+the region downstream is cut off.
+
+<figure class="gt-fig">
+  <div class="gt-legend"><span><i style="background:var(--chart-1)"></i>Done</span></div>
+  <svg viewBox="0 0 600 180" width="100%" role="img"
+       aria-label="Completed nodes per week, rising from 2 to 11 over six weeks.">
+    <line x1="0" y1="150" x2="600" y2="150" stroke="var(--chart-grid)"/>
+    <polyline fill="none" stroke="var(--chart-1)" stroke-width="2"
+              points="0,140 120,120 240,95 360,70 480,45 600,30"/>
+  </svg>
+  <figcaption>Throughput has roughly doubled since the E15 schema landed.</figcaption>
+</figure>
+
+<div class="gt-scroll">
+<table>
+  <caption>Every seam traces back to the same unresolved schema decision.</caption>
+  <thead><tr><th>Region</th><th class="num">Open</th></tr></thead>
+  <tbody><tr><td>Search</td><td class="num">7</td></tr></tbody>
+</table>
+</div>
+
+<div class="gt-note warn">
+  <p class="h">Before you act on this</p>
+  <p>Two of the three seams are the same node counted twice.</p>
+</div>
+```
+
+The `.gt-` list above is enforced: `tests/report-prose-vocabulary.test.js` fails
+the build if this table and `public/style.css` disagree, so a class named here
+always renders.
+
 ## Using graphtask with dynamic workflows
 
 This section applies only when the harness running this skill ALSO exposes a dynamic-workflow / multi-agent orchestration tool (e.g. Claude Code's `Workflow`, plus `Agent` for a single subagent). With one, the graph stops being merely where you *record* work and becomes the durable home for work a workflow *does*: the workflow is the engine that executes one node's fan-out; the graph keeps the plan, the dependencies, and the result.

@@ -139,6 +139,20 @@
   --r-lg: 8px;
   --r-xl: 12px;
 
+  /* === Status hue families — DARK values ====================================
+   * These six families (light/medium/strong per family) used to be declared
+   * ONLY inside :root[data-theme="light"]. Ten call sites outside that block
+   * use them with no fallback — including the Outlined Green Pill primary CTA
+   * — so in dark mode `var(--green-strong)` was invalid at computed-value
+   * time and those declarations dropped entirely (the Save/Confirm button lost
+   * its green). A token must resolve in EVERY theme it can be reached from;
+   * tests/token-completeness.test.js now fails the build on a regression.
+   *
+   * These are not the light tints re-used: on a near-black ground the light
+   * tiers need to be dim washes (backgrounds) and the strong tiers need to
+   * stay legible as text/borders, so each tier is picked for this ground.
+   * ========================================================================= */
+
   /* --- Workflow status colors — DARK values ---
      Same class of omission: these were declared only in the light block while
      the kanban column titles, the kanban flash keyframes and the node page's
@@ -186,6 +200,44 @@
   /* Theme-scoped semantic accents */
   --orange: var(--color-action-orange);
   --blue: var(--color-action-orange);
+
+  /* === PROSE SCALE — long-form reading surfaces ==============================
+   * The --text-* scale above is for app CHROME: its roles are chips, form
+   * labels and modal titles, and it stops at 24px. Report and node bodies are
+   * a different problem — running text at a 68ch measure — so they get their
+   * own scale rather than borrowing UI tokens that mean something else.
+   *
+   * Consumed by `#reader-body`/`#node-body .toastui-editor-contents` and the
+   * .gt-* report component vocabulary. Sizes are theme-invariant (they live in
+   * both blocks only because the file has no shared non-color block for them);
+   * see design/DESIGN.md § Report Prose for the roles.
+   * ========================================================================= */
+  --prose-h2: 26px;
+  --prose-h3: 17px;
+  --prose-h4: 15px;
+  --prose-body: 16px;
+  --prose-small: 14px;
+  --prose-caption: 13px;
+  --prose-leading: 1.75;
+  --prose-measure: 68ch;
+
+  /* === CHART RAMP ===========================================================
+   * The ONLY colors a report figure may use. Inline SVG in a report body
+   * survives the Toast UI sanitizer and reads CSS custom properties, so a
+   * chart written with stroke="var(--chart-1)" recolors with the theme for
+   * free — no uploaded rasters, no per-theme variants. Aliased onto the
+   * status families so a figure can never drift from the palette.
+   * Ordered for categorical use: ember first (the brand mark), then the
+   * status hues at maximum separation.
+   * ========================================================================= */
+  --chart-1: var(--color-ember-orange);
+  --chart-2: var(--blue-strong);
+  --chart-3: var(--green-strong);
+  --chart-4: var(--purple-strong);
+  --chart-5: var(--yellow-strong);
+  --chart-6: var(--red-strong);
+  --chart-grid: var(--border);
+  --chart-label: var(--tx-3);
 
   /* Layout / per-graph appearance defaults */
   --canvas-bg: var(--color-cron-black);
@@ -353,6 +405,27 @@
   --canvas-bg: var(--color-canvas-white);
   --app-font: var(--font-ui);
   --app-font-color: var(--color-deep-slate);
+
+  /* Prose scale — see the dark block for the roles. Same sizes in both
+     themes; only the colors these compose with differ. */
+  --prose-h2: 26px;
+  --prose-h3: 17px;
+  --prose-h4: 15px;
+  --prose-body: 16px;
+  --prose-small: 14px;
+  --prose-caption: 13px;
+  --prose-leading: 1.75;
+  --prose-measure: 68ch;
+
+  /* Chart ramp — same roles, re-resolved against the light palette. */
+  --chart-1: var(--color-ember-orange);
+  --chart-2: var(--blue-strong);
+  --chart-3: var(--green-strong);
+  --chart-4: var(--purple-strong);
+  --chart-5: var(--yellow-strong);
+  --chart-6: var(--red-strong);
+  --chart-grid: var(--border);
+  --chart-label: var(--tx-3);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -715,11 +788,468 @@ body.view-kanban #tb-neutral .tb-divider:not(:last-of-type) {
   margin-bottom: 32px;
   border-bottom: 1px solid var(--border);
 }
-#reader-body .toastui-editor-contents {
+/* ============================================================================
+ * REPORT PROSE — the long-form reading surfaces
+ * ============================================================================
+ * Shared by BOTH reading surfaces: the report (#reader-body) and the single
+ * node permalink page (#node-body). DESIGN.md § Node Page makes that deliberate
+ * — arriving from a citation should feel like turning a page, not switching
+ * apps — so these rules are authored once against both selectors, never
+ * duplicated.
+ *
+ * Everything here overrides Toast UI's stock content stylesheet, which the
+ * viewer bundle ships and which was never designed against this system. Before
+ * this block the body got three declarations (family/size/leading) and every
+ * heading, table and quote fell through to Toast UI's defaults.
+ *
+ * SANITIZER CONTRACT: the viewer runs the body through DOMPurify with
+ * FORBID_TAGS including `style` and `script`. A report therefore CANNOT carry
+ * its own CSS — but `div`, `span`, `figure`, `svg` and the `class` attribute
+ * all survive. That is why the .gt-* vocabulary below exists: the design
+ * system owns the look, and the drafting agent picks semantics by class name.
+ * The vocabulary is documented for authors in
+ * .claude/skills/graphtask/SKILL.md and specified in design/DESIGN.md.
+ * tests/report-prose-vocabulary.test.js keeps the two in sync.
+ * ========================================================================== */
+
+#reader-body .toastui-editor-contents,
+#node-body .toastui-editor-contents {
   font-family: var(--font-body);
-  font-size: 16px;
-  line-height: 1.75;
+  font-size: var(--prose-body);
+  line-height: var(--prose-leading);
+  color: var(--tx);
 }
+
+/* --- Heading ladder -------------------------------------------------------
+   h2 carries the display serif already used for the report title, so section
+   breaks read editorially; h3/h4 drop to the body sans at weight 600 so the
+   hierarchy is unmistakable without a third face. h1 is not styled here — the
+   report's own title is chrome (#reader-title), and a body h1 would compete
+   with it. */
+#reader-body .toastui-editor-contents h2,
+#node-body .toastui-editor-contents h2 {
+  font-family: var(--font-display);
+  font-size: var(--prose-h2);
+  font-weight: 700;
+  line-height: 1.18;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  color: var(--tx);
+  margin: 2.2em 0 0.6em;
+  padding: 0;
+  border-bottom: none;
+}
+#reader-body .toastui-editor-contents h3,
+#node-body .toastui-editor-contents h3,
+#reader-body .toastui-editor-contents h4,
+#node-body .toastui-editor-contents h4 {
+  font-family: var(--font-body);
+  font-weight: 600;
+  line-height: 1.34;
+  text-wrap: balance;
+  color: var(--tx);
+  border-bottom: none;
+}
+#reader-body .toastui-editor-contents h3,
+#node-body .toastui-editor-contents h3 {
+  font-size: var(--prose-h3);
+  margin: 1.9em 0 0.45em;
+}
+#reader-body .toastui-editor-contents h4,
+#node-body .toastui-editor-contents h4 {
+  font-size: var(--prose-h4);
+  margin: 1.6em 0 0.4em;
+  color: var(--tx-2);
+}
+/* First heading in a body shouldn't push a big gap under the header rule. */
+#reader-body .toastui-editor-contents > :first-child,
+#node-body .toastui-editor-contents > :first-child { margin-top: 0; }
+
+/* --- Running text --------------------------------------------------------- */
+#reader-body .toastui-editor-contents p,
+#node-body .toastui-editor-contents p {
+  margin: 0 0 1.05em;
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents strong,
+#node-body .toastui-editor-contents strong {
+  font-weight: 600;
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents em,
+#node-body .toastui-editor-contents em { font-style: italic; }
+#reader-body .toastui-editor-contents a,
+#node-body .toastui-editor-contents a {
+  color: var(--color-cobalt-link);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-cobalt-link) 35%, transparent);
+}
+#reader-body .toastui-editor-contents a:hover,
+#node-body .toastui-editor-contents a:hover {
+  border-bottom-color: var(--color-cobalt-link);
+}
+#reader-body .toastui-editor-contents hr,
+#node-body .toastui-editor-contents hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.4em 0;
+}
+#reader-body .toastui-editor-contents img,
+#node-body .toastui-editor-contents img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--r-md);
+}
+
+/* --- Lists — ember markers, the brand mark used as a mark, never a fill --- */
+#reader-body .toastui-editor-contents ul,
+#node-body .toastui-editor-contents ul,
+#reader-body .toastui-editor-contents ol,
+#node-body .toastui-editor-contents ol {
+  margin: 0 0 1.15em;
+  padding-left: 1.25em;
+}
+/* Toast UI sets `list-style: none` and draws its own ::before markers. We
+   suppress those below to get ember ::marker, so the native list-style has to
+   be put BACK explicitly — without this the lists render with no bullets and
+   no numbers at all. */
+#reader-body .toastui-editor-contents ul,
+#node-body .toastui-editor-contents ul { list-style: disc; }
+#reader-body .toastui-editor-contents ol,
+#node-body .toastui-editor-contents ol { list-style: decimal; }
+#reader-body .toastui-editor-contents li,
+#node-body .toastui-editor-contents li {
+  margin-bottom: 0.45em;
+  /* Toast UI's own li color is tuned for its light theme and is nearly
+     invisible on our dark ground. */
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents li::marker,
+#node-body .toastui-editor-contents li::marker {
+  color: var(--color-ember-orange);
+}
+/* Toast UI draws its own ::before bullets and hides the native marker; undo
+   that so ::marker above actually applies. */
+#reader-body .toastui-editor-contents ul > li::before,
+#node-body .toastui-editor-contents ul > li::before,
+#reader-body .toastui-editor-contents ol > li::before,
+#node-body .toastui-editor-contents ol > li::before {
+  content: none;
+}
+
+/* --- Quotes --------------------------------------------------------------- */
+#reader-body .toastui-editor-contents blockquote,
+#node-body .toastui-editor-contents blockquote {
+  margin: 1.5em 0;
+  padding: 2px 0 2px 1.35em;
+  border-left: 2px solid var(--color-ember-orange);
+  background: none;
+  font-family: var(--font-display);
+  font-size: 1.09em;
+  line-height: 1.5;
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents blockquote p:last-child,
+#node-body .toastui-editor-contents blockquote p:last-child { margin-bottom: 0; }
+#reader-body .toastui-editor-contents blockquote cite,
+#node-body .toastui-editor-contents blockquote cite {
+  display: block;
+  margin-top: 0.6em;
+  font-family: var(--font-body);
+  font-size: var(--prose-caption);
+  font-style: normal;
+  color: var(--tx-3);
+}
+
+/* --- Code ----------------------------------------------------------------- */
+#reader-body .toastui-editor-contents code,
+#node-body .toastui-editor-contents code {
+  font-size: 0.88em;
+  padding: 0.12em 0.38em;
+  border-radius: var(--r-sm);
+  background: var(--ui);
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents pre,
+#node-body .toastui-editor-contents pre {
+  margin: 1.4em 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  overflow-x: auto;
+}
+#reader-body .toastui-editor-contents pre code,
+#node-body .toastui-editor-contents pre code {
+  padding: 0;
+  background: none;
+  font-size: var(--prose-caption);
+  line-height: 1.6;
+}
+
+/* --- Tables ---------------------------------------------------------------
+   Toast UI ships no table treatment worth keeping. Header row borrows the
+   eyebrow language (Nunito, uppercase, tracked) so data tables read as part of
+   the same system as the app chrome. `caption` sits BELOW the table and is
+   where the takeaway goes. Digits are tabular so columns align.
+   A wide table is contained by .gt-scroll (below) — required, because the
+   reading measure is 68ch and an uncontained table scrolls the whole page. */
+#reader-body .toastui-editor-contents table,
+#node-body .toastui-editor-contents table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0;
+  font-size: var(--prose-small);
+  font-variant-numeric: tabular-nums;
+  border: none;
+}
+#reader-body .toastui-editor-contents th,
+#node-body .toastui-editor-contents th,
+#reader-body .toastui-editor-contents td,
+#node-body .toastui-editor-contents td {
+  padding: 9px 14px;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  color: var(--tx);
+}
+#reader-body .toastui-editor-contents thead th,
+#node-body .toastui-editor-contents thead th {
+  font-family: var(--font-label);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--tx-3);
+  background: var(--bg-3);
+  white-space: nowrap;
+}
+#reader-body .toastui-editor-contents tbody tr:last-child td,
+#node-body .toastui-editor-contents tbody tr:last-child td { border-bottom: none; }
+#reader-body .toastui-editor-contents caption,
+#node-body .toastui-editor-contents caption {
+  caption-side: bottom;
+  text-align: left;
+  /* Bottom padding matters: the caption is the last thing inside .gt-scroll,
+     so without it the text sits flush on the container's border. */
+  padding: 10px 14px 12px;
+  font-size: var(--prose-caption);
+  line-height: 1.5;
+  color: var(--tx-3);
+}
+/* Numeric column alignment — opt-in per cell, since markdown tables can't
+   express column types. */
+#reader-body .toastui-editor-contents .num,
+#node-body .toastui-editor-contents .num { text-align: right; white-space: nowrap; }
+
+/* ============================================================================
+ * .gt-* REPORT COMPONENT VOCABULARY
+ * ----------------------------------------------------------------------------
+ * The fixed set of classes a report author may use via HTML-in-markdown.
+ * Namespaced `gt-` so nothing collides with Toast UI's own classes. Adding a
+ * class here means adding it to SKILL.md's vocabulary table too — the
+ * vocabulary test fails the build otherwise, so a drafter can never emit a
+ * class that renders unstyled.
+ * ========================================================================== */
+
+/* Wide-content container. Any table, figure or block that can exceed the
+   reading measure goes inside one of these so the PAGE never scrolls
+   sideways — only the block does. */
+#reader-body .gt-scroll,
+#node-body .gt-scroll {
+  overflow-x: auto;
+  margin: 1.5em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+}
+#reader-body .gt-scroll > table,
+#node-body .gt-scroll > table { min-width: 34em; }
+
+/* Section eyebrow — the app's uppercase label language, in prose. Names what
+   the section IS; must encode something true, never decorate. */
+#reader-body .gt-eyebrow,
+#node-body .gt-eyebrow {
+  font-family: var(--font-label);
+  font-size: var(--text-body);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.125em;
+  color: var(--color-ember-orange);
+  margin: 0 0 var(--space-5);
+}
+#reader-body .gt-eyebrow.muted,
+#node-body .gt-eyebrow.muted { color: var(--tx-3); }
+
+/* Callout. Left-border hue encodes severity: default = neutral aside,
+   .warn = read this before you act on the section, .key = the finding. */
+#reader-body .gt-note,
+#node-body .gt-note {
+  margin: 1.6em 0;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--tx-3);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  font-size: var(--prose-small);
+}
+#reader-body .gt-note.warn,
+#node-body .gt-note.warn { border-left-color: var(--yellow-strong); }
+#reader-body .gt-note.key,
+#node-body .gt-note.key { border-left-color: var(--color-ember-orange); }
+#reader-body .gt-note > p:last-child,
+#node-body .gt-note > p:last-child { margin-bottom: 0; }
+#reader-body .gt-note .h,
+#node-body .gt-note .h {
+  font-family: var(--font-label);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--tx-3);
+  margin: 0 0 0.5em;
+}
+
+/* KPI tile row. Hairline grid via gap-over-background, so tiles share rules
+   without doubled borders. */
+#reader-body .gt-stats,
+#node-body .gt-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5em, 1fr));
+  gap: 1px;
+  margin: 1.6em 0;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+#reader-body .gt-stat,
+#node-body .gt-stat { background: var(--bg-2); padding: 14px 16px; }
+#reader-body .gt-stat .k,
+#node-body .gt-stat .k {
+  font-family: var(--font-label);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--tx-3);
+  margin-bottom: 0.35em;
+}
+#reader-body .gt-stat .v,
+#node-body .gt-stat .v {
+  font-family: var(--font-display);
+  font-size: 1.6em;
+  font-weight: 700;
+  line-height: 1.08;
+  font-variant-numeric: tabular-nums;
+  color: var(--tx);
+}
+#reader-body .gt-stat .s,
+#node-body .gt-stat .s {
+  font-size: var(--prose-caption);
+  color: var(--tx-3);
+  margin-top: 0.2em;
+  line-height: 1.4;
+}
+/* Direction-of-change semantics. Separate from the ember accent by design —
+   semantic color is not the brand mark. */
+#reader-body .gt-stat .v.up, #node-body .gt-stat .v.up,
+#reader-body .toastui-editor-contents .up, #node-body .toastui-editor-contents .up {
+  color: var(--green-strong);
+}
+#reader-body .gt-stat .v.down, #node-body .gt-stat .v.down,
+#reader-body .toastui-editor-contents .down, #node-body .toastui-editor-contents .down {
+  color: var(--red-strong);
+}
+
+/* Status chip. */
+#reader-body .gt-pill,
+#node-body .gt-pill {
+  display: inline-block;
+  font-family: var(--font-label);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  border-radius: var(--radius-tags);
+  border: 1px solid currentColor;
+  color: var(--tx-3);
+  vertical-align: middle;
+}
+#reader-body .gt-pill.good, #node-body .gt-pill.good { color: var(--green-strong); }
+#reader-body .gt-pill.bad,  #node-body .gt-pill.bad  { color: var(--red-strong); }
+#reader-body .gt-pill.flag, #node-body .gt-pill.flag { color: var(--yellow-strong); }
+
+/* Figure — the only container for a chart. Contains its own overflow so a
+   wide diagram never scrolls the page. */
+#reader-body .gt-fig,
+#node-body .gt-fig {
+  margin: 1.7em 0;
+  padding: 18px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  overflow-x: auto;
+}
+#reader-body .gt-fig svg,
+#node-body .gt-fig svg { display: block; max-width: 100%; height: auto; }
+#reader-body .gt-fig figcaption,
+#node-body .gt-fig figcaption {
+  margin-top: 0.75em;
+  font-size: var(--prose-caption);
+  line-height: 1.5;
+  color: var(--tx-3);
+}
+/* Chart legend — sits above the plot, mirrors the series colors. */
+#reader-body .gt-legend,
+#node-body .gt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em 1.3em;
+  margin-bottom: 12px;
+  font-family: var(--font-label);
+  font-size: var(--prose-caption);
+  letter-spacing: 0.04em;
+  color: var(--tx-3);
+}
+#reader-body .gt-legend i,
+#node-body .gt-legend i {
+  display: inline-block;
+  width: 16px;
+  height: 2.5px;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+/* Two-up card grid — for genuinely paired content (for/against, before/after).
+   Collapses to one column on narrow viewports. */
+#reader-body .gt-cols,
+#node-body .gt-cols { display: grid; gap: 14px; margin: 1.6em 0; }
+@media (min-width: 720px) {
+  #reader-body .gt-cols.two,
+  #node-body .gt-cols.two { grid-template-columns: 1fr 1fr; }
+}
+#reader-body .gt-card,
+#node-body .gt-card {
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  font-size: var(--prose-small);
+}
+#reader-body .gt-card > p:last-child,
+#node-body .gt-card > p:last-child { margin-bottom: 0; }
+#reader-body .gt-card .h,
+#node-body .gt-card .h {
+  font-family: var(--font-body);
+  font-size: var(--prose-h4);
+  font-weight: 600;
+  color: var(--tx);
+  margin: 0 0 0.45em;
+}
+
 /* Empty-state cue: same serif register as the canvas empty state. */
 #reader-empty {
   text-align: center;
@@ -1115,11 +1645,9 @@ body.view-node { overflow: visible; }
 .node-status-dot[data-status="in_progress"] { background: var(--status-in-progress-stroke); }
 .node-status-dot[data-status="review"]      { background: var(--status-review-stroke); }
 .node-status-dot[data-status="done"]        { background: var(--status-done-stroke); }
-#node-body .toastui-editor-contents {
-  font-family: var(--font-body);
-  font-size: 16px;
-  line-height: 1.75;
-}
+/* Container only — the full prose treatment (headings, tables, figures, the
+   .gt-* vocabulary) is shared with the reader and lives in ONE place: see
+   "REPORT PROSE" near #reader-body. */
 .node-body-empty {
   font-family: var(--font-body);
   font-size: 15px;

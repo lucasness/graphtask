@@ -298,6 +298,77 @@ Reader mode is a **client-only third canvas view**, toggled from the sidebar hea
 - **Header.** Optional ember Section Eyebrow for the node's `type` (`reference`, `decision`) — the one meta field that changes how you read what follows. Then the title, description, and the **metadata list**: two semantic columns (one calm column under 520px) — left is what the node *is* (status, then the 0–1 scores), right is *when* things happened (the datetime fields together) — a fixed 16px glyph slot (the status dot in the shared `--status-*` colors for status; 15px Phosphor icons otherwise: `gauge` confidence, `star` significance, `seal-check` verified, `scales` decided, `clock` updated) then "Label: value" in Inter 13px `--tx-3`. Hover/focus on a row reveals a small **explainer tooltip** (pure CSS off `data-tip`, cite-tooltip surface: pure-white, mist border, `--radius-md`, `--shadow-md`, 12px `--tx-2`) that teaches what the field means — the reserved-field vocabulary is graph jargon a reader from a shared link has never met. Hairline rule beneath the list.
 - **Connections.** The node's edges as text, grouped by how each reads *from this node's side* — an incoming `supports` is "Supported by", not "Supports". Evidence groups first, then dependency, then the catch-all. Each row links to that node's own permalink, so the graph is walkable without ever loading the canvas. Wiki-links in the body (`[[3417]]`, `[[external-id]]`) link the same way.
 
+## Report Prose
+
+**Role:** The design system extended into authored long-form content — report bodies and long node bodies.
+
+Everything above governs app **chrome**. This section governs the **content** rendered inside it. The two are different problems: chrome is scanned and operated, prose is read at a 68ch measure, which is why prose gets its own scale rather than borrowing UI tokens whose roles are chips and form labels.
+
+**Applies to both reading surfaces** — `#reader-body` (report) and `#node-body` (node permalink). Per *Node Page* above, the shared type scale is deliberate; author these rules once against both selectors, never duplicate them.
+
+**Sanitizer constraint.** The Toast UI viewer runs every body through DOMPurify with `FORBID_TAGS` including `style`, `script` and `link`. Content therefore **cannot carry its own CSS** — but `div`, `span`, `figure`, `svg` and `class` all survive. Hence the fixed `gt-` class vocabulary: the design system owns the look, the author picks semantics. The authoring rules live in `.claude/skills/graphtask/SKILL.md` § Report prose; `tests/report-prose-vocabulary.test.js` keeps the two in sync, and `tests/token-completeness.test.js` guards theme coverage.
+
+### Prose Type Scale
+
+Separate from the UI scale above, which stops at 24px and means different things.
+
+| Token | Size | Role |
+|-------|------|------|
+| `--prose-h2` | 26px | Section heading. **Playfair Display 700**, tracking −0.01em, `text-wrap: balance`. The display serif already carrying the report title, so section breaks read editorially. |
+| `--prose-h3` | 17px | Sub-heading. DM Sans 600. |
+| `--prose-h4` | 15px | Minor heading. DM Sans 600, `--tx-2`. |
+| `--prose-body` | 16px | Running text, DM Sans, leading `--prose-leading` (1.75). |
+| `--prose-small` | 14px | Table cells, callout and card body. |
+| `--prose-caption` | 13px | Captions, figcaptions, `<cite>`, code blocks. |
+| `--prose-measure` | 68ch | The reading column. |
+
+A body `h1` is deliberately unstyled — the report's title is chrome (`#reader-title`) and a second h1 would compete with it.
+
+### Marks
+
+- **Bold** — DM Sans 600. A defined term at first use, or the load-bearing number in a paragraph.
+- *Italic* — a contrast the sentence pivots on.
+- **Uppercase is reserved** for eyebrows, pills and table headers (the Nunito label language). Never in body prose — it would collide with the component vocabulary.
+- Links: `--color-cobalt-link` with a 35% underline that solidifies on hover. Never ember — ember is the brand mark, not an interactive fill.
+- List markers: ember `::marker`. Toast UI's own `::before` bullets are suppressed so this applies.
+
+### Tables
+
+Hairline `--border` row rules, no outer box (the `.gt-scroll` wrapper supplies it). Header row borrows the eyebrow language: **Nunito 600, `--text-meta`, UPPERCASE, 0.1em tracking, `--tx-3` on `--bg-3`**. Body cells 9px/14px, `font-variant-numeric: tabular-nums` so columns align. `caption` sits **below** the table in `--prose-caption` `--tx-3` and states the takeaway, not the column list. `.num` opts a cell into right-alignment.
+
+Every table is wrapped in `.gt-scroll` — at a 68ch measure an unwrapped wide table scrolls the whole document.
+
+### Chart Ramp
+
+`--chart-1` … `--chart-6` are the **only** colors a figure may use, aliased onto the status families in maximum-separation order: ember, blue, green, purple, yellow, red. Plus `--chart-grid` (off `--border`) and `--chart-label` (off `--tx-3`).
+
+Charts are **inline SVG only**. Inline SVG survives the sanitizer *and* reads CSS custom properties, so `stroke="var(--chart-1)"` recolors with the theme for free — no uploaded rasters, no per-theme variants, no second asset to keep in sync. A literal hex in a figure is a bug: it can only be right in one theme.
+
+### Components
+
+Namespaced `gt-` so nothing collides with Toast UI's classes.
+
+#### Section Eyebrow (`.gt-eyebrow`)
+Nunito 600, `--text-body`, UPPERCASE, 0.125em tracking, `--color-ember-orange` (`.muted` → `--tx-3`). `--space-5` below. Names what the section *is*. Same treatment as the modal Section Eyebrow, so the language is continuous between chrome and content.
+
+#### Callout (`.gt-note`, `+ .warn` / `.key`)
+`--bg-2` on a 1px `--border`, `--r-md`, 16px/20px padding, `--prose-small`. A 3px left border encodes severity: default `--tx-3` (aside), `.warn` `--yellow-strong` (changes how to read the section), `.key` `--color-ember-orange` (the finding). Inner `<p class="h">` is a Nunito uppercase `--text-meta` label in `--tx-3`.
+
+#### Stat Row (`.gt-stats` › `.gt-stat`)
+Auto-fit grid, `minmax(9.5em, 1fr)`, 1px gap over a `--border` ground so tiles share hairlines without doubling. Each tile: `.k` Nunito uppercase `--text-meta` `--tx-3`; `.v` **Playfair 700** at 1.6em with tabular numerals; `.s` `--prose-caption` `--tx-3`. `.up` / `.down` take `--green-strong` / `--red-strong` — semantic color, deliberately *not* the accent.
+
+#### Pill (`.gt-pill`, `+ .good` / `.bad` / `.flag`)
+Nunito 600 `--text-meta` UPPERCASE, 0.1em tracking, 2px/8px, `--radius-tags`, 1px `currentColor` border. Outline only — consistent with the outlined-pill button family.
+
+#### Figure (`.gt-fig`) and Legend (`.gt-legend`)
+`--bg-2` card, 1px `--border`, `--r-md`, `overflow-x: auto`. SVG is `display:block; max-width:100%`. `figcaption` `--prose-caption` `--tx-3` above a 0.75em gap. Legend is a flex row of `<span><i></i>label`, the `<i>` a 16×2.5px swatch in the series color.
+
+#### Scroll Container (`.gt-scroll`)
+`overflow-x: auto` with the border/radius/`--bg-2` the contained table doesn't draw itself. Inner table gets `min-width: 34em` so narrow tables still fill it.
+
+#### Paired Cards (`.gt-cols.two` › `.gt-card`)
+Single column, 14px gap, two columns above 720px. Card: `--bg-2`, 1px `--border`, `--r-md`, 18px/20px. `.h` is DM Sans 600 at `--prose-h4`. For genuinely paired content only — for/against, before/after — not a generic grid.
+
 ## Do's and Don'ts
 
 ### Do
