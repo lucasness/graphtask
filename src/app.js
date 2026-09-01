@@ -6,6 +6,7 @@ import tasksRouter from './routes/tasks.js';
 import edgesRouter from './routes/edges.js';
 import batchRouter from './routes/batch.js';
 import graphViewRouter from './routes/graphView.js';
+import diagramRouter from './routes/diagram.js';
 import presenceRouter from './routes/presence.js';
 import membersRouter from './routes/members.js';
 import meRouter from './routes/me.js';
@@ -124,6 +125,10 @@ app.use('/api/graphs/:gid/edges', requireGraphForMethod, edgesRouter);
 // dynamic-workflow write-back. A write surface, so method-pick guard (edit).
 app.use('/api/graphs/:gid/batch', requireGraphForMethod, batchRouter);
 app.use('/api/graphs/:gid/graph', requireGraph('read'), graphViewRouter);
+// Server-derived report diagram (inline SVG): pure derivation over the same
+// rows as /graph, never mutates — read-gated so report drafters (read-only
+// agents) can fetch a finished figure and paste it verbatim.
+app.use('/api/graphs/:gid/diagram', requireGraph('read'), diagramRouter);
 // Search reads the graph's nodes and never mutates, so it's read-scoped even
 // though it's a POST (the query rides in the body). A viewer can search.
 app.use('/api/graphs/:gid/search', requireGraph('read'), searchRouter);
