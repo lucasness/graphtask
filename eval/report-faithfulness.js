@@ -16,6 +16,7 @@
 // Run: node eval/report-faithfulness.js
 //   (fetches both fixture graphs' /graph + /report and prints a table)
 import { extractCiteIds, CITE_MARKER_SOURCE } from '../public/reader-cite.js';
+import { scoreForm } from './report-form.js';
 import { resolveAgentToken } from './resolve-token.js';
 
 const BASE = process.env.GRAPHTASK_BASE_URL || 'https://graphtask.wafers.live';
@@ -77,6 +78,10 @@ export function scoreReport({ markdown, nodes }) {
     highSigCount: highSig.length,
     sectionCount: sections.length,
     narrationArtifacts,
+    // Document-form half of the gate (eval/report-form.js): deterministic
+    // wall-of-prose detection. A report PASSES iff citationValidity == 1.0
+    // AND coverage >= 0.8 AND form.pass AND every LLM judge >= 0.8.
+    form: scoreForm({ markdown }),
   };
 }
 
@@ -93,11 +98,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     scoreGraph(LARGE_GID, 'large-workflow'),
   ]);
   const w = (s, n) => String(s).padEnd(n);
-  console.log(w('report', 16), w('nodes', 6), w('cited', 6), w('invalid', 8), w('citeValidity', 13), w('coverage', 9), w('groundDensity', 13), w('narration', 10));
+  console.log(w('report', 16), w('nodes', 6), w('cited', 6), w('invalid', 8), w('citeValidity', 13), w('coverage', 9), w('groundDensity', 13), w('narration', 10), w('formPass', 9), w('medianW', 8), w('structure', 9));
   for (const r of rows) {
+    const structure = r.form.metrics.tableCount + r.form.metrics.figureCount + r.form.metrics.statsBlockCount;
     console.log(
       w(r.label, 16), w(r.nodeCount, 6), w(r.citedIds.length, 6), w(r.invalidIds.length, 8),
       w(r.citationValidity, 13), w(r.coverage, 9), w(r.groundingDensity, 13), w(r.narrationArtifacts.length, 10),
+      w(r.form.pass, 9), w(r.form.metrics.medianParaWords, 8), w(structure, 9),
     );
   }
   console.log(JSON.stringify(rows, null, 2));

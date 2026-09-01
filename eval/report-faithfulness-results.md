@@ -1,8 +1,13 @@
 # E16.16 — report faithfulness eval results
 
-Gate: a report PASSES iff `citationValidity == 1.0` AND `coverage >= 0.8` AND every
-judge dimension scores `>= 0.8`. Both generation paths must pass with the same
-markdown + `[[cite:id]]` shape.
+Gate: a report PASSES iff `citationValidity == 1.0` AND `coverage >= 0.8` AND
+`form.pass` (the deterministic document-form gates in `eval/report-form.js`:
+median paragraph ≤110 words, >150-word paragraphs ≤15%, no 400-word prose-only
+h3, tables ≥3 data rows, adjacent 100+-word pairs ≤10%, lists ≤40% of words)
+AND every judge dimension scores `>= 0.8`. Both generation paths must pass with
+the same markdown + `[[cite:id]]` shape. (Form gates added 2026-08-27; the
+table below predates them — re-run `node eval/report-faithfulness.js` for
+current form columns.)
 
 **Verdict: PASS — both paths.**
 
