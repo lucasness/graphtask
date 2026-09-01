@@ -554,6 +554,8 @@ src/
     edges.js         edge CRUD + bulk insert with transactional cycle
                      detection
     graphView.js     /api/graphs/:gid/graph and shortest-path payloads
+    diagram.js       pure inline-SVG diagram builder (fan/chain/cluster) for /diagram
+    routes/diagram.js  GET /api/graphs/:gid/diagram — read-gated wrapper over diagram.js
 db/
   schema.sql         graphs, tasks, edges, edge_type enum, updated_at +
                      pg_notify trigger, short-id generator function
@@ -723,6 +725,7 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | POST | `/api/graphs/:id/rotate-id` | Issue a new graph id; old URL stops working |
 | GET | `/api/graphs/:gid/graph` | Combined `{nodes, links}` canvas payload |
 | GET | `/api/graphs/:gid/graph/shortest-path` | Recursive-CTE BFS over dependency edges (undirected) |
+| GET | `/api/graphs/:gid/diagram` | **Read-gated** server-derived relationship diagram for report bodies: `?kind=fan\|chain\|cluster&node=<id>[&to=<id>][&maxNodes=N]` → `{markdown, stats}` — a finished `.gt-fig` figure (theme-token inline SVG, aria-labelled, clickable node titles) built deterministically from the live edge list, so pasting it into a report carries zero fidelity risk. 404 when the seed has no qualifying edges. |
 | POST | `/api/graphs/:gid/search` | Hybrid keyword+vector search over the graph's nodes. Body: `{query, config?, filter?}`. Returns `{query, results, timings}` where `results` is the ranked candidate list (`{taskId, score, source, snippet, meta}`). The optional `filter` (E15) is a Mongo-style metadata filter (`$eq/$ne/$gt/$gte/$lt/$lte/$in/$nin` + `$and/$or`) that post-filters results without changing ranking. |
 | POST | `/api/search` | Cross-graph search over the graphs the caller can read |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood with bodies (one cohesive KB call). Body `{query?\|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. The E15 `filter` applies at output with the **bridge rule** (a node bridging two matching nodes is retained, marked `bridge:true`), never pruning traversal. |

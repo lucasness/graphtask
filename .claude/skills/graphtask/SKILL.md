@@ -1006,6 +1006,48 @@ Consequences you must design around:
 - **Inline SVG works and themes itself**, because it reads CSS custom
   properties. This is the ONLY way to put a chart in a report.
 
+### Document form
+
+A report is a **document**, not an essay: readers scan first, read second. The
+same rules ride in `report.workflow.js`'s `FORM` block (workflow drafters never
+read this file), and `eval/report-form.js` scores them deterministically as
+part of the E16.16 gate — breaking them is a caught defect, not a style choice.
+
+- **Lede first.** Open every section with its finding in 1–2 sentences, then
+  the evidence, then the analysis. Never bury the verdict.
+- **Paragraphs**: one idea each, median under 110 words; no more than 15% of
+  paragraphs over 150 words; never two 100+-word paragraphs back to back —
+  recast the second as a table, list, blockquote, stat row, or diagram.
+- Any h3 subsection beyond ~400 words of prose must carry at least one
+  non-prose block; keep h3s to roughly 150–350 words of prose plus their
+  structure, and split or tighten past that.
+- **Comparative content** (3+ items × 2+ properties) is a GFM table wrapped in
+  `.gt-scroll`, at least **3 data rows** (fewer belongs in prose), cites in
+  cells, `class="num"` on numeric cells, a caption stating the takeaway (never
+  the column list — the columns are visible).
+- **3–6 load-bearing numbers** go in a `.gt-stats` row, findable by scanning —
+  never a stat row for one number, never numbers buried mid-sentence.
+- A verbatim primary-source quote of 15+ words: a `>` blockquote immediately
+  followed by its `[[cite:id]]`.
+- **Sequential/causal content**: a numbered list or a compact `A → B → C` line.
+  Numbered markers only when the content genuinely is a sequence.
+- **Diagrams are fetched, never drawn.** `GET
+  /api/graphs/:gid/diagram?kind=fan|chain|cluster&node=<id>[&to=<id>]`
+  (read-gated) returns `{markdown}` — a finished `.gt-fig` figure derived from
+  the live edge list (fan = evidence around a claim; chain = a required-for
+  path; cluster = a decision's grounds). Paste it **verbatim** as its own
+  block; only the `<figcaption>` sentence may be rewritten to state the
+  section's takeaway. A 404 means no such diagram — skip it. Lists ≤40% of
+  body words: argument stays prose.
+- **Carry structure through**: if a cited node body holds a table, figure,
+  image, or list, reproduce that structure — do not flatten it into prose.
+- **Anti-decoration**: every structural device must encode something true — no
+  table restating one sentence, no figure without a claim it illustrates, and
+  a chain of reasoning stays prose. When in doubt, prose.
+- The mechanical gates (median ≤110 words, >150-word paragraphs ≤15%, no
+  400-word prose-only h3, tables ≥3 data rows, adjacent 100+-word pairs ≤10%,
+  lists ≤40% of words) are scored by `eval/report-form.js`.
+
 ### Emphasis
 
 | Device | Use for | Don't |
@@ -1057,6 +1099,10 @@ the theme, can't be read by a screen reader, and goes blurry on retina.
 - Always `role="img"` and an `aria-label` that states what the data *shows*
   ("Comparable sales by quarter, improving from −11% to +5%"), not what it is
   ("a line chart").
+- Relationship diagrams (evidence fans, dependency chains, decision grounds)
+  are never hand-drawn — `GET /api/graphs/:gid/diagram` returns a finished
+  `.gt-fig` block derived from the live edge list; paste it verbatim (see
+  *Document form* above).
 - Keep it to what SVG does well: lines, areas, bars, simple scatter. If it needs
   a rendering engine, it doesn't belong in a report.
 
@@ -1115,7 +1161,7 @@ This section applies only when the harness running this skill ALSO exposes a dyn
 
 **When to reach for a workflow** (from inside a node): the node's work is many independent, agent-shaped sub-tasks that benefit from structure and verification — an eval/test suite (N runs × arms × answer→judge), a multi-source research sweep, a large audit or migration, multi-perspective analysis. Build the workflow once; parameterize it per run.
 
-**Generating a report (E16) — inline vs workflow.** A human-readable report of the whole graph is search-as-KB (§6) run graph-wide, not new machinery. Start cheap: `GET /graph` for the structure (no bodies). For a **tiny** graph, one inline pass suffices — read the map, pull the node bodies you need, draft the whole report in one go, and `PUT /api/graphs/:gid/report` with the Bearer token (writes 403 / orphan without `Authorization: Bearer $GRAPHTASK_AGENT_TOKEN`). Send the body under the `body` field (not `markdown`), and — like the workflow path — include `regenerated: true` when this is a genuine (re)generation so the staleness clock resets (completion gate 3). For a **large** graph, escalate to the `report.workflow.js` generator (map → draft sections in parallel → stitch → completeness critic) that RETURNS the markdown for the main loop to `PUT`. NEVER generate on your own initiative (§8); one report per graph, and PUT replaces it. The inline path follows the SAME drafting conventions as the workflow (the CITE block in `report.workflow.js`): cite nodes with `[[cite:<id>]]` markers, and honor **edge fidelity** — edges are directed (source → target), so prose saying "A supports B" requires the live edge A→B (writing "A is supported by B" over an A→B edge is an inversion), and a plain `related to` edge never licenses an evidence/causal claim ("exists because of", "supports"), only loose-association language. Both are checked against the live edge list by the E16.16 faithfulness eval (`eval/report-faithfulness.js` + `eval/report-faithfulness-judges.workflow.js`), the gate for report-generation work.
+**Generating a report (E16) — inline vs workflow.** A human-readable report of the whole graph is search-as-KB (§6) run graph-wide, not new machinery. Start cheap: `GET /graph` for the structure (no bodies). For a **tiny** graph, one inline pass suffices — read the map, pull the node bodies you need, draft the whole report in one go, and `PUT /api/graphs/:gid/report` with the Bearer token (writes 403 / orphan without `Authorization: Bearer $GRAPHTASK_AGENT_TOKEN`). Send the body under the `body` field (not `markdown`), and — like the workflow path — include `regenerated: true` when this is a genuine (re)generation so the staleness clock resets (completion gate 3). For a **large** graph, escalate to the `report.workflow.js` generator (map → draft sections in parallel → stitch → completeness critic) that RETURNS the markdown for the main loop to `PUT`. NEVER generate on your own initiative (§8); one report per graph, and PUT replaces it. The inline path follows the SAME drafting conventions as the workflow (the CITE block in `report.workflow.js`): cite nodes with `[[cite:<id>]]` markers, and honor **edge fidelity** — edges are directed (source → target), so prose saying "A supports B" requires the live edge A→B (writing "A is supported by B" over an A→B edge is an inversion), and a plain `related to` edge never licenses an evidence/causal claim ("exists because of", "supports"), only loose-association language. Both are checked against the live edge list by the E16.16 faithfulness eval (`eval/report-faithfulness.js` + `eval/report-form.js` + `eval/report-faithfulness-judges.workflow.js`), the gate for report-generation work — and the **Document form** rules (§ Report prose) bind the inline path exactly as they bind the workflow's drafters, with `eval/report-form.js` scoring them deterministically.
 
 **When NOT to.**
 
@@ -1282,6 +1328,7 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
+| GET | `/api/graphs/:gid/diagram?kind=&node=[&to=][&maxNodes=]` | Server-derived relationship diagram for report bodies: `kind` ∈ `fan\|chain\|cluster` → `{markdown, stats}` — a finished `.gt-fig` figure (theme-token inline SVG, aria-labelled, clickable node titles) built deterministically from the live edge list; paste it VERBATIM into a report (see § Document form). `fan` = supports/contradicts around `node`; `chain` = required-for path through `node` (or `node`→`to`); `cluster` = a decision's incoming grounds. 404 = no such diagram (missing seed or no qualifying edges) — skip, don't retry. **Read-gated.** |
 | POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). For content questions, prefer this over grep — see [§6](#6-search-the-graph-find--what-does-the-graph-say-about-x). |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). |
 | POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
