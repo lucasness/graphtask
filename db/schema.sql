@@ -855,10 +855,26 @@ CREATE TRIGGER gt_seed_genesis_t AFTER INSERT ON graphs
   FOR EACH ROW EXECUTE FUNCTION gt_seed_genesis();
 
 -- ---- diff + classification -------------------------------------------------
+-- `to_present` disambiguates the ONE thing `to` cannot say. `->` yields SQL
+-- NULL for "key absent" and JSON null for "key present, value null", and
+-- jsonb_build_object flattens both to `"to": null` — so a replay could not tell
+-- a removed meta key from one explicitly set to null, and the fold guessed
+-- "removed". `GET /graph` returns the RAW meta object, so the guess was visible
+-- to every client whenever it was wrong. The flag is emitted ONLY on the
+-- entries where `to` is JSON null, i.e. exactly the ambiguous ones: every other
+-- entry keeps its historic `{from, to}` shape, no top-level column change grows
+-- a constant `"to_present": true`, and an entry with no flag at all is a
+-- pre-flag event that src/events/fold.js still reads exactly as it always did.
+-- `from` is deliberately NOT given the same treatment: the fold never reads it
+-- (fold.js header, "to-ONLY"), so a flag there would be payload weight with no
+-- reader.
 CREATE OR REPLACE FUNCTION gt_diff(old_j jsonb, new_j jsonb, prefix text DEFAULT '')
 RETURNS jsonb AS $$
   SELECT COALESCE(jsonb_object_agg(prefix || k,
-           jsonb_build_object('from', old_j -> k, 'to', new_j -> k)), '{}'::jsonb)
+           jsonb_build_object('from', old_j -> k, 'to', new_j -> k)
+           || CASE WHEN (new_j -> k) IS NULL OR jsonb_typeof(new_j -> k) = 'null'
+                   THEN jsonb_build_object('to_present', new_j ? k)
+                   ELSE '{}'::jsonb END), '{}'::jsonb)
   FROM (SELECT jsonb_object_keys(old_j) AS k
         UNION SELECT jsonb_object_keys(new_j)) ks
   WHERE (old_j -> k) IS DISTINCT FROM (new_j -> k)

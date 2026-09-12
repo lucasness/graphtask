@@ -251,24 +251,64 @@ function toOf(change) {
   return change.to === undefined ? null : change.to;
 }
 
+// A meta key is USER-CONTROLLED TEXT, so it may be `__proto__` — jsonb stores
+// it like any other key, and `{...row.meta}` (stateFromLiveRows, and the create
+// path below) keeps it as an OWN property because spread DEFINES rather than
+// assigns. Plain `meta[k] = to` does not: for `__proto__` it invokes
+// Object.prototype's setter, which silently discards a string value and
+// silently re-parents the object for an object value. Either way the key never
+// appears in the folded state while the live row still has it, and nothing
+// warns — `anomalies` stays empty. defineProperty is the assignment that
+// matches what the spread already does everywhere else in this file.
+//
+// `Object.create(null)` was considered as the base for `meta` and NOT used: it
+// would have to be applied at every construction site to mean anything, and one
+// of those sites is out of this module's reach — the genesis substrate arrives
+// as jsonb parsed by `pg`, i.e. with the ordinary prototype. The result would be
+// a state whose meta objects have mixed prototypes depending on which path built
+// them, which is a subtler trap than the one being fixed, for no gain: with
+// defineProperty here, no user key can reach a prototype setter at all.
+function setMetaKey(meta, k, value) {
+  Object.defineProperty(meta, k, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 function applyMetaChanges(meta, changes) {
   for (const [key, change] of Object.entries(changes)) {
     if (!key.startsWith('meta.')) continue;
     const k = key.slice(5);
     const to = toOf(change);
-    // KNOWN LOSSY POINT, and the only one. gt_diff builds
-    // `jsonb_build_object('to', new_j -> k)`, and `->` returns JSON null both
-    // for "key absent" and for "key present with the value null" — the two are
-    // indistinguishable in the payload, and `from` could not disambiguate them
-    // either. Removal is chosen because it matches what the row actually holds
-    // in the common case (mergeFields assigns `undefined`, which JSON.stringify
-    // drops), and because in the explicit-null case every derived read agrees
-    // anyway: `meta->>'k'` is SQL NULL whether the key is absent or null, so
-    // title / description / status / the metaFilter DSL are unaffected. The
-    // residual difference is confined to the raw `meta` object.
-    if (to === null) delete meta[k];
-    else meta[k] = to;
+    // WAS THE KNOWN LOSSY POINT. `->` returns JSON null both for "key absent"
+    // and for "key present with the value null", so `to` alone cannot say which
+    // happened and `from` cannot disambiguate it either. That was fixed at the
+    // source: gt_diff (db/schema.sql) now emits `to_present` ALONGSIDE `to`,
+    // but ONLY on the entries where `to` is JSON null — i.e. exactly the
+    // ambiguous ones — so every unambiguous entry keeps its historic
+    // `{from, to}` shape and the payload does not grow by a constant `true` on
+    // every changed column.
+    //
+    // Four cases, and the LAST one is what keeps every event ALREADY IN A LOG
+    // folding exactly as it did before:
+    //   to !== null                      → set (to_present is absent and moot)
+    //   to === null, to_present === true  → set the key to null (the fix)
+    //   to === null, to_present === false → delete: genuinely removed
+    //   to === null, to_present absent    → LEGACY event, written before the
+    //     flag existed. Delete, which is what this function has always done —
+    //     so a pre-fix log replays to the pre-fix state, byte for byte, and no
+    //     stored snapshot or FOLD_VERSION is invalidated.
+    if (to === null && toPresent(change) !== true) delete meta[k];
+    else setMetaKey(meta, k, to);
   }
+}
+
+// `undefined` means the writer predates the flag; see applyMetaChanges.
+function toPresent(change) {
+  if (change === null || typeof change !== 'object') return undefined;
+  return change.to_present;
 }
 
 function applyToIndex(ix, event, anomalies) {

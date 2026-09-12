@@ -526,11 +526,14 @@ describe('E18.1 fold — applyEvent semantics', () => {
     expect(next.nodes[0].content_sha).toBe(sha('X'.repeat(200000)));
   });
 
-  it('removes a meta key when `to` is null', () => {
-    // gt_diff cannot distinguish "key removed" from "key set to JSON null" —
-    // `->` yields JSON null for both, and `from` could not disambiguate it
-    // either. Removal is the chosen reading; every `meta->>` derived read
-    // (title/description/status, the metaFilter DSL) is NULL either way.
+  it('removes a meta key when `to` is null and no `to_present` flag says otherwise', () => {
+    // The LEGACY shape: gt_diff used to emit `{from, to}` and nothing else, and
+    // `->` yields JSON null both for "key removed" and for "key set to JSON
+    // null", so the fold had to guess and guessed removal. gt_diff now emits a
+    // `to_present` flag on exactly those ambiguous entries
+    // (tests/e18-meta-fidelity.test.js), but an event ALREADY IN A LOG carries
+    // no flag and must keep folding the old way — otherwise every stored
+    // snapshot stops re-deriving. That compatibility is what this pins.
     const { state } = seeded();
     const withConf = applyEvent(state, nodeUpdated({ id: 1, changes: { 'meta.confidence': { from: null, to: 0.9 } } }));
     expect(withConf.nodes[0].meta.confidence).toBe(0.9);
