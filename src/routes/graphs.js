@@ -1,6 +1,11 @@
 import { Router } from 'express';
 import pool from '../db.js';
-import { eventQuery, parseHappenedAt, HAPPENED_AT_HEADER } from '../events/context.js';
+import {
+  eventQuery,
+  parseHappenedAt,
+  rejectBadCauseId,
+  HAPPENED_AT_HEADER,
+} from '../events/context.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 import { requireGraph } from '../auth/require.js';
 import { authEnabled } from '../auth/index.js';
@@ -289,6 +294,7 @@ function rejectBadHappenedAt(req, res) {
 // 'system', and land in one transaction.
 router.delete('/:id', requireGraph('manage'), async (req, res) => {
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, req.params.id)) return;
   const result = await eventQuery(
     req,
     'DELETE FROM graphs WHERE id = $1 RETURNING id',
@@ -304,6 +310,7 @@ router.delete('/:id', requireGraph('manage'), async (req, res) => {
 router.post('/:id/rotate-id', requireGraph('manage'), async (req, res) => {
   const oldId = req.params.id;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, req.params.id)) return;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       // eventQuery so the single graph.id_rotated event carries the actor. The

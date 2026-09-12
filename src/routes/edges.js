@@ -4,6 +4,7 @@ import {
   eventQuery,
   withEventTx,
   parseHappenedAt,
+  rejectBadCauseId,
   HAPPENED_AT_HEADER,
 } from '../events/context.js';
 import { requireIntegerParam } from './_validate.js';
@@ -143,6 +144,7 @@ async function assertEndpointsInGraph(client, gid, sourceId, targetId) {
 router.post('/', async (req, res) => {
   const { gid } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   const { source_id, target_id } = req.body;
   const normalizedMeta = normalizeMeta(req.body.meta || {});
   if (normalizedMeta.error) return res.status(400).json({ error: normalizedMeta.error });
@@ -217,6 +219,7 @@ router.post('/', async (req, res) => {
 router.post('/bulk', async (req, res) => {
   const { gid } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   const list = req.body && req.body.edges;
   if (!Array.isArray(list)) {
     return res.status(400).json({ error: 'edges must be an array' });
@@ -343,6 +346,7 @@ router.get('/', async (req, res) => {
 router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   const { source_id, target_id, base_version, base_row } = req.body;
 
   // Resolve the writer's intended purpose: `purpose` when given, else undefined
@@ -484,6 +488,7 @@ router.patch('/:id', validateId, async (req, res) => {
 router.delete('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   const result = await eventQuery(
     req,
     'DELETE FROM edges WHERE id = $1 AND graph_id = $2 RETURNING id',

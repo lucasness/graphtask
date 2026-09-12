@@ -4,6 +4,7 @@ import {
   eventQuery,
   withEventTx,
   parseHappenedAt,
+  rejectBadCauseId,
   HAPPENED_AT_HEADER,
 } from '../events/context.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
@@ -54,6 +55,7 @@ router.post('/', async (req, res) => {
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
 
   const { meta: rawMeta, body, frontmatterError } = parseMarkdown(content);
   if (frontmatterError)
@@ -182,6 +184,7 @@ router.patch('/:id', validateId, async (req, res) => {
   const { content, base_version, base_content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
 
   const writerParsed = parseMarkdown(content);
   if (writerParsed.frontmatterError)
@@ -289,6 +292,7 @@ router.patch('/:id', validateId, async (req, res) => {
 router.delete('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   // The FK cascade destroys every incident edge and this handler never learns
   // their ids (it returns {deleted: <task id>}). The row triggers do: the
   // BEFORE-DELETE task trigger lands node.removed first, then each cascaded
@@ -331,6 +335,7 @@ router.post('/:id/claim', validateId, async (req, res) => {
   // same rule the presence/selection routes apply.
   if (!holder) return res.status(400).json({ error: 'X-Writer-Id is required to claim' });
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   let ttl = CLAIM_DEFAULT_TTL_S;
   if (req.body && req.body.ttl_seconds !== undefined) {
     ttl = Number(req.body.ttl_seconds);
@@ -412,6 +417,7 @@ router.post('/:id/claim', validateId, async (req, res) => {
 router.delete('/:id/claim', validateId, async (req, res) => {
   const { gid, id } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   // The non-in_progress branch touches only claim_* columns (its version bump
   // is an artifact), so it too falls out as ch = '{}' and emits nothing.
   const out = await withEventTx(req, async (client) => {

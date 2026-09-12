@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   withEventTx,
   parseHappenedAt,
+  rejectBadCauseId,
   HAPPENED_AT_HEADER,
 } from '../events/context.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
@@ -155,6 +156,7 @@ function rejectBadHappenedAt(req, res) {
 router.post('/', async (req, res) => {
   const { gid } = req.params;
   if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
   const body = req.body || {};
   const nodes = body.nodes ?? [];
   const edges = body.edges ?? [];

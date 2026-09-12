@@ -40,6 +40,11 @@ export const REQUEST_ID_HEADER = 'x-request-id';
 export const HAPPENED_AT_ERROR =
   'happened_at must be an ISO-8601 datetime between 1970-01-01 and 24 hours from now';
 export const CAUSE_ID_ERROR = 'cause_id must be a positive integer';
+// A shape-valid cause_id that names nothing in this graph's log. Separate from
+// CAUSE_ID_ERROR because the two failures are different caller mistakes: a
+// malformed value vs. a well-formed one pointing at an event that isn't there.
+export const CAUSE_ID_UNKNOWN_ERROR =
+  'cause_id must name an existing earlier event in this graph';
 
 // How far into the future a caller may claim something happened. Small and
 // fixed: it exists to absorb client clock skew, not to allow post-dating.
@@ -116,6 +121,49 @@ export function parseCauseId(raw) {
   const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
   if (!Number.isInteger(n) || n <= 0) return { error: CAUSE_ID_ERROR };
   return { value: n };
+}
+
+// Where a caller may put a cause_id: the JSON body, or X-Cause-Id for the
+// body-less DELETE routes. Same precedence as happened_at, and the same
+// precedence eventContextFromRequest() applies, so the gate below and the
+// context that actually reaches the triggers can never disagree.
+export function causeIdFromRequest(req) {
+  return parseCauseId(req?.body?.cause_id ?? req?.headers?.[CAUSE_ID_HEADER]);
+}
+
+// E18.1 — the cause gate, the twin of each route's rejectBadHappenedAt().
+//
+// `cause_id` is not merely shape-checked by the database: events_cause_precedes
+// CHECK (cause_id IS NULL OR cause_id < seq) is enforced inside the row trigger,
+// so a well-formed but too-large value aborts the transaction with 23514 —
+// which surfaced as a bare 500 on the task routes and, worse, as an "invalid
+// edge" / "a node or edge violated a constraint" 400 on the edge and batch
+// routes, blaming data that was never wrong. Rejecting it up front means a bad
+// request writes no row, no event, and gets one honest message.
+//
+// Existence in the graph is the right test, not `<= head_seq`: every event
+// already in the log has seq <= head < the seq this write is about to take, so
+// "it exists" implies "it precedes". Rows are never deleted from the log, so
+// the answer cannot go stale between this check and the write.
+//
+// Unlike the happened_at gate this one is async — it asks the database — which
+// is why it lives here rather than being copy-pasted into four routers.
+export async function rejectBadCauseId(req, res, gid) {
+  const c = causeIdFromRequest(req);
+  if (c.error) {
+    res.status(400).json({ error: c.error });
+    return true;
+  }
+  if (c.value === null) return false;
+  const r = await pool.query(
+    'SELECT 1 FROM events WHERE graph_id = $1 AND seq = $2',
+    [gid, c.value],
+  );
+  if (r.rowCount === 0) {
+    res.status(400).json({ error: CAUSE_ID_UNKNOWN_ERROR });
+    return true;
+  }
+  return false;
 }
 
 // ── context ─────────────────────────────────────────────────────────────────
