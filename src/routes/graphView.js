@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import pool from '../db.js';
+import { cacheControlFor, graphAsOf, parseAsOfQuery } from '../events/store.js';
 
 const router = Router({ mergeParams: true });
 
@@ -54,7 +55,29 @@ router.get('/shortest-path', async (req, res) => {
   res.json({ path, cost, tasks: tasks.rows });
 });
 
-router.get('/', async (req, res) => {
+// E18.1 STEP 5 — `?asOf=<iso>` / `?asOfSeq=<n>` / `?axis=` / `?known=<iso>`
+// reconstruct this same payload at a point on either clock, from the
+// append-only log. See src/events/store.js for the two axes and why a periodic
+// snapshot can only base the learned one.
+//
+// THE HOT PATH PAYS ZERO. With none of the four knobs present, `parseAsOfQuery`
+// returns `{value: null}` without touching the database and the handler falls
+// through to exactly the two queries it has always run — no snapshot lookup, no
+// events lookup, same SQL, same body. That is a locked decision, and
+// tests/e18-asof.test.js pins it with a `pool.query` spy.
+router.get('/', async (req, res, next) => {
+  const asOfParams = parseAsOfQuery(req.query);
+  if (asOfParams.error) return res.status(400).json({ error: asOfParams.error });
+  if (asOfParams.value) {
+    try {
+      const out = await graphAsOf(pool, req.params.gid, asOfParams.value);
+      res.set('Cache-Control', cacheControlFor(asOfParams.value));
+      return res.json(out);
+    } catch (err) {
+      return next(err);
+    }
+  }
+
   const { gid } = req.params;
   const nodes = await pool.query(
     // external_id rides along so the node page can resolve wiki-links like
