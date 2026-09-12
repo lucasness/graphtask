@@ -782,18 +782,27 @@ DROP TRIGGER IF EXISTS gt_events_append_only_t ON events;
 CREATE TRIGGER gt_events_append_only_t BEFORE UPDATE OR DELETE ON events
   FOR EACH ROW EXECUTE FUNCTION gt_events_append_only();
 
--- Per-graph seq, allocated under the graphs row lock. That lock is NOT a new
--- cost: bump_graph_updated_at() already does UPDATE graphs SET version=version+1
--- on every task/edge row write, so every writer of a graph already holds it.
--- Holding it to commit makes allocation order == commit order, so seq is
--- GAPLESS and learned_at is MONOTONE with seq. VERIFIED (gapless 1,2,3 across a
--- rolled-back txn; ordering preserved under contention). That is what makes
--- ?since= polling safe and "derived views keyed by event seq" sound — no
--- settled-horizon / pg_stat_activity machinery is needed anywhere.
+-- Per-graph seq, allocated under the graphs row lock. Holding it to commit makes
+-- allocation order == commit order, so seq is GAPLESS and learned_at is MONOTONE
+-- with seq. That is what makes ?since= polling safe and "derived views keyed by
+-- event seq" sound — no settled-horizon / pg_stat_activity machinery is needed.
+--
+-- FOR NO KEY UPDATE, *never* FOR UPDATE, and the difference is a production
+-- outage. `INSERT INTO tasks` takes FOR KEY SHARE on the parent graphs row for
+-- the foreign key and holds it to commit. FOR UPDATE is the one row-lock mode
+-- that CONFLICTS with FOR KEY SHARE, so two overlapping inserts into one graph
+-- each waited on the other's FK lock — a guaranteed deadlock. Measured before
+-- the fix: 10 concurrent inserts into one graph committed 1 and lost 99 to
+-- 40P01; through the real route, 10 parallel POSTs returned two 500s.
+-- FOR NO KEY UPDATE still conflicts with ITSELF, so writers of the same graph
+-- still serialise and seq stays gapless, and it is what the UPDATE in
+-- bump_graph_updated_at() already takes — which is why that UPDATE never had
+-- this problem and why the earlier note here ("the lock is already held") was
+-- wrong. tests/e18-concurrency.test.js pins it through the HTTP routes.
 CREATE OR REPLACE FUNCTION gt_next_seq(gid text) RETURNS bigint AS $$
 DECLARE s BIGINT;
 BEGIN
-  PERFORM 1 FROM graphs WHERE id = gid FOR UPDATE;
+  PERFORM 1 FROM graphs WHERE id = gid FOR NO KEY UPDATE;
   SELECT COALESCE(MAX(seq), 0) + 1 INTO s FROM events WHERE graph_id = gid;
   RETURN s;
 END $$ LANGUAGE plpgsql;

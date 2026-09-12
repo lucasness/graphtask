@@ -161,6 +161,16 @@ router.post('/', async (req, res) => {
     const row = await withEventTx(req, async (client) => {
       // Serialize concurrent edge writers in this graph so the cycle check below
       // can't be raced. Reads still proceed (SHARE ROW EXCLUSIVE allows SELECT).
+      // LOCK ORDER: the graphs row FIRST, then the edges table. A task DELETE
+      // acquires them in exactly that order — its BEFORE-DELETE trigger calls
+      // gt_next_seq (graphs row) before ON DELETE CASCADE reaches edges — so an
+      // edge route that took the table first and the row second would deadlock
+      // against any concurrent task delete in the same graph. Both 500. This
+      // SELECT costs nothing new: bump_graph_updated_at() takes the same
+      // NO KEY UPDATE lock on the same row before this transaction commits
+      // anyway; it is only being taken EARLIER so the two orders agree.
+      // tests/e18-concurrency.test.js pins it.
+      await client.query('SELECT 1 FROM graphs WHERE id = $1 FOR NO KEY UPDATE', [gid]);
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
       await assertEndpointsInGraph(client, gid, source_id, target_id);
 
@@ -243,6 +253,9 @@ router.post('/bulk', async (req, res) => {
     // — one per CHANGED row, which is the restated DONE-WHEN. They share a
     // single request_id, which is what groups the fan-out back into one action.
     const rows = await withEventTx(req, async (client) => {
+      // Graphs row first, then the edges table — see the lock-order note on
+      // POST / above. Must match the order a task DELETE takes.
+      await client.query('SELECT 1 FROM graphs WHERE id = $1 FOR NO KEY UPDATE', [gid]);
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
 
       // Verify every referenced task belongs to this graph in one shot.
@@ -418,6 +431,9 @@ router.patch('/:id', validateId, async (req, res) => {
 
   try {
     const row = await withEventTx(req, async (client) => {
+      // Graphs row first, then the edges table — see the lock-order note on
+      // POST / above. Must match the order a task DELETE takes.
+      await client.query('SELECT 1 FROM graphs WHERE id = $1 FOR NO KEY UPDATE', [gid]);
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
       await assertEndpointsInGraph(client, gid, newSource, newTarget);
 

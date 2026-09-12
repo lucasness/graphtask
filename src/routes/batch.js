@@ -250,6 +250,16 @@ router.post('/', async (req, res) => {
 
       // Serialize edge writers + freeze the graph for the cycle check, exactly
       // as the single + bulk edge routes do.
+      // LOCK ORDER: the graphs row FIRST, then the edges table. A task DELETE
+      // acquires them in exactly that order — its BEFORE-DELETE trigger calls
+      // gt_next_seq (graphs row) before ON DELETE CASCADE reaches edges — so an
+      // edge route that took the table first and the row second would deadlock
+      // against any concurrent task delete in the same graph. Both 500. This
+      // SELECT costs nothing new: bump_graph_updated_at() takes the same
+      // NO KEY UPDATE lock on the same row before this transaction commits
+      // anyway; it is only being taken EARLIER so the two orders agree.
+      // tests/e18-concurrency.test.js pins it.
+      await client.query('SELECT 1 FROM graphs WHERE id = $1 FOR NO KEY UPDATE', [gid]);
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
 
       const writerCtx = (currentRow, protectedKeys) => ({
