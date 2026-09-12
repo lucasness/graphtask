@@ -122,6 +122,45 @@ describe('E18.1 — concurrent writes through the real routes', () => {
     expect(rows[0].cause_ok).toBe(true);
   });
 
+  // E18.2 — POST /tasks/:id/verify opens its transaction by locking the TASK
+  // row FOR UPDATE, and the UPDATE it then issues takes the graphs row inside
+  // the trigger. Every edge route takes the graphs row FIRST, and INSERT INTO
+  // edges then takes FOR KEY SHARE on BOTH endpoint task rows for the foreign
+  // keys — which conflicts with the verify's FOR UPDATE. So the two paths hold
+  // and want each other's locks in opposite orders and deadlock, returning 500.
+  //
+  // The endpoints must be the SAME nodes being verified: that FK share lock is
+  // the half of the cycle the edge route contributes, so a test wiring
+  // unrelated spare nodes never reproduces it. The verify route now takes the
+  // graphs row up front, which costs no extra lock and makes the orders agree.
+  it('verifying a node while edges are wired TO THAT NODE does not deadlock', async () => {
+    const gid = await newGraph();
+    const hub = [];
+    for (let i = 0; i < 6; i++) hub.push(await makeTask(gid, `hub${i}`));
+    const leaf = [];
+    for (let i = 0; i < 6; i++) leaf.push(await makeTask(gid, `leaf${i}`));
+
+    // Three rounds: the race is probabilistic, and one round can miss it.
+    for (let round = 0; round < 3; round++) {
+      const results = await Promise.all([
+        ...hub.map((id) =>
+          request(app).post(`/api/graphs/${gid}/tasks/${id}/verify`).send({ outcome: 'held' })),
+        ...hub.map((id, i) =>
+          request(app).post(`/api/graphs/${gid}/edges`).send({
+            source_id: id, target_id: leaf[i], purpose: 'related to',
+          })),
+      ]);
+      const counts = tally(results);
+      expect(counts[500], `round ${round} produced 500s: ${JSON.stringify(counts)}`).toBeUndefined();
+      for (const r of results) {
+        expect(JSON.stringify(r.body || {})).not.toMatch(/deadlock|40P01/i);
+      }
+      // Round 0 creates the edges; later rounds re-verify against a 409 dup,
+      // which still exercises the same lock sequence.
+      expect(counts[200]).toBe(6);
+    }
+  });
+
   // THE LOCK-ORDER INVERSION. A task delete cascades into edges while holding
   // the graphs row; an edge write wants the edges table then the graphs row.
   it('deleting nodes while edges are being written in the same graph does not deadlock', async () => {

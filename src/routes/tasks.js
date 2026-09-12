@@ -543,6 +543,14 @@ router.post('/:id/verify', validateId, async (req, res) => {
   const out = await withEventTx(
     req,
     async (client) => {
+      // LOCK ORDER: the graphs row FIRST, then the task row. The UPDATE below
+      // ends up taking the graphs row anyway (gt_next_seq, inside the trigger),
+      // and every edge route takes the graphs row before it touches anything
+      // else — so taking the task row first here inverted the order against
+      // POST /edges and deadlocked, returning 500 on up to a quarter of
+      // concurrent requests. Taking it up front costs no extra lock; it only
+      // acquires earlier. tests/e18-concurrency.test.js pins it.
+      await client.query('SELECT 1 FROM graphs WHERE id = $1 FOR NO KEY UPDATE', [gid]);
       const cur = await client.query(
         'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
         [id, gid],
