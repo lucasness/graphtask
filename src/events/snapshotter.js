@@ -39,15 +39,19 @@ import { maybeSnapshot } from './snapshot.js';
 const RECONNECT_DELAY_MS = 2000;
 
 /**
- * @param {{pool:Object, connectionString?:string, log?:Function, interval?:number}} opts
+ * @param {{pool:Object, connectionString?:string, log?:Function, interval?:number,
+ *          reconnectDelay?:number}} opts
  */
-export function createSnapshotter({ pool, connectionString, log, interval } = {}) {
+export function createSnapshotter({ pool, connectionString, log, interval, reconnectDelay } = {}) {
   if (!pool) throw new Error('createSnapshotter needs a pool');
   const say = log || ((msg) => console.log(`[snapshots] ${msg}`));
+  const retryAfter =
+    Number.isFinite(reconnectDelay) && reconnectDelay >= 0 ? Number(reconnectDelay) : RECONNECT_DELAY_MS;
 
   const queue = new Set(); // graph ids pending a checkpoint pass — Set dedupes bursts
   let draining = null; // in-flight drain promise (also the tests' settle hook)
   let listenClient = null;
+  let restartTimer = null; // the in-flight-reconnect guard — see scheduleRestart
   let stopped = false;
 
   function drain() {
@@ -78,6 +82,22 @@ export function createSnapshotter({ pool, connectionString, log, interval } = {}
     drain();
   }
 
+  // At most ONE pending reconnect, cancellable by stop(). A retry that fails is
+  // logged and re-armed: the listener must survive a Postgres restart that
+  // outlasts a single attempt (a deploy), not just a transient drop.
+  function scheduleRestart() {
+    if (stopped || restartTimer) return;
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      startListener().catch((err) => {
+        say(`listen reconnect failed: ${err.message}`);
+        scheduleRestart();
+      });
+    }, retryAfter);
+    // The HTTP server keeps the process alive; this timer should not.
+    if (typeof restartTimer.unref === 'function') restartTimer.unref();
+  }
+
   async function startListener() {
     if (listenClient || stopped) return;
     const client = new pg.Client({
@@ -103,13 +123,33 @@ export function createSnapshotter({ pool, connectionString, log, interval } = {}
     // notification for that graph rebuilds every checkpoint the log has grown
     // past, because checkpoints are a deterministic function of (graph, seq)
     // rather than of when the notification arrived.
+    //
+    // ONE reconnect per drop, and the dead socket is closed rather than left to
+    // the GC. node-postgres emits 'error' TWICE for a single dropped connection
+    // ('terminating connection due to administrator command' from the backend,
+    // then 'Connection terminated unexpectedly' from the socket), so an
+    // unguarded handler schedules two reconnects and the client count doubles
+    // on every drop — measured 1 → 2 → 4 against a real server, with three
+    // connections still live after stop(). `dead` collapses the pair; the
+    // shared `restartTimer` (src/sse.js's `restartPending`, in a form stop()
+    // can also cancel) collapses anything that gets past it.
+    let dead = false;
     client.on('error', (err) => {
+      if (dead) return;
+      dead = true;
       say(`listen client error: ${err.message}`);
-      listenClient = null;
-      if (!stopped) setTimeout(() => startListener().catch(() => {}), RECONNECT_DELAY_MS);
+      if (listenClient === client) listenClient = null;
+      client.end().catch(() => {});
+      scheduleRestart();
     });
 
     await client.connect();
+    // stop() may have run while the connect was in flight; without this the new
+    // client is never tracked and never closed.
+    if (stopped) {
+      await client.end().catch(() => {});
+      return;
+    }
     await client.query('LISTEN graph_change');
     listenClient = client;
   }
@@ -124,13 +164,27 @@ export function createSnapshotter({ pool, connectionString, log, interval } = {}
 
     /** @param {{listen?:boolean}} [opts] tests drive `enqueue` directly instead */
     async start({ listen = true } = {}) {
-      if (listen) await startListener();
+      if (listen) {
+        try {
+          await startListener();
+        } catch (err) {
+          // A Postgres that is not up yet (a deploy restarting it under us) must
+          // not leave the snapshotter dead for the life of the process. The
+          // caller still sees the first failure — src/server.js logs it.
+          scheduleRestart();
+          throw err;
+        }
+      }
       return true;
     },
 
     async stop() {
       stopped = true;
       queue.clear();
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
       if (listenClient) {
         const c = listenClient;
         listenClient = null;

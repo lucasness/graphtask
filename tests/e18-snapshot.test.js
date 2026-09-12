@@ -131,6 +131,8 @@ async function drive17() {
   return t;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const head = async () =>
   Number(
     (await pool.query('SELECT COALESCE(MAX(seq),0) AS n FROM events WHERE graph_id = $1', [gid]))
@@ -222,6 +224,47 @@ describe('E18.1 snapshots — checkpoints', () => {
     expect(res.written).toEqual([]);
     expect(res.target).toBe(0);
     expect(await periodicSeqs()).toEqual([]);
+  });
+
+  // Every `graph_change` notification calls this, and bump_graph_updated_at
+  // fires one on EVERY task/edge row write. Past the first checkpoint the
+  // target only moves once every `n` events, so the other n-1 calls must be
+  // nearly free. Measured on a clone of production before this short-circuit
+  // (1638 events, 1175 nodes, 2289 edges, target 1000): 172.6 ms, 5 queries and
+  // 2.4 MB of `state` dragged out of the table per notification — to fetch
+  // three snapshot states, re-fold 1000 events, compute two SHA-256s and write
+  // nothing. After: 1.3 ms, 2 queries, no `state` read at all.
+  it('does no work at all when the target has not moved', async () => {
+    await drive17();
+    expect((await maybeSnapshot(pool, gid, { interval: EVERY })).written).toEqual([5, 10, 15]);
+
+    // A counting stand-in for the pool. maybeSnapshot only ever calls .query().
+    let queries = 0;
+    let stateBytes = 0;
+    const counted = {
+      query: async (...args) => {
+        queries += 1;
+        const r = await pool.query(...args);
+        for (const row of r.rows ?? []) {
+          if (row && row.state) stateBytes += JSON.stringify(row.state).length;
+        }
+        return r;
+      },
+    };
+
+    const res = await maybeSnapshot(counted, gid, { interval: EVERY });
+    expect(res).toMatchObject({ head_seq: 17, target: 15, written: [], up_to_date: true });
+    // The head lookup and the top-snapshot-seq lookup. Nothing else.
+    expect(queries).toBe(2); // before: 5
+    // And not one byte of any snapshot state was read, let alone re-folded.
+    expect(stateBytes).toBe(0); // before: three full states
+    expect(await periodicSeqs()).toEqual([5, 10, 15]);
+
+    // …and the moment the target DOES move, the pass resumes its full job,
+    // predecessor verification included (pinned by the self-heal test below).
+    for (let i = 0; i < 3; i += 1) await makeTask({ title: `after ${i}` });
+    expect(await head()).toBe(20);
+    expect((await maybeSnapshot(pool, gid, { interval: EVERY })).written).toEqual([20]);
   });
 
   it('refuses to invent a substrate for a graph with no base', async () => {
@@ -444,6 +487,79 @@ describe('E18.1 snapshotter', () => {
 
     expect(await periodicSeqs()).toEqual([5, 10, 15]);
   });
+
+  // ── the LISTEN connection ────────────────────────────────────────────────
+  //
+  // node-postgres emits 'error' TWICE for ONE dropped connection (the backend's
+  // 'terminating connection due to administrator command', then the socket's
+  // 'Connection terminated unexpectedly'). An unguarded handler therefore
+  // schedules TWO reconnects per drop and the client count doubles every time:
+  // measured 1 → 2 → 4 against a real server, with three still live after
+  // stop(). On a long-lived server that walks into the connection limit.
+  it('opens exactly one LISTEN client per drop, and leaves none behind on stop()', async () => {
+    const appName = `e18-snap-listen-${process.pid}-${Date.now()}`;
+    const live = async () =>
+      Number(
+        (
+          await pool.query(
+            'SELECT count(*) AS n FROM pg_stat_activity WHERE application_name = $1',
+            [appName],
+          )
+        ).rows[0].n,
+      );
+    const kill = () =>
+      pool.query(
+        'SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1',
+        [appName],
+      );
+
+    const snapshotter = createSnapshotter({
+      pool,
+      interval: EVERY,
+      log: () => {},
+      reconnectDelay: 100,
+      connectionString: `${TEST_URL}?application_name=${appName}`,
+    });
+    try {
+      await snapshotter.start();
+      expect(await live()).toBe(1);
+
+      await kill();
+      await sleep(900);
+      expect(await live()).toBe(1); // unguarded: 2
+
+      await kill();
+      await sleep(900);
+      expect(await live()).toBe(1); // unguarded: 4
+    } finally {
+      await snapshotter.stop();
+    }
+    await sleep(300);
+    // stop() tracks only ONE client, so every extra one it spawned is orphaned
+    // for the life of the process. Unguarded: 3.
+    expect(await live()).toBe(0);
+  }, 30000);
+
+  it('keeps retrying when the FIRST connect fails (a Postgres restart mid-deploy)', async () => {
+    const said = [];
+    const snapshotter = createSnapshotter({
+      pool,
+      interval: EVERY,
+      log: (m) => said.push(m),
+      reconnectDelay: 100,
+      connectionString: 'postgresql://postgres@127.0.0.1:1/graphtask_test', // nothing listens
+    });
+    // The caller still sees the first failure — src/server.js logs it — but the
+    // snapshotter must not be dead for the life of the process afterwards.
+    await expect(snapshotter.start()).rejects.toThrow(/ECONNREFUSED/);
+    await sleep(500);
+    expect(said.filter((m) => m.startsWith('listen reconnect failed')).length).toBeGreaterThan(0);
+
+    await snapshotter.stop();
+    const afterStop = said.length;
+    await sleep(400);
+    expect(said.length).toBe(afterStop); // stop() cancels the pending retry
+  }, 30000);
 
   it('ignores a notification with no graph id', async () => {
     const snapshotter = createSnapshotter({ pool, interval: EVERY, log: () => {} });

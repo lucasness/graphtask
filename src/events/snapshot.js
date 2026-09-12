@@ -35,9 +35,12 @@
 //      whole epic exists to stop adding to.
 //
 // RACE SAFETY, stated once so it is not re-derived at every call site. The
-// genesis base is seq 0. EVERY write that races the backfill — before it,
-// during it, after it — allocates `seq >= 1` and is therefore in the replay
-// tail. The fold is forward-only and `to`-only, so re-applying a change the
+// genesis base is seq 0, and the backfill only writes one while the log is
+// still empty (`head_seq = 0`, read under the same row lock — see the head
+// check in `backfillGenesis`; a live cut written at seq 0 on top of existing
+// events is a substrate that lies about every point below the head). EVERY
+// write that races the backfill therefore allocates `seq >= 1` and is in the
+// replay tail. The fold is forward-only and `to`-only, so re-applying a change the
 // genesis state already reflects is a no-op (src/events/fold.js header). There
 // is no window in which an edit is both absent from the base and skipped by the
 // tail. The `SELECT id FROM graphs WHERE id = $1 FOR UPDATE` is therefore not
@@ -173,6 +176,15 @@ const BASE_BELOW_SQL = `SELECT seq, kind, at, state, state_sha
     WHERE graph_id = $1 AND axis = 'learned' AND seq < $2 AND fold_version = $3
     ORDER BY seq DESC LIMIT 1`;
 
+// Just the seq of the newest snapshot — no `state` column, so the planner reads
+// the (graph_id, axis, seq) index and nothing else. This is the cheap question
+// "has the chain already reached the target?", asked before any state is
+// dragged out of the table.
+const TOP_SNAPSHOT_SEQ_SQL = `SELECT seq
+     FROM graph_snapshots
+    WHERE graph_id = $1 AND axis = 'learned' AND fold_version = $2
+    ORDER BY seq DESC LIMIT 1`;
+
 const GENESIS_SQL = `SELECT seq, kind, at, state, state_sha
      FROM graph_snapshots
     WHERE graph_id = $1 AND axis = 'learned' AND kind = 'genesis' AND fold_version = $2
@@ -286,6 +298,58 @@ export async function backfillGenesis(pool, graphId) {
     if (existing.length > 0) {
       await client.query('ROLLBACK');
       return { graph_id: graphId, written: false, reason: 'already_present' };
+    }
+
+    // THE HEAD CHECK, AND IT IS LOAD-BEARING.
+    //
+    // `stateFromLiveRows` is the state NOW — at the head — and the seq-0 row
+    // claims to be the state BEFORE event 1. Those are the same thing only
+    // while the log is empty. Write the live cut at seq 0 for a graph that
+    // already has events and the substrate silently encodes the effects of
+    // events 1..N; the fold is forward-only and `to`-only, so it can never
+    // un-apply them and every `?asOf` below the head answers with changes that
+    // had not been learned yet — with `truncated: false` and
+    // `pre_history_approximation: false`, i.e. no warning at all. Measured on a
+    // clone of production: a two-event graph reported its post-`status.changed`
+    // state at seq 0.
+    //
+    // This is reachable because the backfill runs on EVERY boot: any graph that
+    // took writes before its first successful backfill lands here.
+    //
+    // Read INSIDE the FOR UPDATE, so the head cannot move between the check and
+    // the write. When it is above zero the live state belongs at the head seq —
+    // which is exactly what `lateGenesis` writes — and the transaction is ended
+    // first because `lateGenesis` takes this same graphs row on its own
+    // connection.
+    const { rows: headRows } = await client.query(HEAD_SQL, [graphId]);
+    const head = Number(headRows[0].head_seq);
+    if (head > 0) {
+      // A periodic base already covers this graph (a previous pass took this
+      // same branch); replaying its tail answers the head exactly, so there is
+      // nothing left to approximate and no reason to rewrite a whole state on
+      // every boot.
+      const { rows: based } = await client.query(BASE_AT_OR_BELOW_SQL, [
+        graphId,
+        head,
+        FOLD_VERSION,
+      ]);
+      await client.query('ROLLBACK');
+      if (based.length > 0) {
+        return {
+          graph_id: graphId,
+          written: false,
+          reason: 'head_ahead_of_genesis',
+          head_seq: head,
+          pre_history_approximation: true,
+        };
+      }
+      const late = await lateGenesis(pool, graphId);
+      return {
+        ...late,
+        reason: 'head_ahead_of_genesis',
+        head_seq: head,
+        pre_history_approximation: true,
+      };
     }
 
     const state = await stateFromLiveRows(client, graphId);
@@ -502,6 +566,26 @@ export async function maybeSnapshot(pool, graphId, { interval } = {}) {
   const out = { graph_id: graphId, head_seq: head, target, written: [], repaired: false };
   if (target < n) return out;
 
+  // NOTHING IS DUE — the overwhelmingly common case, and it must cost one index
+  // lookup, not a fold.
+  //
+  // This runs once per `graph_change` notification, and `bump_graph_updated_at`
+  // fires one of those on EVERY task/edge row write. Past the first checkpoint
+  // the target only moves once every `n` events, so without this the other
+  // n - 1 notifications each fetched three full snapshot states, re-folded the
+  // whole last interval and computed two SHA-256s — to write nothing. Measured
+  // on a clone of production (1638 events, 1175 nodes, 2289 edges, target
+  // 1000): 172.6 ms, 5.5 queries and 2.4 MB of `state` read per notification,
+  // output `written: []`.
+  //
+  // The predecessor verification below is not lost, it is rescheduled: it now
+  // runs exactly when a checkpoint is about to be written on top of that
+  // predecessor, which is the moment its correctness actually matters. A
+  // corrupted snapshot is still caught by `verifySnapshot` / `repairSnapshots`
+  // on demand, and a snapshot is cache in any case.
+  const { rows: topRows } = await pool.query(TOP_SNAPSHOT_SEQ_SQL, [graphId, FOLD_VERSION]);
+  if (topRows.length > 0 && Number(topRows[0].seq) >= target) return { ...out, up_to_date: true };
+
   let prev = (await pool.query(BASE_AT_OR_BELOW_SQL, [graphId, target, FOLD_VERSION])).rows[0] ?? null;
   if (!prev) {
     // No genesis and no periodic: the graph predates its own log and the
@@ -636,14 +720,18 @@ export async function repairSnapshots(pool, graphId, { interval } = {}) {
 // rather than slack in the check:
 //
 //  1. META KEYS WHOSE VALUE IS JSON NULL are dropped from both sides.
-//     `gt_diff` builds `jsonb_build_object('to', new_j -> k)` and `->` returns
-//     JSON null both for "key absent" and for "key present, value null" — the
-//     two are indistinguishable in the payload and `from` cannot disambiguate
-//     them either (src/events/fold.js, applyMetaChanges). The fold removes the
-//     key; the live row keeps it. EVERY derived read agrees regardless, because
-//     `meta->>'k'` is SQL NULL in both cases, so title/description/status and
-//     the metaFilter DSL are unaffected. Normalising here compares what the two
-//     sources can actually disagree about.
+//     This is now a LEGACY allowance, not a live one. `gt_diff` used to build
+//     `jsonb_build_object('to', new_j -> k)` and nothing else, and `->` returns
+//     JSON null both for "key absent" and for "key present, value null" — so
+//     the fold removed the key while the live row kept it. gt_diff now emits a
+//     `to_present` flag on exactly those ambiguous entries and the fold honours
+//     it (src/events/fold.js, applyMetaChanges), so an event written from here
+//     on reconstructs the null key. Events ALREADY in the log carry no flag and
+//     still fold to a removal — deliberately, so a stored snapshot stays
+//     re-derivable — which is the divergence this normalisation still absorbs.
+//     It is harmless in the derived reads either way: `meta->>'k'` is SQL NULL
+//     whether the key is absent or null, so title/description/status and the
+//     metaFilter DSL never saw it.
 //
 //  2. `version` IS COMPARED SEPARATELY and does not affect `ok`. It is in
 //     gt_log_task's `drop_cols` on purpose: a version bump with no other change
@@ -657,7 +745,12 @@ function comparableMeta(meta) {
   const out = {};
   for (const [k, v] of Object.entries(plainObject(meta))) {
     if (v === null) continue;
-    out[k] = v;
+    // defineProperty, not `out[k] = v`: a meta key is user-controlled text and
+    // may be `__proto__`, which plain assignment routes to Object.prototype's
+    // setter instead of creating an own property — silently erasing the key
+    // from one side of a comparison whose entire job is to notice a difference.
+    // Same reasoning as setMetaKey in src/events/fold.js.
+    Object.defineProperty(out, k, { value: v, enumerable: true, writable: true, configurable: true });
   }
   return out;
 }

@@ -102,10 +102,23 @@ describe('E18.1 — bodies containing backslashes', () => {
   it('the genesis backfill covers a graph whose bodies contain backslashes', async () => {
     const { backfillGenesisAll } = await import('../src/events/snapshot.js');
     const gid = await makeGraph();
-    await pool.query(
-      `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, '{"title":"t","status":"todo"}'::jsonb)`,
-      [gid, body(String.raw`C:\Users\kevin and \d+`)],
-    );
+    // A PRE-LOG graph, which is the only shape the seq-0 backfill is for: rows
+    // in `tasks`, no events (gt.capture='off', the documented hatch), and no
+    // seq-0 row from the gt_seed_genesis trigger. With events present the
+    // backfill correctly refuses to stamp the live cut at seq 0 and lands a
+    // late genesis at the head instead (tests/e18-genesis.test.js).
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT set_config('gt.capture', 'off', true)");
+      await client.query(
+        `INSERT INTO tasks (graph_id, content, meta) VALUES ($1, $2, '{"title":"t","status":"todo"}'::jsonb)`,
+        [gid, body(String.raw`C:\Users\kevin and \d+`)],
+      );
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
     await pool.query(`DELETE FROM graph_snapshots WHERE graph_id = $1`, [gid]);
 
     const res = await backfillGenesisAll(pool, { log: () => {} });

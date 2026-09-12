@@ -274,11 +274,22 @@ describe('E18.1 genesis — race safety', () => {
     expect(res.body.links).toEqual(live.body.links);
   });
 
-  it('does not double-count a write that landed BEFORE the backfill', async () => {
-    // This is the boot window: the new binary is up (so the triggers exist and
-    // every write is captured) but the backfill has not finished. The genesis
-    // state therefore ALREADY reflects events 1..n, and the replay applies them
-    // again. It is a no-op because the fold is forward-only and `to`-only.
+  // THE BOOT WINDOW, and the one place a seq-0 genesis must NOT be written.
+  //
+  // The new binary is up — so the triggers exist and every write is captured —
+  // but the backfill has not run yet. `stateFromLiveRows` now reads the state
+  // at the HEAD, not the state before event 1. Stamping it at seq 0 makes the
+  // substrate encode the effects of events 1..N, and because the fold is
+  // forward-only and `to`-only it can never un-apply them: every `?asOf` below
+  // the head then answers with changes that had not been learned yet, with
+  // `truncated: false` and `pre_history_approximation: false` — no warning at
+  // all. Reproduced on a clone of production before the head check: a graph
+  // whose only events were `node.created` then `status.changed` reported the
+  // post-change state at seq 0.
+  //
+  // The live cut belongs at the head instead, which is exactly what
+  // `lateGenesis` writes.
+  it('refuses to stamp the live state at seq 0 once the log has moved', async () => {
     const legacy = await legacyGraph();
     const created = await makeTask({ title: 'during the window' }, legacy);
     await patchTask(created.id, { title: 'during the window', status: 'review' }, legacy);
@@ -286,25 +297,75 @@ describe('E18.1 genesis — race safety', () => {
     await request(app).delete(`${tasksUrl(legacy)}/${doomed.id}`).expect(200);
     expect(await eventCount(legacy)).toBe(4);
 
-    await backfillGenesisAll(pool);
-    const genesis = (await snapshots(legacy))[0];
-    // The substrate was read AFTER those four events, so it already shows the
-    // patched title and does NOT show the deleted node.
-    expect(genesis.state.nodes.map((n) => n.id)).not.toContain(doomed.id);
+    const res0 = await backfillGenesis(pool, legacy);
+    expect(res0).toMatchObject({
+      written: true,
+      reason: 'head_ahead_of_genesis',
+      head_seq: 4,
+      seq: 4,
+      pre_history_approximation: true,
+    });
 
+    // No seq-0 row. The only snapshot is the late genesis AT THE HEAD.
+    const rows = await snapshots(legacy);
+    expect(rows.map((r) => Number(r.seq))).toEqual([4]);
+    expect(rows[0].kind).toBe('periodic');
+
+    // THE DEFECT, stated as an assertion: the state BEFORE the log started must
+    // not contain the node the log says was created at seq 1, and must not
+    // claim to be exact history. With the poisoned seq-0 genesis this returned
+    // both legacy nodes AND `created` (already patched to 'review'), flagged
+    // `pre_history_approximation: false`.
+    resetDerivedCache();
+    const atZero = await request(app).get(graphUrl(legacy)).query({ asOfSeq: 0 });
+    expect(atZero.status).toBe(200);
+    expect(atZero.body.nodes.map((n) => n.id)).not.toContain(created.id);
+    expect(atZero.body.as_of.pre_history_approximation).toBe(true);
+
+    // Mid-history is honest too: at seq 1 the node exists but its status is the
+    // one the log recorded THEN, not the one the patch at seq 2 set.
+    resetDerivedCache();
+    const atOne = await request(app).get(graphUrl(legacy)).query({ asOfSeq: 1 });
+    const node1 = atOne.body.nodes.find((n) => n.id === created.id);
+    expect(node1).toBeTruthy();
+    expect(node1.meta.status).toBe('todo');
+    expect(atOne.body.as_of.pre_history_approximation).toBe(true);
+
+    // And the head still answers exactly — that is what the late genesis buys.
     resetDerivedCache();
     const res = await request(app)
       .get(graphUrl(legacy))
       .query({ asOf: new Date(Date.now() + 60000).toISOString() });
-    expect(res.body.as_of.events_replayed).toBe(4);
+    expect(res.body.as_of.base).toMatchObject({ kind: 'periodic', seq: 4 });
     expect(res.body.as_of.anomalies).toEqual([]);
 
     const live = await request(app).get(graphUrl(legacy));
     expect(res.body.nodes).toEqual(live.body.nodes);
     expect(res.body.links).toEqual(live.body.links);
-    // Re-creating `doomed` from its node.created and then removing it again
-    // must leave nothing behind.
     expect(res.body.nodes.map((n) => n.id)).not.toContain(doomed.id);
+  });
+
+  // The backfill runs on EVERY boot and a graph in this state never gains a
+  // genesis row, so it is a backfill candidate forever. It must not rewrite a
+  // whole state every time: the periodic base it already has answers the head
+  // by replaying its tail.
+  it('does not re-approximate on the next boot', async () => {
+    const legacy = await legacyGraph();
+    await makeTask({ title: 'post-log' }, legacy);
+    expect(await backfillGenesis(pool, legacy)).toMatchObject({ written: true, seq: 1 });
+    const before = await snapshots(legacy);
+
+    await makeTask({ title: 'later still' }, legacy);
+    const again = await backfillGenesis(pool, legacy);
+    expect(again).toMatchObject({
+      written: false,
+      reason: 'head_ahead_of_genesis',
+      head_seq: 2,
+      pre_history_approximation: true,
+    });
+    const after = await snapshots(legacy);
+    expect(after.map((r) => Number(r.seq))).toEqual(before.map((r) => Number(r.seq)));
+    expect(after[0].built_at.getTime()).toBe(before[0].built_at.getTime());
   });
 
   it('an asOf before history returns the genesis state, truncated — not a 404', async () => {
