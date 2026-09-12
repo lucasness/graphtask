@@ -59,6 +59,10 @@ const perGraph = new Map();
 let totalBytes = 0;
 let hits = 0;
 let misses = 0;
+// Set calls declined because one entry exceeded a whole graph's allowance, and
+// the graph ids already warned about. See setDerived().
+let oversized = 0;
+const warnedOversized = new Set();
 
 export function derivedCacheKey(graphId, seq) {
   return `${graphId}:${seq}`;
@@ -127,7 +131,29 @@ export function setDerived(graphId, seq, value) {
   // One entry bigger than a whole graph's allowance is not cacheable at any
   // budget: storing it would evict everything else and still be over. Return
   // the value uncached — the caller already has it, this is a memo, not a store.
-  if (bytes > MAX_BYTES_PER_GRAPH) return value;
+  //
+  // DECLINING IS CORRECT; BEING SILENT WAS NOT. The failure mode this shape has
+  // is that the memo stops memoising and nothing says so: /frontier's
+  // verification-checks entry is ~72 bytes per check, so it crosses the 4 MiB
+  // per-graph allowance at roughly 58 000 checks (measured: 32 576 cached,
+  // 57 000 declined) and from then on EVERY call re-derives from the log at full
+  // cost, indistinguishable from a cold process. Raising the budget only moves
+  // the cliff; what was missing is the signal. So: count it, and say it once per
+  // graph — the graph id is what an operator needs to find the entry that grew.
+  //
+  // Note this does NOT interact with the narrowed VERIFY_EVENTS_SQL projection:
+  // what is cached is the folded-down `checks` array, never the event payloads,
+  // so shrinking the rows read from the database does not move this ceiling.
+  if (bytes > MAX_BYTES_PER_GRAPH) {
+    oversized += 1;
+    if (!warnedOversized.has(graphId)) {
+      warnedOversized.add(graphId);
+      console.error(`[derived-cache] entry for graph ${graphId} is ${bytes} bytes,`
+        + ` over the ${MAX_BYTES_PER_GRAPH}-byte per-graph budget — NOT cached;`
+        + ' this value will be re-derived on every request until it shrinks');
+    }
+    return value;
+  }
 
   cache.set(key, { graphId, value, bytes });
   totalBytes += bytes;
@@ -161,13 +187,15 @@ export function dropDerivedForGraph(graphId) {
 export function _resetDerivedCacheForTests() {
   cache.clear();
   perGraph.clear();
+  warnedOversized.clear();
   totalBytes = 0;
   hits = 0;
   misses = 0;
+  oversized = 0;
 }
 
 export function _derivedCacheStats() {
-  return { size: cache.size, bytes: totalBytes, hits, misses };
+  return { size: cache.size, bytes: totalBytes, hits, misses, oversized };
 }
 
 export const _derivedCacheLimits = Object.freeze({

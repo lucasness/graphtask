@@ -211,8 +211,23 @@ function nextEntry(prev, check, p) {
   } else {
     // A lapse collapses the window. `min(S, sInit)` first, so a claim that had
     // earned a 3000-day leash does not keep 300 days of it after failing.
+    //
+    // AND THE FLOOR MAY NEVER RAISE S. `sMinDays` is an absolute 1-day floor,
+    // but `sInitDays` is `staleDays`, a CALLER-supplied parameter with `min: 0`.
+    // Below `staleDays: 1` the floor exceeded the pre-lapse window and a FAILED
+    // check came out with a LONGER leash than an unchecked node — the exact
+    // inversion of what a failure means. MEASURED at staleDays 0.5, age 0.75 d:
+    // failed S = 1, r = 0.923, stale = FALSE; unchecked S = 0.5, r = 0.857,
+    // stale = TRUE — the failed claim dropped OUT of the frontier while its
+    // untouched twin stayed in. So the lapse is clamped to be monotone
+    // non-increasing in the window it starts from.
+    //
+    // This is a no-op for every `staleDays >= 1` — `base * 0.1 < 1 <= base`, so
+    // `max` yields `sMinDays` and `min(base, sMinDays)` yields it back — which
+    // covers every parameter set the design and the production sweep used.
     const cur = next.s === null ? p.sInitDays : next.s;
-    next.s = Math.max(p.sMinDays, Math.min(cur, p.sInitDays) * p.lapseFactor);
+    const base = Math.min(cur, p.sInitDays);
+    next.s = Math.min(base, Math.max(p.sMinDays, base * p.lapseFactor));
     next.failed += 1;
     next.lastOutcome = 'failed';
   }

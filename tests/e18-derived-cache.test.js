@@ -13,7 +13,7 @@
 // The entries here are shaped like real ones (the `built` object store.js
 // caches) and sized by the same JSON measure the cache uses, so the numbers
 // asserted below are the numbers production would see.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   _derivedCacheLimits,
   _derivedCacheStats,
@@ -84,12 +84,56 @@ describe('E18.1 derived cache — bounded by bytes', () => {
     expect(bytes).toBeGreaterThan(512 * 1024);
   });
 
-  it('refuses to cache a single entry larger than one graph may hold', () => {
+  it('refuses to cache a single entry larger than one graph may hold — AND SAYS SO', () => {
     const huge = entry(Math.ceil(MAX_BYTES_PER_GRAPH / 1024) + 64);
-    // It still hands the value back — this is a memo, not a store.
-    expect(setDerived('g', 1, huge)).toBe(huge);
-    expect(getDerived('g', 1)).toBeUndefined();
-    expect(_derivedCacheStats().bytes).toBe(0);
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // It still hands the value back — this is a memo, not a store.
+      expect(setDerived('g', 1, huge)).toBe(huge);
+      expect(getDerived('g', 1)).toBeUndefined();
+      expect(_derivedCacheStats().bytes).toBe(0);
+
+      // REGRESSION (E18 review, D4). Declining is CORRECT; being SILENT is the
+      // defect. /frontier's verification-checks entry is ~72 bytes per check,
+      // so it crosses this budget at ~58 000 checks and from then on every call
+      // re-derives at full cost — indistinguishable from a cold process unless
+      // the cache says something. It must be counted...
+      expect(_derivedCacheStats().oversized).toBe(1);
+      // ...and named once per graph, with the graph id an operator can act on.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain('[derived-cache]');
+      expect(warn.mock.calls[0][0]).toContain('g');
+      expect(warn.mock.calls[0][0]).toContain('NOT cached');
+
+      // Once per graph, not once per call — a hot read path must not spam.
+      setDerived('g', 2, huge);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(_derivedCacheStats().oversized).toBe(2);
+      setDerived('other', 1, huge);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the /frontier checks entry really does hit that ceiling — the measured shape', () => {
+    // The entry /frontier caches is an array of checks, not event payloads:
+    // {subjectId, at, outcome, deliberate}. Measure where it stops caching so
+    // the number in setDerived()'s comment is a fact, not a guess.
+    const checks = (n) => Array.from({ length: n }, (_, i) => ({
+      subjectId: 100000 + i, at: 1767225600000 + i * 3600000, outcome: 'held', deliberate: true,
+    }));
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      setDerived('g', 'verify:1', checks(32576));
+      expect(getDerived('g', 'verify:1')).toBeDefined();
+      _resetDerivedCacheForTests();
+      setDerived('g', 'verify:2', checks(57000));
+      expect(getDerived('g', 'verify:2')).toBeUndefined();
+      expect(_derivedCacheStats().oversized).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('caps one graph so it cannot own the whole cache', () => {
@@ -121,6 +165,6 @@ describe('E18.1 derived cache — bounded by bytes', () => {
     expect(_derivedCacheStats().bytes).toBeGreaterThan(0);
 
     _resetDerivedCacheForTests();
-    expect(_derivedCacheStats()).toEqual({ size: 0, bytes: 0, hits: 0, misses: 0 });
+    expect(_derivedCacheStats()).toEqual({ size: 0, bytes: 0, hits: 0, misses: 0, oversized: 0 });
   });
 });

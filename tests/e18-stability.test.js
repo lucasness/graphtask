@@ -103,6 +103,31 @@ describe('E18.2 stability — S responds to SPACING, not to repetition', () => {
     expect(sAfter([hold(0), hold(500 * DAY), hold(2000 * DAY)], frozen)).toBe(90);
   });
 
+  it('a LAPSE never RAISES S — the sMinDays floor cannot outrank staleDays', () => {
+    // REGRESSION (E18.2 review, D2). `sMinDays` is an absolute 1-day floor and
+    // `sInitDays` is `staleDays`, a caller parameter with `min: 0`. Below
+    // `staleDays: 1` the floor used to exceed the pre-lapse window, so a FAILED
+    // check came out with a LONGER leash than an unchecked node — the precise
+    // opposite of what a failure means. Reproduced before the fix at every
+    // staleDays < 1 (S_failed = 1 against S_unchecked = 0.1 / 0.25 / 0.5 / 0.99)
+    // and at none >= 1.
+    for (const sInitDays of [0, 0.1, 0.25, 0.5, 0.9, 0.99, 1, 1.01, 2, 5, 9, 10, 30, 90]) {
+      const params = { sInitDays };
+      const unchecked = stabilityFor(emptyStability(), 999, params);
+      const failedCold = sAfter([fail(0)], params);
+      const failedWarm = sAfter([hold(0), fail(5 * DAY)], params);
+      // A failure may leave the claim more urgent, or equally urgent. NEVER
+      // less: a bigger S is a longer leash, which is a LATER due date.
+      expect(failedCold).toBeLessThanOrEqual(unchecked);
+      expect(failedWarm).toBeLessThanOrEqual(unchecked);
+      // ...and the fix moves nothing at every parameter the design contemplated.
+      if (sInitDays >= 1) {
+        expect(failedCold).toBe(Math.max(1, sInitDays * 0.1));
+        expect(failedWarm).toBe(Math.max(1, sInitDays * 0.1));
+      }
+    }
+  });
+
   it('an unseen node gets S_INIT exactly — no clamping, so staleDays: 0 survives', () => {
     expect(stabilityFor(emptyStability(), 999, P)).toBe(90);
     expect(stabilityFor(emptyStability(), 999, { sInitDays: 0 })).toBe(0);

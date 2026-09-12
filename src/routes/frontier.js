@@ -202,10 +202,37 @@ const PROBE_SQL = `SELECT (SELECT max(seq) FROM events WHERE graph_id = $1) AS h
                                      AND se.purpose = '${SUPERSEDES}') AS has_supersessions`;
 
 // Verification events only — the `payload->'kinds'` GIN index answers this
-// directly. Narrow projection: everything checkFromEvent() reads and nothing
-// else. Ordered by seq, which is gapless and commit-ordered per graph, so the
-// fold is a left fold over a stable prefix.
-const VERIFY_EVENTS_SQL = `SELECT seq, subject_id, subject_kind, happened_at, payload
+// directly. Ordered by seq, which is gapless and commit-ordered per graph, so
+// the fold is a left fold over a stable prefix.
+//
+// `#- '{changes,content}'` IS THE WHOLE OPTIMISATION, AND IT IS A DENYLIST ON
+// PURPOSE. Every verification event carries `changes.content` — the verify
+// handler rewrites `content` because meta lives in the frontmatter — whose
+// `from` and `to` are each a whole markdown body, capped at 128 KB apiece by
+// gt_content_change. checkFromEvent() reads `kinds`, `intent`, `id` and
+// `changes['meta.verified_at']` and nothing else, so all of that crossed the
+// wire and was parsed into the JS heap purely to be discarded.
+//
+// MEASURED in graphtask_test on a synthetic history (1000 verification events,
+// ~17.5 KB of JSON payload each), median of 9 runs:
+//
+//   SELECT payload                                209 ms   17.55 MB into JS
+//   SELECT payload #- '{changes,content}'         106 ms    0.27 MB   <- this
+//   jsonb_build_object(kinds,intent,id,changes)   241 ms    0.24 MB
+//   the same, from a MATERIALIZED CTE             250 ms    0.24 MB
+//
+// and at 3000 events, 569 ms / 322 ms / 725 ms / 728 ms.
+//
+// The ALLOWLIST — build a minimal payload out of `payload->'kinds'`,
+// `payload->'intent'`, ... — is 15-27% SLOWER THAN DOING NOTHING, because each
+// operator detoasts and re-traverses the jsonb independently: four references
+// to a TOASTed column cost four detoasts, which is more than the transfer they
+// save. `#-` names the column ONCE, so there is one detoast and one traversal,
+// and it is ~2x faster than today while shipping 65x less data. It is also the
+// safer edit: it can only ever REMOVE a field checkFromEvent provably does not
+// read, where an allowlist silently drops anything a later rung adds.
+const VERIFY_EVENTS_SQL = `SELECT seq, subject_id, subject_kind, happened_at,
+                                  payload #- '{changes,content}' AS payload
                              FROM events
                             WHERE graph_id = $1
                               AND subject_kind = 'node'
@@ -249,6 +276,29 @@ function bySignificanceDesc(a, b) {
   if (a === null) return 1;
   if (b === null) return -1;
   return b - a;
+}
+
+// v1's `(t.meta->>'verified_at') ASC NULLS FIRST`, on parsed instants.
+//
+// WHY IT IS BACK. R GENERALISES the recency key but does not always SEPARATE
+// on it, and the degenerate point is reachable: `staleDays` is a caller
+// parameter with `min: 0`, `staleDays: 0` sets S = 0 for every node, and
+// R(t) = (1 + t/(9S))^-1 is then the step function "1 at t = 0, else 0" —
+// deliberately, because `staleDays: 0` means "everything already checked is
+// stale" and that is exactly v1's answer too. There is NO NaN and no division
+// by zero: retrievability() guards `s <= 0` explicitly.
+//
+// What DID break is the ORDER. With every R equal, the tiered comparator fell
+// straight through to `id ASC`. MEASURED on five equally load-bearing nodes
+// verified 1/5/30/200/900 days ago and inserted newest-first: v1 returns
+// oldest-first, PATH B at `staleDays: 0` returned the exact REVERSE. So the
+// key v1 sorted on is restored as the tie-break under R, which is a no-op
+// wherever R already separates the rows.
+function byLastHeldAsc(a, b) {
+  if (a === b) return 0;
+  if (a === null) return -1;   // never held: NULLS FIRST
+  if (b === null) return 1;
+  return a - b;
 }
 
 router.post('/', async (req, res, next) => {
@@ -415,6 +465,7 @@ router.post('/', async (req, res, next) => {
         decays,
         checks: checksFor(state, row.id),
         _significance: numOrNull(row.significance),
+        _lastHeld: lastHeldMs,
       });
     }
 
@@ -429,6 +480,8 @@ router.post('/', async (req, res, next) => {
         if (sa !== sx) return sx - sa;
         const sig = bySignificanceDesc(a._significance, x._significance);
         if (sig !== 0) return sig;
+        const held = byLastHeldAsc(a._lastHeld, x._lastHeld);
+        if (held !== 0) return held;
         return a.id - x.id;
       });
     } else {
@@ -441,13 +494,15 @@ router.post('/', async (req, res, next) => {
         const sig = bySignificanceDesc(a._significance, x._significance);
         if (sig !== 0) return sig;
         if (a.r !== x.r) return a.r - x.r;
+        const held = byLastHeldAsc(a._lastHeld, x._lastHeld);
+        if (held !== 0) return held;
         return a.id - x.id;
       });
     }
 
     const truncated = candidateTruncated || scored.length > params.maxResults;
     const frontier = scored.slice(0, params.maxResults).map((row) => {
-      const { _significance, ...out } = row;
+      const { _significance, _lastHeld, ...out } = row;
       return out;
     });
 

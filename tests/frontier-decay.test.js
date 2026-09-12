@@ -489,3 +489,147 @@ describe('E18.2 CHAIN — a repeatedly-confirmed claim takes longer to come back
     expect(loose.body.frontier.some((f) => f.id === id)).toBe(false);
   });
 });
+
+// ─────────────────── the review's decay-and-frontier findings ────────────────
+//
+// Three route-level regressions. Each one was REPRODUCED against the code as
+// shipped before it was written; the numbers quoted are what was observed.
+describe('E18.2 frontier — the degenerate and the inverted', () => {
+  it('staleDays: 0 keeps v1’s recency order instead of collapsing to id ASC', async () => {
+    // D1. `staleDays` is a caller parameter with `min: 0`, and `staleDays: 0`
+    // sets S = 0 for every node. There is NO NaN and no division by zero —
+    // retrievability() guards `s <= 0` and returns the step function, which is
+    // the right meaning: "everything already checked is stale", exactly v1's
+    // answer. What DID break is the ORDER: with every R equal to 0 the tiered
+    // comparator fell through to `id ASC`.
+    //
+    // Inserted NEWEST-first, so `id ASC` is the exact REVERSE of the answer.
+    // REPRODUCED before the fix: expected 17,13,9,5,1 — got 1,5,9,13,17.
+    const ids = [];
+    for (const [i, age] of [1, 5, 30, 200, 900].entries()) {
+      const id = await insNode({ title: `n${i}`, confidence: 0.9, verified_at: ago(age) });
+      await makeLoadBearing(id, 3);
+      ids.push({ id, age });
+    }
+    // One verification event on an importance-0 node is enough to take PATH B,
+    // and it cannot itself reach a minImportance-3 frontier.
+    const trigger = await insNode({ title: 'trigger', confidence: 0.9 });
+    await verify(trigger, 'held', ago(1));
+
+    const oldestFirst = [...ids].sort((a, b) => b.age - a.age).map((x) => x.id);
+    for (const staleDays of [90, 1, 0]) {
+      const res = await post({ minImportance: 3, staleDays, maxResults: 500 });
+      expect(res.status).toBe(200);
+      expect(res.body.model.mode).toBe('decay');       // this IS the decay path
+      const mine = res.body.frontier.filter((f) => ids.some((x) => x.id === f.id)).map((f) => f.id);
+      // ...and it answers the same ORDER the v1 SQL would have, at every
+      // staleDays including the degenerate one.
+      const v1 = (await golden({ minImportance: 3, staleDays, lowConfidenceBelow: 0.5, maxResults: 500 }))
+        .map((r) => r[0]).filter((id) => ids.some((x) => x.id === id));
+      expect(mine).toEqual(v1);
+      if (staleDays === 0) {
+        expect(mine).toEqual(oldestFirst);
+        // The collapse itself is real and deliberate — R is 0 for every row.
+        for (const f of res.body.frontier) if (f.decays && f.verified_at) expect(f.r).toBe(0);
+      }
+    }
+  });
+
+  it('a FAILED check never makes a claim less urgent, at any staleDays', async () => {
+    // D2. `sMinDays` is an absolute 1-day floor; `sInitDays` is `staleDays`.
+    // Below staleDays 1 the floor exceeded the caller's own window, so the
+    // failed claim got S = 1 against the unchecked twin's S = 0.5.
+    // REPRODUCED at staleDays 0.5, age 0.75 d: the FAILED claim answered
+    // r = 0.923, stale = FALSE and was ABSENT from the frontier, while its
+    // untouched twin answered r = 0.857, stale = TRUE and was present.
+    const when = ago(0.75);
+    const failed = await insNode({ title: 'failed', confidence: 0.9, verified_at: when });
+    const twin = await insNode({ title: 'unchecked', confidence: 0.9, verified_at: when });
+    await makeLoadBearing(failed, 3);
+    await makeLoadBearing(twin, 3);
+    // A failure recorded WITHOUT clearing verified_at — a plain PATCH setting
+    // refuted_at. POST /verify clears the scalar, which hides S behind the
+    // never-held branch; this is the reachable shape where S is load-bearing.
+    const patched = await request(app)
+      .patch(`/api/graphs/${gid}/tasks/${failed}`)
+      .send({ content: node({ status: 'review', title: 'failed', confidence: 0.9, verified_at: when, refuted_at: new Date().toISOString() }) });
+    expect(patched.status).toBe(200);
+
+    for (const staleDays of [0.25, 0.5, 0.99, 1, 2, 90]) {
+      const res = await post({ minImportance: 3, staleDays, maxResults: 500 });
+      expect(res.body.model.mode).toBe('decay');
+      const f = res.body.frontier.find((x) => x.id === failed);
+      const t = res.body.frontier.find((x) => x.id === twin);
+      expect(res.body.frontier.filter((x) => x.id === failed || x.id === twin)
+        .every((x) => x.checks !== undefined)).toBe(true);
+      // The twin is the control: whenever IT is on the frontier, the failed
+      // claim must be too, and no later than it.
+      if (t) {
+        expect(f, `failed claim vanished at staleDays ${staleDays}`).toBeDefined();
+        expect(f.stability).toBeLessThanOrEqual(t.stability);
+        expect(f.r).toBeLessThanOrEqual(t.r);
+        const ids = res.body.frontier.map((x) => x.id);
+        expect(ids.indexOf(failed)).toBeLessThanOrEqual(ids.indexOf(twin));
+      }
+      // The failed claim carries the failure in its checks block either way.
+      if (f) expect(f.checks).toMatchObject({ failed: 1, last_outcome: 'failed' });
+    }
+  });
+
+  it('never pulls a verification event’s content diff out of the database', async () => {
+    // D3. The verify handler rewrites `content` (meta lives in the
+    // frontmatter), so EVERY verification event carries a `changes.content`
+    // whose from/to are whole markdown bodies, capped at 128 KB apiece. The
+    // fold reads `kinds`, `intent`, `id` and `changes['meta.verified_at']` and
+    // nothing else, so all of that crossed the wire to be discarded.
+    // REPRODUCED before the fix: the rows the route fetched carried the full
+    // body. MEASURED in graphtask_test on 1000 synthetic verification events:
+    // 209 ms / 17.55 MB of JSON with `SELECT payload`, 106 ms / 0.27 MB with
+    // the content diff stripped in SQL.
+    const big = 'x'.repeat(40000);
+    const id = await insNode({ title: 'a claim', confidence: 0.9 });
+    await makeLoadBearing(id, 3);
+    await request(app).patch(`/api/graphs/${gid}/tasks/${id}`)
+      .send({ content: `${node({ status: 'review', title: 'a claim', confidence: 0.9 })}\n${big}` })
+      .expect(200);
+    await verify(id, 'held', ago(300));
+    // The event really does hold a body that size, so the saving is not notional.
+    const { rows: ev } = await pool.query(
+      `SELECT length(payload -> 'changes' -> 'content' ->> 'to') AS n FROM events
+        WHERE graph_id = $1 AND payload -> 'kinds' ? 'claim.verified'`, [gid]);
+    expect(Number(ev[0].n)).toBeGreaterThan(40000);
+
+    // Wrap pool.query so the ROWS THAT CAME BACK are observable, not just the
+    // SQL that asked for them.
+    const seen = [];
+    const real = dbPool.query.bind(dbPool);
+    const spy = vi.spyOn(dbPool, 'query').mockImplementation(async (...args) => {
+      const out = await real(...args);
+      const text = typeof args[0] === 'string' ? args[0] : args[0]?.text ?? '';
+      if (text.includes("'claim.verified','claim.refuted'")) seen.push(out.rows);
+      return out;
+    });
+    let res;
+    try {
+      res = await post({ minImportance: 0, maxResults: 500 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toHaveLength(1);
+    // THE ASSERTION: the 40 KB body never entered the process...
+    expect(seen[0][0].payload.changes.content).toBeUndefined();
+    expect(JSON.stringify(seen[0][0]).length).toBeLessThan(2000);
+    // ...and everything checkFromEvent reads is still there, so the fold is
+    // unchanged: the node is verified, its window is S_INIT, it is stale at 300
+    // days and its checks block counts the hold.
+    expect(seen[0][0].payload.kinds).toContain('claim.verified');
+    expect(seen[0][0].payload.changes['meta.verified_at']).toBeDefined();
+    expect(res.body.model.verified_nodes).toBe(1);
+    const row = res.body.frontier.find((f) => f.id === id);
+    expect(row.checks).toMatchObject({ held: 1, deliberate: 1, last_outcome: 'held' });
+    expect(row.stability).toBe(90);
+    expect(row.stale).toBe(true);
+  });
+});
