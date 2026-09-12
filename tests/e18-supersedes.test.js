@@ -956,3 +956,106 @@ describe('E18.4 CHAIN — supersession end to end, on both clocks', () => {
     expect(wlAfter.body.generations[0].open).toBe(true);
   });
 });
+
+// REGRESSION — a partial PATCH must never silently retype an edge.
+//
+// PATCH /edges/:id accepts a `base_row`: the client's view of the row, used as
+// the merge base and as the source of truth for fields this PATCH does not
+// mention. The canvas builds it with edgeBaseRow() in public/app.js, which
+// emits {source_id, target_id, type, meta, version} and NO `purpose` key at
+// all. `basePurpose` fell back to DEFAULT_PURPOSE ('related to') whenever the
+// base_row lacked that key — so recolouring or reshaping an edge on the canvas
+// silently retyped it.
+//
+// This PREDATES the event log (the line and the canvas helper are both in the
+// baseline commit) and it is not specific to `supersedes`: it rewrites any
+// `supports`, `required for` or `contradicts` edge the same way, which is
+// 4283 of the 7664 edges in the production graph. For a `supersedes` edge it
+// also UN-SUPERSEDES the fact, so it returns to the re-check queues and its
+// worldline loses a generation.
+//
+// The fallback is now the EXISTING row's purpose: a client that does not
+// mention purpose is saying "I did not look at it", never "set it to the
+// default".
+describe('regression — a partial PATCH cannot retype an edge it never mentioned', () => {
+  // Exactly what public/app.js edgeBaseRow() sends: no `purpose` key.
+  const canvasBaseRow = (row) => ({
+    source_id: row.source_id ?? row.source,
+    target_id: row.target_id ?? row.target,
+    type: row.type, meta: row.meta || {}, version: row.version,
+  });
+
+  async function edgeWith(purpose) {
+    const from = await insNode({ title: `from ${purpose}`, confidence: 0.9 });
+    const to = await insNode({ title: `to ${purpose}`, confidence: 0.9 });
+    const res = await request(app).post(edgesUrl()).send({ source_id: from, target_id: to, purpose });
+    expect(res.status).toBe(201);
+    return { from, to, row: res.body };
+  }
+
+  const purposeOf = async (edgeId) =>
+    (await pool.query('SELECT purpose FROM edges WHERE id = $1', [edgeId])).rows[0].purpose;
+
+  for (const purpose of ['supersedes', 'supports', 'required for', 'contradicts']) {
+    it(`a canvas colour edit keeps purpose '${purpose}'`, async () => {
+      const { row } = await edgeWith(purpose);
+      const res = await request(app).patch(`${edgesUrl()}/${row.id}`).send({
+        base_version: row.version,
+        base_row: canvasBaseRow(row),
+        meta: { color: '#3366ff' },
+      });
+      expect(res.status).toBe(200);
+      expect(await purposeOf(row.id)).toBe(purpose);
+    });
+  }
+
+  it('a canvas curve edit keeps purpose supersedes', async () => {
+    const { row } = await edgeWith('supersedes');
+    const res = await request(app).patch(`${edgesUrl()}/${row.id}`).send({
+      base_version: row.version,
+      base_row: canvasBaseRow(row),
+      meta: { curve: { distance: 30, weight: 0.5 } },
+    });
+    expect(res.status).toBe(200);
+    expect(await purposeOf(row.id)).toBe('supersedes');
+  });
+
+  it('the superseded fact STAYS superseded after a canvas colour edit', async () => {
+    const oldFact = await insNode({ title: 'Old terms', confidence: 0.9 });
+    const newFact = await insNode({ title: 'New terms', confidence: 0.9 });
+    const created = await request(app).post(edgesUrl())
+      .send({ source_id: newFact, target_id: oldFact, purpose: 'supersedes' });
+    expect(created.status).toBe(201);
+
+    const before = await request(app).get(worldlineUrl(oldFact));
+    expect(before.body.generations.length).toBe(2);
+
+    const patched = await request(app).patch(`${edgesUrl()}/${created.body.id}`).send({
+      base_version: created.body.version,
+      base_row: canvasBaseRow(created.body),
+      meta: { color: '#3366ff' },
+    });
+    expect(patched.status).toBe(200);
+
+    const after = await request(app).get(worldlineUrl(oldFact));
+    expect(after.body.generations.length).toBe(2);
+  });
+
+  it('an explicit purpose in the PATCH still retypes, as it always did', async () => {
+    const { row } = await edgeWith('supersedes');
+    const res = await request(app).patch(`${edgesUrl()}/${row.id}`).send({ purpose: 'related to' });
+    expect(res.status).toBe(200);
+    expect(await purposeOf(row.id)).toBe('related to');
+  });
+
+  it('a base_row that DOES name a purpose is still honoured as the merge base', async () => {
+    const { row } = await edgeWith('supersedes');
+    const res = await request(app).patch(`${edgesUrl()}/${row.id}`).send({
+      purpose: 'contradicts',
+      base_row: { ...canvasBaseRow(row), purpose: 'supersedes' },
+      base_version: row.version,
+    });
+    expect(res.status).toBe(200);
+    expect(await purposeOf(row.id)).toBe('contradicts');
+  });
+});

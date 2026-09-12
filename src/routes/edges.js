@@ -379,7 +379,15 @@ router.patch('/:id', validateId, async (req, res) => {
   // truth for fields the writer didn't mention in this PATCH. Falls back to
   // the current row when the client hasn't opted in to OCC.
   const base = base_row || existing;
-  const basePurpose = base.purpose ?? DEFAULT_PURPOSE;
+  // Fall back to the EXISTING row's purpose, never to the global default. A
+  // client that sends a base_row without a `purpose` key is saying "I did not
+  // look at the purpose", not "set it to 'related to'" — and the canvas sends
+  // exactly that shape for a colour or curve edit. Falling back to
+  // DEFAULT_PURPOSE silently retyped a `supersedes` edge to 'related to' on any
+  // such edit, which UN-SUPERSEDES the fact: it reappears in the re-check
+  // queues and its worldline loses a generation. Pinned by
+  // tests/e18-supersedes.test.js.
+  const basePurpose = base.purpose ?? existing.purpose ?? DEFAULT_PURPOSE;
 
   // Build the writer's intended full row: their base view with the partial
   // changes applied. Meta is a shallow merge so writers can patch individual
