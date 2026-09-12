@@ -1,5 +1,7 @@
 import app from './app.js';
 import pool, { applySchema } from './db.js';
+import { backfillGenesisAll } from './events/snapshot.js';
+import { createSnapshotter } from './events/snapshotter.js';
 import { configFromEnv } from './search/config.js';
 import { createEmbeddingProvider } from './search/providers/embedding.js';
 import { createChunkIndexer } from './search/indexer.js';
@@ -16,6 +18,55 @@ try {
 } catch (err) {
   console.error('graphtask schema apply failed —', err.message);
   process.exit(1);
+}
+
+// E18.1 — seq-0 genesis for the graphs that predate the event log. Graphs
+// created from here on are covered STRUCTURALLY by the gt_seed_genesis trigger
+// (a new graph has no rows, so its substrate is the empty state), so this finds
+// nothing to do on every boot after the first.
+//
+// DELIBERATELY NOT IN db/schema.sql, and deliberately NOT fatal. schema.sql is
+// applied as ONE transaction and a throw there process.exit(1)s the server
+// above; the genesis state must be canonicalised by the same JS function the
+// fold uses (Postgres orders jsonb keys by (length, bytes) and would hash
+// differently); and DML in schema.sql is the actorless, untestable thing this
+// epic exists to stop adding to.
+//
+// A graph that fails here still answers `?asOf` — it falls back to
+// `base.kind: 'empty'` and replays from seq 1, which is exact for everything
+// the log has seen and an approximation only for pre-log rows. Awaited (unlike
+// the indexer below) because it is bounded and cheap — measured against the
+// live database: 65 graphs, 4103 tasks, 7664 edges, no bodies stored — and
+// because a `?asOf` served before it finishes would report a base it is about
+// to gain.
+try {
+  const t0 = performance.now();
+  const res = await backfillGenesisAll(pool, { log: (m) => console.error(`[events] ${m}`) });
+  if (res.written || res.failed) {
+    console.log(
+      `[events] genesis backfill — ${res.written} written, ${res.skipped} skipped` +
+        (res.failed ? `, ${res.failed} FAILED` : '') +
+        ` in ${Math.round(performance.now() - t0)}ms`,
+    );
+  }
+} catch (err) {
+  // LOG AND CONTINUE. Never process.exit: the log is already complete from the
+  // moment the triggers exist, and a missing genesis costs accuracy about
+  // pre-log history, not correctness about anything since.
+  console.error('[events] genesis backfill failed —', err.message);
+}
+
+// E18.1 — periodic snapshots. A third consumer of the graph_change LISTEN bus
+// (after src/sse.js and the search indexer), started HERE and not in app.js so
+// that the ~30 test files importing app.js never open a LISTEN client. Not
+// awaited: a snapshot is a cache, and `?asOf` answers identically without one.
+try {
+  const snapshotter = createSnapshotter({ pool });
+  snapshotter.start().catch((err) => {
+    console.error('[snapshots] failed to start —', err.message);
+  });
+} catch (err) {
+  console.error('[snapshots] not started —', err.message);
 }
 
 // Semantic-search indexer (#190 write path): with an embedding backend
