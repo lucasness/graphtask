@@ -32,8 +32,13 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  // `events` and `graph_snapshots` are listed EXPLICITLY because they carry no
+  // foreign key to graphs(id) — deliberately, so a graph's history outlives the
+  // graph (E18.1). That is exactly why the CASCADE above cannot reach them:
+  // without naming them here the log accumulates across tests and the suite
+  // becomes order-dependent. VERIFIED: 1000 rows survived the CASCADE.
   await pool.query(
-    'TRUNCATE graphs, tasks, edges, users, graph_members, invite_tokens, agent_tokens, pending_members RESTART IDENTITY CASCADE',
+    'TRUNCATE graphs, tasks, edges, users, graph_members, invite_tokens, agent_tokens, pending_members, events, graph_snapshots RESTART IDENTITY CASCADE',
   );
 });
 

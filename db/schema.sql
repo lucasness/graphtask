@@ -1,3 +1,14 @@
+-- E18.1 — attribute this file's own DML. applySchema() (src/db.js:15-20) runs
+-- the WHOLE file as one multi-statement query, i.e. one implicit transaction,
+-- so is_local=true covers every statement below and leaks nothing onto the
+-- pooled connection afterwards. Without these two lines the boot-time
+-- backfills (the edge curve migration, the purpose backfill, the short-id
+-- rotation DO block) would append events with no actor at all.
+-- The GUC prefix is `gt.`, never `app.`: this Postgres instance is shared with
+-- the Wafer system DB and an `app.*` collision would misattribute silently.
+SELECT set_config('gt.actor_type', 'system', true);
+SELECT set_config('gt.actor_name', 'schema-migration', true);
+
 DO $$ BEGIN
   CREATE TYPE edge_type AS ENUM ('dependency', 'related');
 EXCEPTION WHEN duplicate_object THEN NULL;
@@ -655,3 +666,427 @@ DO $$ BEGIN
   ALTER TABLE graph_refreshes ADD CONSTRAINT refresh_last_run_kind_valid
     CHECK (last_run_kind IS NULL OR last_run_kind IN ('run', 'dismissed'));
 END $$;
+
+-- ============================================================================
+-- E18.1 — append-only event log. Appended at the END of db/schema.sql.
+-- Capture is at the DB (row triggers) so no write path can be missed; identity
+-- rides down from the HTTP layer as transaction-local GUCs. Fails OPEN on
+-- attribution (actor.type='system'), never on coverage.
+-- ============================================================================
+
+-- Every custom-GUC read goes through gt_ctx(). After a SET LOCAL txn commits,
+-- PostgreSQL leaves the setting as '' (not unset) for the rest of that pooled
+-- session, so a raw current_setting(k,true)::timestamptz raises 22007 on the
+-- SECOND request of a recycled connection. NULLIF is the fix. VERIFIED.
+CREATE OR REPLACE FUNCTION gt_ctx(k text) RETURNS text AS $$
+  SELECT NULLIF(current_setting(k, true), '')
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION gt_capture_enabled() RETURNS boolean AS $$
+  SELECT COALESCE(gt_ctx('gt.capture'), 'on') <> 'off'
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION gt_actor() RETURNS jsonb AS $$
+  SELECT jsonb_strip_nulls(jsonb_build_object(
+    'type',    COALESCE(gt_ctx('gt.actor_type'), 'system'),
+    'id',      gt_ctx('gt.actor_id'),
+    'name',    gt_ctx('gt.actor_name'),
+    'user_id', gt_ctx('gt.actor_user_id'),
+    'via',     gt_ctx('gt.actor_via')))
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION gt_happened_at() RETURNS timestamptz AS $$
+  SELECT COALESCE(gt_ctx('gt.happened_at')::timestamptz, clock_timestamp())
+$$ LANGUAGE sql STABLE;
+
+-- events.graph_id deliberately carries NO FK to graphs(id). VERIFIED: an
+-- ON DELETE CASCADE FK wipes the log at the exact moment it becomes the only
+-- record of a graph. Consequence: tests/setup.js must TRUNCATE events and
+-- graph_snapshots explicitly (the suite's CASCADE cannot reach them), and
+-- rotate-id must rewrite events.graph_id itself (gt_log_graph below).
+CREATE TABLE IF NOT EXISTS events (
+  graph_id    TEXT        NOT NULL,
+  seq         BIGINT      NOT NULL,
+  happened_at TIMESTAMPTZ NOT NULL,
+  learned_at  TIMESTAMPTZ NOT NULL,
+  actor       JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  kind        TEXT        NOT NULL,
+  subject_kind TEXT,
+  subject_id  BIGINT,
+  cause_id    BIGINT,
+  request_id  TEXT,
+  txid        BIGINT      NOT NULL,
+  payload     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  PRIMARY KEY (graph_id, seq),
+  CONSTRAINT events_seq_positive     CHECK (seq > 0),
+  CONSTRAINT events_actor_object     CHECK (jsonb_typeof(actor) = 'object'),
+  CONSTRAINT events_payload_object   CHECK (jsonb_typeof(payload) = 'object'),
+  CONSTRAINT events_cause_precedes   CHECK (cause_id IS NULL OR cause_id < seq),
+  CONSTRAINT events_happened_at_sane CHECK (happened_at >= TIMESTAMPTZ '1970-01-01'),
+  CONSTRAINT events_subject_kind_valid
+    CHECK (subject_kind IS NULL OR subject_kind IN ('node','edge','graph'))
+);
+
+-- kind is TEXT + CHECK, never an enum: ALTER TYPE ... ADD VALUE plus any use of
+-- the new literal later in the same file fails 55P04 and rolls back the whole
+-- boot apply. Migrated with the house drop/re-add DO block (schema.sql:460) so
+-- E18.2/E18.4 can add a kind on an EXISTING db with a one-block edit.
+DO $$ BEGIN
+  ALTER TABLE events DROP CONSTRAINT IF EXISTS events_kind_valid;
+  ALTER TABLE events ADD CONSTRAINT events_kind_valid CHECK (kind IN (
+    'node.created','node.patched','node.removed',
+    'status.changed','field.set','claim.verified','decision.made','decision.reopened',
+    'edge.added','edge.removed','edge.retyped','edge.rewired','edge.patched',
+    'graph.id_rotated','graph.deleted'));
+END $$;
+
+CREATE INDEX IF NOT EXISTS events_graph_learned_idx  ON events (graph_id, learned_at, seq);
+CREATE INDEX IF NOT EXISTS events_graph_happened_idx ON events (graph_id, happened_at, seq);
+CREATE INDEX IF NOT EXISTS events_subject_idx        ON events (graph_id, subject_kind, subject_id, seq);
+CREATE INDEX IF NOT EXISTS events_cause_idx          ON events (graph_id, cause_id) WHERE cause_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS events_request_idx        ON events (graph_id, request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS events_kinds_gin          ON events USING gin ((payload -> 'kinds'));
+
+-- learned_at and txid are SERVER facts, never inputs. clock_timestamp(), NOT
+-- now(): now() is the TRANSACTION timestamp, and a txn that STARTED earlier but
+-- APPENDS later stamps a learned_at BEHIND a lower seq. VERIFIED (seq 1 learned
+-- 06.698, seq 2 learned 06.296 under now(); monotone under clock_timestamp()).
+-- Backdating is additionally flagged in the payload so it can never be disguised.
+CREATE OR REPLACE FUNCTION gt_events_stamp() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.learned_at := clock_timestamp();
+  NEW.txid := pg_current_xact_id()::text::bigint;
+  IF NEW.happened_at < NEW.learned_at - INTERVAL '1 second' THEN
+    NEW.payload := NEW.payload || jsonb_build_object('backdated', true);
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS gt_events_stamp_t ON events;
+CREATE TRIGGER gt_events_stamp_t BEFORE INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION gt_events_stamp();
+
+-- Append-only. The ONE permitted mutation is the graph_id rewrite that
+-- POST /graphs/:id/rotate-id performs (gt_log_graph does it explicitly,
+-- because there is no FK to cascade it).
+CREATE OR REPLACE FUNCTION gt_events_append_only() RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND NEW.graph_id IS DISTINCT FROM OLD.graph_id
+     AND (to_jsonb(NEW) - 'graph_id') = (to_jsonb(OLD) - 'graph_id')
+  THEN RETURN NEW; END IF;
+  RAISE EXCEPTION 'events is append-only (attempted % on %/%)',
+    TG_OP, COALESCE(OLD.graph_id, NEW.graph_id), COALESCE(OLD.seq, NEW.seq)
+    USING ERRCODE = '0A000';
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS gt_events_append_only_t ON events;
+CREATE TRIGGER gt_events_append_only_t BEFORE UPDATE OR DELETE ON events
+  FOR EACH ROW EXECUTE FUNCTION gt_events_append_only();
+
+-- Per-graph seq, allocated under the graphs row lock. That lock is NOT a new
+-- cost: bump_graph_updated_at() already does UPDATE graphs SET version=version+1
+-- on every task/edge row write, so every writer of a graph already holds it.
+-- Holding it to commit makes allocation order == commit order, so seq is
+-- GAPLESS and learned_at is MONOTONE with seq. VERIFIED (gapless 1,2,3 across a
+-- rolled-back txn; ordering preserved under contention). That is what makes
+-- ?since= polling safe and "derived views keyed by event seq" sound — no
+-- settled-horizon / pg_stat_activity machinery is needed anywhere.
+CREATE OR REPLACE FUNCTION gt_next_seq(gid text) RETURNS bigint AS $$
+DECLARE s BIGINT;
+BEGIN
+  PERFORM 1 FROM graphs WHERE id = gid FOR UPDATE;
+  SELECT COALESCE(MAX(seq), 0) + 1 INTO s FROM events WHERE graph_id = gid;
+  RETURN s;
+END $$ LANGUAGE plpgsql;
+
+-- Snapshots. LEARNED AXIS ONLY beyond genesis: a periodic snapshot at seq S
+-- encodes "all events seq <= S in LEARNED order"; a backdated event learned
+-- after S sorts BEFORE some of them on the happened axis, so S's last-writer
+-- outcomes are wrong for that ordering. Genesis is exempt (nothing precedes it).
+CREATE TABLE IF NOT EXISTS graph_snapshots (
+  graph_id        TEXT        NOT NULL,
+  axis            TEXT        NOT NULL DEFAULT 'learned',
+  seq             BIGINT      NOT NULL,
+  kind            TEXT        NOT NULL DEFAULT 'periodic',
+  at              TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  max_happened_at TIMESTAMPTZ,
+  state           JSONB       NOT NULL,
+  state_sha       TEXT        NOT NULL,
+  node_count      INTEGER     NOT NULL DEFAULT 0,
+  edge_count      INTEGER     NOT NULL DEFAULT 0,
+  fold_version    INTEGER     NOT NULL DEFAULT 1,
+  built_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (graph_id, axis, seq),
+  CONSTRAINT snapshots_axis_valid       CHECK (axis IN ('learned')),
+  CONSTRAINT snapshots_kind_valid       CHECK (kind IN ('genesis','periodic')),
+  CONSTRAINT snapshots_seq_nonneg       CHECK (seq >= 0),
+  CONSTRAINT snapshots_state_object     CHECK (jsonb_typeof(state) = 'object'),
+  CONSTRAINT snapshots_genesis_at_zero  CHECK (kind <> 'genesis' OR seq = 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS graph_snapshots_genesis_uniq
+  ON graph_snapshots (graph_id, axis) WHERE kind = 'genesis';
+
+-- Genesis for every FUTURE graph, structurally: a new graph has no rows, so its
+-- seq-0 substrate is the empty state. This closes the only genesis race the
+-- trigger design would otherwise have (there is no openWrite hook to seed it
+-- lazily before the first write). The literal MUST equal canonicalStringify of
+-- fold.emptyState() byte-for-byte — pinned by a unit test.
+CREATE OR REPLACE FUNCTION gt_seed_genesis() RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO graph_snapshots (graph_id, axis, seq, kind, at, max_happened_at,
+                               state, state_sha, node_count, edge_count)
+  VALUES (NEW.id, 'learned', 0, 'genesis', COALESCE(NEW.created_at, clock_timestamp()),
+          COALESCE(NEW.created_at, clock_timestamp()),
+          '{"v":1,"nodes":[],"edges":[]}'::jsonb,
+          encode(sha256('{"v":1,"nodes":[],"edges":[]}'::bytea), 'hex'), 0, 0)
+  ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS gt_seed_genesis_t ON graphs;
+CREATE TRIGGER gt_seed_genesis_t AFTER INSERT ON graphs
+  FOR EACH ROW EXECUTE FUNCTION gt_seed_genesis();
+
+-- ---- diff + classification -------------------------------------------------
+CREATE OR REPLACE FUNCTION gt_diff(old_j jsonb, new_j jsonb, prefix text DEFAULT '')
+RETURNS jsonb AS $$
+  SELECT COALESCE(jsonb_object_agg(prefix || k,
+           jsonb_build_object('from', old_j -> k, 'to', new_j -> k)), '{}'::jsonb)
+  FROM (SELECT jsonb_object_keys(old_j) AS k
+        UNION SELECT jsonb_object_keys(new_j)) ks
+  WHERE (old_j -> k) IS DISTINCT FROM (new_j -> k)
+$$ LANGUAGE sql IMMUTABLE;
+
+-- NOTE: `ks := ks || 'literal'` fails 42804 (malformed array literal).
+-- array_append is required.
+CREATE OR REPLACE FUNCTION gt_classify_node(ch jsonb) RETURNS text[] AS $$
+DECLARE ks text[] := '{}';
+BEGIN
+  IF ch ? 'meta.decided_at' THEN
+    IF (ch #>> '{meta.decided_at,to}') IS NOT NULL
+      THEN ks := array_append(ks, 'decision.made');
+      ELSE ks := array_append(ks, 'decision.reopened'); END IF;
+  END IF;
+  IF ch ? 'meta.verified_at' AND (ch #>> '{meta.verified_at,to}') IS NOT NULL
+    THEN ks := array_append(ks, 'claim.verified'); END IF;
+  IF ch ? 'meta.status' THEN ks := array_append(ks, 'status.changed'); END IF;
+  IF ch ? 'meta.confidence' OR ch ? 'meta.significance'
+    THEN ks := array_append(ks, 'field.set'); END IF;
+  IF array_length(ks, 1) IS NULL
+     OR (ch - ARRAY['meta.decided_at','meta.verified_at','meta.status',
+                    'meta.confidence','meta.significance']) <> '{}'::jsonb
+    THEN ks := array_append(ks, 'node.patched'); END IF;
+  RETURN ks;
+END $$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION gt_classify_edge(ch jsonb) RETURNS text[] AS $$
+DECLARE ks text[] := '{}';
+BEGIN
+  IF ch ? 'source_id' OR ch ? 'target_id' THEN ks := array_append(ks, 'edge.rewired'); END IF;
+  IF ch ? 'purpose'   OR ch ? 'type'      THEN ks := array_append(ks, 'edge.retyped'); END IF;
+  IF array_length(ks, 1) IS NULL
+     OR (ch - ARRAY['source_id','target_id','purpose','type']) <> '{}'::jsonb
+    THEN ks := array_append(ks, 'edge.patched'); END IF;
+  RETURN ks;
+END $$ LANGUAGE plpgsql IMMUTABLE;
+
+-- A route may PROMOTE a mechanically-derived kind to headline; it can never
+-- invent one. gt.intent='decision.made' on a status-only change is ignored.
+CREATE OR REPLACE FUNCTION gt_headline(ks text[]) RETURNS text AS $$
+  SELECT CASE WHEN gt_ctx('gt.intent') = ANY(ks) THEN gt_ctx('gt.intent') ELSE ks[1] END
+$$ LANGUAGE sql STABLE;
+
+-- Bodies: whole on the `to` side (forward replay is exact), digest on the
+-- `from` side, capped at 128 KB.
+CREATE OR REPLACE FUNCTION gt_content_change(old_c text, new_c text) RETURNS jsonb AS $$
+  SELECT jsonb_build_object(
+    'from_sha',  encode(sha256(COALESCE(old_c,'')::bytea), 'hex'),
+    'to',        CASE WHEN length(COALESCE(new_c,'')) <= 131072 THEN to_jsonb(new_c) ELSE 'null'::jsonb END,
+    'to_sha',    encode(sha256(COALESCE(new_c,'')::bytea), 'hex'),
+    'to_len',    length(COALESCE(new_c,'')),
+    'truncated', length(COALESCE(new_c,'')) > 131072)
+$$ LANGUAGE sql IMMUTABLE;
+
+-- ---- row loggers -----------------------------------------------------------
+-- Suppressed columns are LEASE/bookkeeping state, not graph facts. Suppressing
+-- claim_* is what stops tasks.js:315 lease renewals drowning the log; ch = '{}'
+-- then also absorbs rotate-id's mass graph_id rewrite and batch.js's idempotent
+-- re-upserts. VERIFIED: a renewal emits nothing.
+CREATE OR REPLACE FUNCTION gt_log_task() RETURNS TRIGGER AS $$
+DECLARE
+  gid  TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
+  ch   JSONB;
+  ks   TEXT[];
+  drop_cols TEXT[] := ARRAY['id','graph_id','created_at','updated_at','version',
+    'last_modified_by','last_modified_by_user','claimed_by','claimed_by_name',
+    'claim_expires_at','meta','content'];
+  s BIGINT;
+BEGIN
+  IF NOT gt_capture_enabled() THEN RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NULL END; END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    s := gt_next_seq(gid);
+    INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                        subject_kind, subject_id, cause_id, request_id, txid, payload)
+    VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'node.created',
+            'node', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+            jsonb_build_object('v',1,'op','INSERT','table','tasks',
+              'kinds', jsonb_build_array('node.created'),
+              'node_kind', NEW.meta ->> 'type',
+              'version', NEW.version,
+              'after', to_jsonb(NEW) - 'graph_id'));
+    RETURN NULL;
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN
+    -- BEFORE DELETE, so node.removed lands in the log before ON DELETE CASCADE
+    -- reaches edges and the edge logger can point cause_id at it. VERIFIED.
+    s := gt_next_seq(gid);
+    INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                        subject_kind, subject_id, cause_id, request_id, txid, payload)
+    VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'node.removed',
+            'node', OLD.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+            jsonb_build_object('v',1,'op','DELETE','table','tasks',
+              'kinds', jsonb_build_array('node.removed'),
+              'node_kind', OLD.meta ->> 'type',
+              'graph_deleted', gt_ctx('gt.graph_deleting') IS NOT DISTINCT FROM gid,
+              'before', CASE WHEN gt_ctx('gt.graph_deleting') IS NOT DISTINCT FROM gid
+                             THEN 'null'::jsonb ELSE to_jsonb(OLD) - 'graph_id' END));
+    RETURN OLD;
+  END IF;
+
+  ch := gt_diff(to_jsonb(OLD) - drop_cols, to_jsonb(NEW) - drop_cols)
+     || gt_diff(COALESCE(OLD.meta,'{}'::jsonb), COALESCE(NEW.meta,'{}'::jsonb), 'meta.');
+  IF OLD.content IS DISTINCT FROM NEW.content THEN
+    ch := ch || jsonb_build_object('content', gt_content_change(OLD.content, NEW.content));
+  END IF;
+  IF ch = '{}'::jsonb THEN RETURN NULL; END IF;   -- lease renewal / rotate-id / no-op
+
+  ks := gt_classify_node(ch);
+  s  := gt_next_seq(gid);
+  -- NEVER jsonb_strip_nulls this payload: it recurses and erases "from": null
+  -- inside changes, destroying "this field was previously unset" — exactly what
+  -- E18.4 worldlines need. VERIFIED.
+  INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                      subject_kind, subject_id, cause_id, request_id, txid, payload)
+  VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), gt_headline(ks),
+          'node', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+          jsonb_build_object('v',1,'op','UPDATE','table','tasks',
+            'kinds', to_jsonb(ks), 'node_kind', NEW.meta ->> 'type',
+            'version', NEW.version, 'reason', gt_ctx('gt.reason'), 'changes', ch));
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS gt_log_task_before_delete ON tasks;
+CREATE TRIGGER gt_log_task_before_delete BEFORE DELETE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION gt_log_task();
+DROP TRIGGER IF EXISTS gt_log_task_after_write ON tasks;
+CREATE TRIGGER gt_log_task_after_write AFTER INSERT OR UPDATE ON tasks
+  FOR EACH ROW EXECUTE FUNCTION gt_log_task();
+
+CREATE OR REPLACE FUNCTION gt_log_edge() RETURNS TRIGGER AS $$
+DECLARE
+  gid  TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
+  ch   JSONB; ks TEXT[]; gone BIGINT; cause BIGINT; s BIGINT;
+  drop_cols TEXT[] := ARRAY['id','graph_id','created_at','version',
+    'last_modified_by','last_modified_by_user','meta'];
+BEGIN
+  IF NOT gt_capture_enabled() THEN RETURN NULL; END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    s := gt_next_seq(gid);
+    INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                        subject_kind, subject_id, cause_id, request_id, txid, payload)
+    VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'edge.added',
+            'edge', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+            jsonb_build_object('v',1,'op','INSERT','table','edges',
+              'kinds', jsonb_build_array('edge.added'),
+              'version', NEW.version, 'after', to_jsonb(NEW) - 'graph_id'));
+    RETURN NULL;
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN
+    -- Cascade detection: a mid-statement fact only the DB has. The parent task
+    -- row is already gone when the RI cascade fires. VERIFIED.
+    IF NOT EXISTS (SELECT 1 FROM tasks WHERE id = OLD.source_id) THEN gone := OLD.source_id;
+    ELSIF NOT EXISTS (SELECT 1 FROM tasks WHERE id = OLD.target_id) THEN gone := OLD.target_id; END IF;
+    IF gone IS NOT NULL THEN
+      SELECT e.seq INTO cause FROM events e
+        WHERE e.graph_id = gid AND e.kind = 'node.removed' AND e.subject_id = gone
+          AND e.txid = pg_current_xact_id()::text::bigint
+        ORDER BY e.seq DESC LIMIT 1;
+    END IF;
+    s := gt_next_seq(gid);
+    INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                        subject_kind, subject_id, cause_id, request_id, txid, payload)
+    VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'edge.removed',
+            'edge', OLD.id, COALESCE(cause, NULLIF(gt_ctx('gt.cause_id'),'')::bigint),
+            gt_ctx('gt.request_id'), 0,
+            jsonb_build_object('v',1,'op','DELETE','table','edges',
+              'kinds', jsonb_build_array('edge.removed'),
+              'cascade_from', gone,
+              'graph_deleted', gt_ctx('gt.graph_deleting') IS NOT DISTINCT FROM gid,
+              'before', CASE WHEN gt_ctx('gt.graph_deleting') IS NOT DISTINCT FROM gid
+                             THEN 'null'::jsonb ELSE to_jsonb(OLD) - 'graph_id' END));
+    RETURN NULL;
+  END IF;
+
+  ch := gt_diff(to_jsonb(OLD) - drop_cols, to_jsonb(NEW) - drop_cols)
+     || gt_diff(COALESCE(OLD.meta,'{}'::jsonb), COALESCE(NEW.meta,'{}'::jsonb), 'meta.');
+  IF ch = '{}'::jsonb THEN RETURN NULL; END IF;
+  ks := gt_classify_edge(ch);
+  s  := gt_next_seq(gid);
+  INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                      subject_kind, subject_id, cause_id, request_id, txid, payload)
+  VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), gt_headline(ks),
+          'edge', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+          jsonb_build_object('v',1,'op','UPDATE','table','edges',
+            'kinds', to_jsonb(ks), 'version', NEW.version,
+            'reason', gt_ctx('gt.reason'), 'changes', ch));
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS gt_log_edge_after_write ON edges;
+CREATE TRIGGER gt_log_edge_after_write AFTER INSERT OR UPDATE OR DELETE ON edges
+  FOR EACH ROW EXECUTE FUNCTION gt_log_edge();
+
+-- rotate-id: no FK carries events/snapshots, so move them explicitly, then one
+-- graph.id_rotated. graph DELETE: set gt.graph_deleting so the cascaded row
+-- loggers emit compact events, and write a tombstone BEFORE the cascade.
+CREATE OR REPLACE FUNCTION gt_log_graph() RETURNS TRIGGER AS $$
+DECLARE s BIGINT; n INT; e INT;
+BEGIN
+  IF NOT gt_capture_enabled() THEN RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NULL END; END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.id IS NOT DISTINCT FROM OLD.id THEN RETURN NULL; END IF;
+    UPDATE events         SET graph_id = NEW.id WHERE graph_id = OLD.id;
+    UPDATE graph_snapshots SET graph_id = NEW.id WHERE graph_id = OLD.id;
+    s := gt_next_seq(NEW.id);
+    INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                        subject_kind, subject_id, request_id, txid, payload)
+    VALUES (NEW.id, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'graph.id_rotated',
+            'graph', NULL, gt_ctx('gt.request_id'), 0,
+            jsonb_build_object('v',1,'kinds',jsonb_build_array('graph.id_rotated'),
+              'changes', jsonb_build_object('graph_id',
+                jsonb_build_object('from', to_jsonb(OLD.id), 'to', to_jsonb(NEW.id)))));
+    RETURN NULL;
+  END IF;
+
+  PERFORM set_config('gt.graph_deleting', OLD.id, true);
+  SELECT count(*) INTO n FROM tasks WHERE graph_id = OLD.id;
+  SELECT count(*) INTO e FROM edges WHERE graph_id = OLD.id;
+  s := gt_next_seq(OLD.id);
+  INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                      subject_kind, subject_id, request_id, txid, payload)
+  VALUES (OLD.id, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'graph.deleted',
+          'graph', NULL, gt_ctx('gt.request_id'), 0,
+          jsonb_build_object('v',1,'kinds',jsonb_build_array('graph.deleted'),
+            'node_count', n, 'edge_count', e, 'name', OLD.name));
+  RETURN OLD;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS gt_log_graph_rotate ON graphs;
+CREATE TRIGGER gt_log_graph_rotate AFTER UPDATE OF id ON graphs
+  FOR EACH ROW EXECUTE FUNCTION gt_log_graph();
+DROP TRIGGER IF EXISTS gt_log_graph_delete ON graphs;
+CREATE TRIGGER gt_log_graph_delete BEFORE DELETE ON graphs
+  FOR EACH ROW EXECUTE FUNCTION gt_log_graph();

@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { withTx } from '../db.js';
+import {
+  withEventTx,
+  parseHappenedAt,
+  HAPPENED_AT_HEADER,
+} from '../events/context.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
 import { mergeFields } from '../merge.js';
 import { normalizeMeta, flattenEdge, unflattenEdge, resolveEdgeKind } from './edges.js';
@@ -136,8 +140,21 @@ async function resolveEndpoint(client, gid, extToId, ref, idx) {
   return id;
 }
 
+// E18.1 — backdating gate, identical to the one in tasks.js / edges.js.
+// `happened_at` (world time) is a caller input; `learned_at` (belief time) is
+// stamped by the database and accepted from nowhere.
+function rejectBadHappenedAt(req, res) {
+  const h = parseHappenedAt(req.body?.happened_at ?? req.headers?.[HAPPENED_AT_HEADER]);
+  if (h.error) {
+    res.status(400).json({ error: h.error });
+    return true;
+  }
+  return false;
+}
+
 router.post('/', async (req, res) => {
   const { gid } = req.params;
+  if (rejectBadHappenedAt(req, res)) return;
   const body = req.body || {};
   const nodes = body.nodes ?? [];
   const edges = body.edges ?? [];
@@ -221,7 +238,12 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const result = await withTx(async (client) => {
+    // ONE transaction, up to 500 node upserts + 1000 edge upserts, ONE
+    // request_id. Exactly one event per CHANGED row: the idempotent no-op
+    // short-circuits below skip the write entirely, and even a write that
+    // reaches the database with nothing actually different diffs to ch = '{}'
+    // in the row trigger and emits nothing. An idempotent re-run is silent.
+    const result = await withEventTx(req, async (client) => {
       const og = await client.query('SELECT owner_user_id FROM graphs WHERE id = $1', [gid]);
       if (og.rows.length === 0) throw new BatchError(404, 'graph not found');
       const graphOwnerId = og.rows[0].owner_user_id ?? null;

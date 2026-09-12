@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import pool from '../db.js';
+import { eventQuery, parseHappenedAt, HAPPENED_AT_HEADER } from '../events/context.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 import { requireGraph } from '../auth/require.js';
 import { authEnabled } from '../auth/index.js';
@@ -270,8 +271,26 @@ router.post('/:id/claim', async (req, res) => {
   res.json({ claimed: true, graph: r.rows[0] });
 });
 
+// E18.1 — backdating gate, identical to the one in tasks.js / edges.js.
+function rejectBadHappenedAt(req, res) {
+  const h = parseHappenedAt(req.body?.happened_at ?? req.headers?.[HAPPENED_AT_HEADER]);
+  if (h.error) {
+    res.status(400).json({ error: h.error });
+    return true;
+  }
+  return false;
+}
+
+// The graph row is gone after this, and with it every task and edge via
+// ON DELETE CASCADE — which is precisely when the log becomes the only record
+// of what existed. events/graph_snapshots carry NO foreign key to graphs for
+// that reason, so nothing here erases them. eventQuery (not pool.query) so the
+// graph.deleted tombstone and the whole cascade carry a real actor instead of
+// 'system', and land in one transaction.
 router.delete('/:id', requireGraph('manage'), async (req, res) => {
-  const result = await pool.query(
+  if (rejectBadHappenedAt(req, res)) return;
+  const result = await eventQuery(
+    req,
     'DELETE FROM graphs WHERE id = $1 RETURNING id',
     [req.params.id]
   );
@@ -284,9 +303,16 @@ router.delete('/:id', requireGraph('manage'), async (req, res) => {
 // on tasks/edges FKs propagates the new id automatically.
 router.post('/:id/rotate-id', requireGraph('manage'), async (req, res) => {
   const oldId = req.params.id;
+  if (rejectBadHappenedAt(req, res)) return;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const result = await pool.query(
+      // eventQuery so the single graph.id_rotated event carries the actor. The
+      // mass graph_id rewrite the ON UPDATE CASCADE performs on every task and
+      // edge row is deliberately silent: graph_id is in the row loggers'
+      // drop_cols, so each cascaded UPDATE diffs to ch = '{}' and emits
+      // nothing. One rotation = one event, not one per row.
+      const result = await eventQuery(
+        req,
         `UPDATE graphs
             SET id = generate_short_graph_id(), updated_at = NOW()
           WHERE id = $1

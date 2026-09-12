@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import pool, { withTx } from '../db.js';
+import pool from '../db.js';
+import {
+  eventQuery,
+  withEventTx,
+  parseHappenedAt,
+  HAPPENED_AT_HEADER,
+} from '../events/context.js';
 import { requireIntegerParam } from './_validate.js';
 import { mergeFields, flattenJsonb, unflattenJsonb } from '../merge.js';
 import {
@@ -22,6 +28,20 @@ export {
 
 const router = Router({ mergeParams: true });
 const validateId = requireIntegerParam('id');
+
+// E18.1 — backdating gate. See the identical note in src/routes/tasks.js:
+// `happened_at` (world time) is a caller input and may be in the past;
+// `learned_at` (belief time) is stamped by the database and accepted from
+// nowhere. Rejecting a malformed value here means a bad request writes no row
+// and therefore no event.
+function rejectBadHappenedAt(req, res) {
+  const h = parseHappenedAt(req.body?.happened_at ?? req.headers?.[HAPPENED_AT_HEADER]);
+  if (h.error) {
+    res.status(400).json({ error: h.error });
+    return true;
+  }
+  return false;
+}
 
 // Shape edges use for OCC merge: top-level scalar fields + meta keys
 // flattened to `meta.<key>` so concurrent edits to different meta keys
@@ -122,6 +142,7 @@ async function assertEndpointsInGraph(client, gid, sourceId, targetId) {
 
 router.post('/', async (req, res) => {
   const { gid } = req.params;
+  if (rejectBadHappenedAt(req, res)) return;
   const { source_id, target_id } = req.body;
   const normalizedMeta = normalizeMeta(req.body.meta || {});
   if (normalizedMeta.error) return res.status(400).json({ error: normalizedMeta.error });
@@ -135,7 +156,9 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'source and target must be different' });
 
   try {
-    const row = await withTx(async (client) => {
+    // withEventTx is withTx plus one statement: the actor context, applied right
+    // after BEGIN. The LOCK TABLE below is unaffected — it simply runs second.
+    const row = await withEventTx(req, async (client) => {
       // Serialize concurrent edge writers in this graph so the cycle check below
       // can't be raced. Reads still proceed (SHARE ROW EXCLUSIVE allows SELECT).
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
@@ -183,6 +206,7 @@ router.post('/', async (req, res) => {
 // same call) are caught.
 router.post('/bulk', async (req, res) => {
   const { gid } = req.params;
+  if (rejectBadHappenedAt(req, res)) return;
   const list = req.body && req.body.edges;
   if (!Array.isArray(list)) {
     return res.status(400).json({ error: 'edges must be an array' });
@@ -215,7 +239,10 @@ router.post('/bulk', async (req, res) => {
   }
 
   try {
-    const rows = await withTx(async (client) => {
+    // One HTTP request, up to 500 inserted rows, so up to 500 edge.added events
+    // — one per CHANGED row, which is the restated DONE-WHEN. They share a
+    // single request_id, which is what groups the fan-out back into one action.
+    const rows = await withEventTx(req, async (client) => {
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
 
       // Verify every referenced task belongs to this graph in one shot.
@@ -302,6 +329,7 @@ router.get('/', async (req, res) => {
 
 router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
+  if (rejectBadHappenedAt(req, res)) return;
   const { source_id, target_id, base_version, base_row } = req.body;
 
   // Resolve the writer's intended purpose: `purpose` when given, else undefined
@@ -389,7 +417,7 @@ router.patch('/:id', validateId, async (req, res) => {
     return res.status(400).json({ error: 'source and target must be different' });
 
   try {
-    const row = await withTx(async (client) => {
+    const row = await withEventTx(req, async (client) => {
       await client.query('LOCK TABLE edges IN SHARE ROW EXCLUSIVE MODE');
       await assertEndpointsInGraph(client, gid, newSource, newTarget);
 
@@ -439,7 +467,9 @@ router.patch('/:id', validateId, async (req, res) => {
 
 router.delete('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const result = await pool.query(
+  if (rejectBadHappenedAt(req, res)) return;
+  const result = await eventQuery(
+    req,
     'DELETE FROM edges WHERE id = $1 AND graph_id = $2 RETURNING id',
     [id, gid]
   );

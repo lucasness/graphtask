@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import pool, { withTx } from '../db.js';
+import pool from '../db.js';
+import {
+  eventQuery,
+  withEventTx,
+  parseHappenedAt,
+  HAPPENED_AT_HEADER,
+} from '../events/context.js';
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
 import { mergeFields } from '../merge.js';
 import { requireIntegerParam } from './_validate.js';
@@ -22,12 +28,32 @@ function unflattenTask(flat) {
 const router = Router({ mergeParams: true });
 const validateId = requireIntegerParam('id');
 
+// E18.1 — the backdating gate. `happened_at` is WORLD time and may be in the
+// past; it arrives in the JSON body, or as X-Happened-At for the body-less
+// DELETE routes. `learned_at` is BELIEF time and is accepted from nowhere — the
+// database stamps it with clock_timestamp() and a caller can never falsify it.
+//
+// This runs BEFORE any write, so a malformed value yields a 400 and NO event,
+// rather than a row written with a silently-dropped timestamp.
+// eventContextFromRequest() deliberately does not throw on a bad value (the app
+// has no custom Express error handler, so a throw would be a 500) — rejecting
+// it is the route's job.
+function rejectBadHappenedAt(req, res) {
+  const h = parseHappenedAt(req.body?.happened_at ?? req.headers?.[HAPPENED_AT_HEADER]);
+  if (h.error) {
+    res.status(400).json({ error: h.error });
+    return true;
+  }
+  return false;
+}
+
 // ---- task CRUD ----
 
 router.post('/', async (req, res) => {
   const { gid } = req.params;
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
+  if (rejectBadHappenedAt(req, res)) return;
 
   const { meta: rawMeta, body, frontmatterError } = parseMarkdown(content);
   if (frontmatterError)
@@ -40,7 +66,11 @@ router.post('/', async (req, res) => {
   const normalized = serializeMarkdown(meta, body);
 
   try {
-    const result = await pool.query(
+    // eventQuery is a drop-in for pool.query that carries the actor down to the
+    // row trigger as transaction-local GUCs. Same Result, and the SAME error
+    // object rethrown after ROLLBACK — so the 23503 handling below is unchanged.
+    const result = await eventQuery(
+      req,
       `INSERT INTO tasks (graph_id, content, meta, last_modified_by, last_modified_by_user)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [gid, normalized, JSON.stringify(meta), req.writerType, req.user?.id ?? null]
@@ -151,6 +181,7 @@ router.patch('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
   const { content, base_version, base_content } = req.body;
   if (!content) return res.status(400).json({ error: 'content is required' });
+  if (rejectBadHappenedAt(req, res)) return;
 
   const writerParsed = parseMarkdown(content);
   if (writerParsed.frontmatterError)
@@ -236,7 +267,8 @@ router.patch('/:id', validateId, async (req, res) => {
   }
 
   const normalized = serializeMarkdown(mergedMeta, mergedBody);
-  const result = await pool.query(
+  const result = await eventQuery(
+    req,
     `UPDATE tasks
         SET content = $1,
             meta = $2,
@@ -256,7 +288,14 @@ router.patch('/:id', validateId, async (req, res) => {
 
 router.delete('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const result = await pool.query(
+  if (rejectBadHappenedAt(req, res)) return;
+  // The FK cascade destroys every incident edge and this handler never learns
+  // their ids (it returns {deleted: <task id>}). The row triggers do: the
+  // BEFORE-DELETE task trigger lands node.removed first, then each cascaded
+  // edge.removed points cause_id at it. Running inside eventQuery's explicit
+  // transaction is what gives that whole fan-out one actor and one request_id.
+  const result = await eventQuery(
+    req,
     'DELETE FROM tasks WHERE id = $1 AND graph_id = $2 RETURNING id',
     [id, gid]
   );
@@ -291,6 +330,7 @@ router.post('/:id/claim', validateId, async (req, res) => {
   // A lease without an identifiable holder can't be renewed or attributed —
   // same rule the presence/selection routes apply.
   if (!holder) return res.status(400).json({ error: 'X-Writer-Id is required to claim' });
+  if (rejectBadHappenedAt(req, res)) return;
   let ttl = CLAIM_DEFAULT_TTL_S;
   if (req.body && req.body.ttl_seconds !== undefined) {
     ttl = Number(req.body.ttl_seconds);
@@ -298,7 +338,11 @@ router.post('/:id/claim', validateId, async (req, res) => {
     ttl = Math.min(CLAIM_MAX_TTL_S, Math.max(CLAIM_MIN_TTL_S, Math.round(ttl)));
   }
 
-  const out = await withTx(async (client) => {
+  // reason:'claim' lands in payload.reason on the acquire event. The RENEWAL
+  // branch below writes only claim_* columns, which the trigger's drop_cols
+  // suppresses, so a renewal produces ch = '{}' and ZERO events — no per-site
+  // rule needed, and a long-running agent's renewal loop never floods the log.
+  const out = await withEventTx(req, async (client) => {
     const cur = await client.query(
       'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
       [id, gid],
@@ -361,13 +405,16 @@ router.post('/:id/claim', validateId, async (req, res) => {
       ],
     );
     return { code: 200, body: { claimed: true, renewed: false, task: upd.rows[0] } };
-  });
+  }, { reason: 'claim' });
   res.status(out.code).json(out.body);
 });
 
 router.delete('/:id/claim', validateId, async (req, res) => {
   const { gid, id } = req.params;
-  const out = await withTx(async (client) => {
+  if (rejectBadHappenedAt(req, res)) return;
+  // The non-in_progress branch touches only claim_* columns (its version bump
+  // is an artifact), so it too falls out as ch = '{}' and emits nothing.
+  const out = await withEventTx(req, async (client) => {
     const cur = await client.query(
       'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
       [id, gid],
@@ -403,7 +450,7 @@ router.delete('/:id/claim', validateId, async (req, res) => {
       [row.id],
     );
     return { code: 200, body: { released: true, task: upd.rows[0] } };
-  });
+  }, { reason: 'release' });
   res.status(out.code).json(out.body);
 });
 
