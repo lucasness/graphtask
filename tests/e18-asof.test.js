@@ -239,6 +239,30 @@ describe('E18.1 asOf — parameters', () => {
     expect(bySeq.headers['cache-control']).toBe('private, max-age=600');
   });
 
+  it('does NOT declare an asOfSeq past head_seq cacheable — it is the moving head', async () => {
+    // learnedAsOf clamps asOfSeq to the head, so this URL means "whatever the
+    // head is right now". It answered 1 node here and 2 nodes a write later —
+    // the same URL, two bodies. Ten minutes of max-age on that is a lie, so the
+    // header is decided by the RESOLVED envelope, not by the query string.
+    await makeTask({ title: 'A' });
+    const ahead = await view({ asOfSeq: '999' });
+    expect(ahead.status).toBe(200);
+    expect(ahead.body.as_of).toMatchObject({ requested: 999, seq: 1, head_seq: 1 });
+    expect(ahead.body.nodes).toHaveLength(1);
+    expect(ahead.headers['cache-control']).toBe('no-store');
+
+    await makeTask({ title: 'B' });
+    const again = await view({ asOfSeq: '999' });
+    expect(again.body.nodes).toHaveLength(2); // same URL, different body
+    expect(again.headers['cache-control']).toBe('no-store');
+
+    // A request AT the head is a settled prefix like any other and keeps its
+    // max-age: the prefix seq<=2 can never gain a member.
+    const atHead = await view({ asOfSeq: String(again.body.as_of.head_seq) });
+    expect(atHead.body.as_of.seq).toBe(2);
+    expect(atHead.headers['cache-control']).toBe('private, max-age=600');
+  });
+
   it('is read-gated by the existing mount — nothing new to get wrong', async () => {
     const res = await request(app)
       .get(`/api/graphs/nosuchgraph/graph`)

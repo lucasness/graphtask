@@ -115,10 +115,26 @@ export function parseAsOfQuery(query) {
 // `?asOfSeq=` pins an immutable prefix (gapless + commit-ordered seq), so it is
 // the one reconstruction that may sit in a cache. Everything else resolves
 // against a wall clock whose answer changes as the log grows.
-export function cacheControlFor(params) {
-  return params?.asOfSeq !== null && params?.asOfSeq !== undefined
-    ? 'private, max-age=600'
-    : 'no-store';
+//
+// ONLY A SEQ THAT THE LOG ACTUALLY REACHED IS PINNED. `learnedAsOf` clamps
+// `asOfSeq` to the head (`Math.min`), so `?asOfSeq=999` on a graph whose head
+// is 12 means "whatever the head is right now" — the same URL answers
+// DIFFERENTLY the moment anyone writes. That is the one case where the
+// immutability argument above does not hold, so it gets `no-store`. It is
+// clamped rather than rejected: the envelope already reports the honest `seq`
+// and `head_seq`, a 400 would turn a currently-200 read (a client holding a
+// head it learned a moment ago) into a new failure mode, and the defect here is
+// the header, not the status code. `asOfSeq` EQUAL to head_seq is a settled
+// prefix like any other and keeps its max-age.
+//
+// `resolved` is the `as_of` envelope graphAsOf returned. Without it there is no
+// way to tell a pinned prefix from the moving head, so the answer is no-store.
+export function cacheControlFor(params, resolved = null) {
+  const asOfSeq = params?.asOfSeq;
+  if (asOfSeq === null || asOfSeq === undefined) return 'no-store';
+  const headSeq = Number(resolved?.head_seq);
+  if (!Number.isFinite(headSeq) || asOfSeq > headSeq) return 'no-store';
+  return 'private, max-age=600';
 }
 
 // ── SQL ──────────────────────────────────────────────────────────────────────

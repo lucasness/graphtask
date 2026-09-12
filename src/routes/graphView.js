@@ -71,7 +71,9 @@ router.get('/', async (req, res, next) => {
   if (asOfParams.value) {
     try {
       const out = await graphAsOf(pool, req.params.gid, asOfParams.value);
-      res.set('Cache-Control', cacheControlFor(asOfParams.value));
+      // The RESOLVED envelope decides the header, not just the query: an
+      // asOfSeq past the head was clamped to the live head and is not immutable.
+      res.set('Cache-Control', cacheControlFor(asOfParams.value, out.as_of));
       return res.json(out);
     } catch (err) {
       return next(err);
