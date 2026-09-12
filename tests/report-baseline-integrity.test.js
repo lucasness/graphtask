@@ -158,11 +158,22 @@ describe('report write leaves the staleness baseline (graphs.updated_at) untouch
   // task/edge frames.
   it('a regenerate PUT (UPDATE branch) keeps the notify isolated: one report frame, ZERO tasks/edges', async () => {
     const gid = await makeLegacyGraph();
-    await request(app).put(url(gid)).send({ title: 'First', body: 'x' }); // INSERT
 
+    // Subscribe BEFORE the INSERT, then wait for the INSERT's own frame and
+    // discard it. src/sse.js resolves subscribers.get(graph_id) at DELIVERY
+    // time, not at emit time, so a notify fired before subscribe() can still
+    // land in this subscriber's window once the event loop is busy — which
+    // made the "exactly one frame" assertion below intermittently see two.
+    // Draining the INSERT frame first closes that window without weakening
+    // anything the test asserts. (Proven: a notify emitted with no subscriber
+    // attached is delivered to one that attaches 250ms later.)
     const frames = [];
     const fakeRes = { write: (chunk) => frames.push(String(chunk)) };
     subscribe(gid, fakeRes);
+
+    await request(app).put(url(gid)).send({ title: 'First', body: 'x' }); // INSERT
+    await waitFor(() => parseFrames(frames).some((e) => e.graph_id === gid && e.kind === 'report'));
+    frames.length = 0;
 
     const put = await request(app).put(url(gid)).send({ title: 'Regen', body: 'y', regenerated: true }); // UPDATE
     expect(put.status).toBe(200);
