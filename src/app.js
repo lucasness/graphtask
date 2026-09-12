@@ -25,6 +25,7 @@ import decisionsAtRiskRouter from './routes/decisionsAtRisk.js';
 import inconsistencyRouter from './routes/inconsistency.js';
 import structureRouter from './routes/structure.js';
 import exportRouter from './routes/export.js';
+import { eventsLogHandler } from './routes/eventsLog.js';
 import { startSse, subscribe, unsubscribe, tryReserveSlot, releaseSlot, broadcastPresence } from './sse.js';
 import { writerType } from './writerType.js';
 import { getAdapter } from './auth/index.js';
@@ -86,7 +87,17 @@ app.get('/api/config', (req, res) => {
 // mutation, payload `{ graph_id, kind, op }`. Browser subscribes via
 // EventSource and refetches the graph on each event. canRead-gated so that
 // auth-on instances don't leak private graph traffic to anonymous viewers.
-app.get('/api/graphs/:gid/events', requireGraph('read'), (req, res) => {
+app.get('/api/graphs/:gid/events', requireGraph('read'), (req, res, next) => {
+  // E18.1 STEP 6 — the same path, read as an append-only LOG rather than
+  // subscribed to as a stream. The locked spec spells the read API
+  // `GET /events?since=`, and this route was registered first, so the branch
+  // lives here instead of the path being renamed. It MUST stay the first
+  // statement: after tryReserveSlot() a connection slot is held, and after
+  // flushHeaders() the response is irreversibly an event-stream. The browser's
+  // EventSource opens the path bare, so SSE is untouched; `?format=json` reads
+  // the head of the log without passing a `since`.
+  if (req.query.since !== undefined || req.query.format === 'json') return eventsLogHandler(req, res, next);
+
   const { gid } = req.params;
   // Cap concurrent SSE connections to stay below the process fd ceiling.
   // Browsers using EventSource will retry automatically after Retry-After.
