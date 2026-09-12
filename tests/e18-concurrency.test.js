@@ -89,6 +89,39 @@ describe('E18.1 — concurrent writes through the real routes', () => {
     expect(tally(results)).toEqual({ 201: 6 });
   });
 
+  // E18.4 — a supersedes edge write calls gt_next_seq() a SECOND time, inside
+  // gt_log_supersede, to allocate the annotation's seq. That is the one thing
+  // about this rung that could disturb the lock order this file exists to pin.
+  // It cannot: the second call runs in the same transaction, where the graphs
+  // row is ALREADY held FOR NO KEY UPDATE, so it acquires no new lock. Its only
+  // other read is an unlocked `SELECT meta->>'type' FROM tasks` for the
+  // payload's node_kind, against a row the FK has already pinned FOR KEY SHARE.
+  it('parallel SUPERSEDES edge creation does not deadlock and keeps seq gapless', async () => {
+    const gid = await newGraph();
+    const ids = [];
+    for (let i = 0; i < 20; i++) ids.push(await makeTask(gid, `t${i}`));
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        request(app).post(`/api/graphs/${gid}/edges`).send({
+          source_id: ids[i * 2], target_id: ids[i * 2 + 1], purpose: 'supersedes',
+        })),
+    );
+    expect(tally(results)).toEqual({ 201: 10 });
+
+    const { rows } = await pool.query(
+      `SELECT COALESCE(MAX(seq),0)::int AS head, count(*)::int AS n,
+              count(*) FILTER (WHERE kind = 'node.superseded')::int AS ann,
+              bool_and(cause_id IS NULL OR cause_id < seq) AS cause_ok
+         FROM events WHERE graph_id = $1`, [gid],
+    );
+    // 20 creations + 10 edge.added + 10 node.superseded, and NO GAPS: the
+    // annotation's seq comes from the same allocator as everything else.
+    expect(rows[0].head).toBe(rows[0].n);
+    expect(rows[0].ann).toBe(10);
+    expect(rows[0].cause_ok).toBe(true);
+  });
+
   // THE LOCK-ORDER INVERSION. A task delete cascades into edges while holding
   // the graphs row; an edge write wants the edges table then the graphs row.
   it('deleting nodes while edges are being written in the same graph does not deadlock', async () => {

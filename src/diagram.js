@@ -30,6 +30,14 @@ const EDGE_STYLE = {
   supports: { stroke: 'var(--chart-3)', dash: null },
   contradicts: { stroke: 'var(--chart-6)', dash: '6 4' },
   'related to': { stroke: 'var(--chart-grid)', dash: '2 4' },
+  // E18.4, DEFENSIVE ONLY. `edgeLine` already falls back to 'related to' and no
+  // diagram selector admits a supersedes edge, so this entry can never be the
+  // difference between a drawn and an undrawn line today. Per design/DESIGN.md
+  // the canvas draws off the DERIVED `type`, where supersedes is `related` like
+  // supports and contradicts; giving it a distinct visual treatment would be a
+  // new design decision and is deliberately not taken here — which is why it is
+  // NOT added to any `kind` selector or to the legend order below.
+  supersedes: { stroke: 'var(--chart-grid)', dash: '2 4' },
 };
 
 const STATUS_FILL = {

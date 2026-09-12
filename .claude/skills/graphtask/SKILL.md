@@ -374,9 +374,15 @@ Each edge carries a `purpose` (the relationship it encodes, directed source → 
 | `supports` | source is **evidence FOR** target | `related` |
 | `contradicts` | source is **evidence AGAINST** target | `related` |
 | `related to` | loose association (the **default**) | `related` |
+| `supersedes` | source **REPLACES** target: target was right for its time, source is the current version (E18.4) | `related` |
+
+- **`supersedes` vs `contradicts` — the one-line rule.** `contradicts` = they cannot both be true (a live tension a human must adjudicate). `supersedes` = A *was* right for its time and B replaces it (no tension: the story simply moved on). If you find yourself filing a CORRECTION, a RETRACTION, a re-decision or a "superseded by …" note as `contradicts`, it is a supersession. Note the direction: **source is the SUCCESSOR, target is the fact being replaced** — B --supersedes--> A reads "B supersedes A".
+- **Declaring a supersession WITHDRAWS the contradiction.** There is one edge per ordered pair, so turning a `contradicts` edge into a supersession is a PATCH, not a second edge — and that pair leaves the signed subgraph, so a tension `POST /inconsistencies` was reporting disappears. That is intended ("A isn't wrong, A is past"), and it is a real information change: re-run `POST /inconsistencies` after a retype and tell the human what stopped being a tension.
+- **A superseded node drops out of the queues.** `/frontier`, `GET /tasks/ready` and `/decisions/at-risk` exclude nodes that a `supersedes` edge points at (nobody should be handed a fact whose story ended). Pass `includeSuperseded: true` (`?includeSuperseded=1` on `/ready`) to see them anyway. Two things it deliberately does NOT do: a superseded **prerequisite still blocks** its dependents (rewire the `required for` edge onto the successor if you mean to unblock — nothing auto-flips status), and a superseded ground makes its decision MORE at risk, surfacing as the `supersededGround` reason.
+- **Nothing is stored on the node.** There is no `meta.superseded_at` and you must not invent one: "is this superseded?" is derived from the EDGE SET, which is what makes `GET /graph?asOf=…` answer it correctly for any point in time. `GET /api/graphs/:gid/tasks/:id/worldline` returns the fact's generations with their `[valid_from, valid_to)` intervals.
 
 - Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the only edge *relationship* field you send (the server also accepts `meta` for edge `color`/`curve`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input. `POST /edges`, `/edges/bulk`, and `/batch` reject a write with no `purpose`; `PATCH /edges/:id` treats an omitted `purpose` as "keep the existing relationship".
-- ONLY `required for` is cycle-checked and traversed by §5's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
+- ONLY `required for` is cycle-checked and traversed by §5's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association; `supersedes` is a directed succession relation read by the worldline route and the three queues — deliberately NOT cycle-checked, because a revert (B supersedes A, then later A' supersedes B) is legitimate history. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
 
 ### Node reserved fields (frontmatter `meta`)
 
@@ -387,10 +393,12 @@ All optional, validated only WHEN PRESENT — no migration (they live in `meta`)
 | `type` | open string (≤40) | node kind. Absent = a work/knowledge node. Two server-recognized values: `reference` (an external citation/source) and `decision` (a committed choice — see [Decision records](#decision-records-e17)). |
 | `significance` | number 0.0–1.0 (one-decimal convention) | how much this node matters. UNIVERSAL (plans + research). |
 | `confidence` | number 0.0–1.0 (one-decimal) | how sure we are (a finding) / source reliability (a `reference`). Research-tier. |
-| `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked. Distinct from the automatic `updated_at`. Research-tier. |
+| `verified_at` | ISO-8601 datetime | when the claim was last DELIBERATELY re-checked AND HELD. Distinct from the automatic `updated_at`. Research-tier. **E18.2: this is now a CACHE of the latest held check — the event log is the record.** It stays the authoritative ANCHOR (how long since the claim was last confirmed); the log supplies the WINDOW (how long that confirmation is good for). |
+| `refuted_at` | ISO-8601 datetime | **E18.2** — when a deliberate re-check FAILED. Set by `POST /tasks/:id/verify {outcome:"failed"}`, which also CLEARS `verified_at`, so a refuted claim goes straight back to the top of `/frontier`. Mirrors `decided_at`/`decision.reopened`: setting it emits `claim.refuted`, clearing it does not. |
+| `decay` | boolean | **E18.2** — per-node opt-OUT from verification decay. Absent (the normal case) means the node's verification goes stale with time. `decay: false` pins retrievability at 1 and removes it from `/frontier`'s stale term — the way a fixed MEASUREMENT (an extracted constant, a quoted spec value, a definition, a contract clause) says it does not rot. It can still surface as low-confidence. |
 | `decided_at` | ISO-8601 datetime | when the human COMMITTED a `type: decision` node. `/decisions/at-risk` compares each ground's `updated_at` against it (pivot detection); absent → the decision's `created_at` is the baseline. |
 
-`significance`, `confidence`, `verified_at`, `decided_at` survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`). `type` is NOT merge-protected — an omitting rewrite drops it, so always re-state `type` (e.g. `type: reference`, `type: decision`) when you rewrite a node's content.
+`significance`, `confidence`, `verified_at`, `refuted_at`, `decay`, `decided_at` survive a body-rewriting agent PATCH that omits them (merge-protected like `x`/`y`); send an explicit `null` to clear one (e.g. a re-verify run resetting a stale `verified_at`). `type` is NOT merge-protected — an omitting rewrite drops it, so always re-state `type` (e.g. `type: reference`, `type: decision`) when you rewrite a node's content.
 
 ### Role predicates (derived, never stored)
 - **claim** = `confidence` set AND `type` ≠ `reference` — a node that ASSERTS something, with a sureness.
@@ -417,7 +425,7 @@ Knowledge bases change, projects pivot, new tech ships — every committed decis
 - **Grounds are TYPED EDGES, not prose refs.** Every finding/requirement the decision rests on gets `supports` (or `required for`) → the decision. Writing "see node 3954" in the body wires NOTHING — `/frontier` importance and `/decisions/at-risk` both read edges, so a prose-only cluster is invisible to the exact machinery meant to guard it (this is an observed failure: a carefully-built decision cluster wired only with `related to` scored importance 0 and could never surface).
 - **Dependents are gated**: work that builds on the decision gets decision `required for` → task. This is what makes the decision (and via inheritance its grounds) load-bearing to `/frontier`, and what makes `/blockers` honest about what a reopened decision blocks.
 - **Reopening never rewrites history.** If the verdict flips, move the decision's `status` back (done → todo/in_progress) and APPEND the new context — the original rationale and alternatives stay in the body. The rewrite that erases why you decided is the memory-loss this machinery exists to prevent.
-- **When you weaken a claim, check what rests on it.** Any time you drop a node's `confidence`, add a `contradicts` edge, or supersede a finding, traverse its outgoing `supports`/`required for` edges; if a `type: decision` node is among the dependents, SURFACE that to the human ("this weakens the ground under decision N") — never silently reopen or re-decide.
+- **When you weaken a claim, check what rests on it.** Any time you drop a node's `confidence`, add a `contradicts` edge, or supersede a finding (E18.4: a real `supersedes` edge, successor → superseded, not a note in the title), traverse its outgoing `supports`/`required for` edges; if a `type: decision` node is among the dependents, SURFACE that to the human ("this weakens the ground under decision N") — never silently reopen or re-decide.
 Items 1 & 2 are MANDATORY write-gates; item 3 is a deliberately softer ask-don't-act gate (surface, then stop) — don't conflate them.
 1. **(mandatory) Stop at `review`, never set `done`** (§3) — `done` is the human's call.
 2. **(mandatory) Run the inconsistency scan when you finish a body of graph work** — and per-task only when that task added or changed a `supports`/`contradicts` edge: `POST /inconsistencies`; if it returns tensions, SURFACE them (name the loop / its nodes) for the human and NEVER auto-resolve (don't delete or flip a `contradicts` edge). On a graph with no signed (`supports`/`contradicts`) edges the scan is always empty, so it's a no-op you can skip. Framing: like git merge conflicts — the tool surfaces the conflict; the analyst resolves it.
@@ -769,7 +777,7 @@ done
 
 Search and traversal are **two complementary ways to pull context out of a graph — reach for both.** Search jumps to the most relevant nodes *by content* (the RAG-style move above); traversal follows the *edges* out of a node to gather what's connected to it. When the graph is itself a knowledge base — nodes are concept / topic pages and `related` edges are the cross-references between them, the way a wiki links articles — the strongest pattern is the one Karpathy calls an **"LLM wiki"**: rather than re-running vector retrieval on every question, **load the index, jump to an entry page, and follow its links.** Here that's: **search to find the entry node(s), then traverse `related` links to read the connected neighborhood, and synthesize from both.**
 
-The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status`, plus the full `meta` frontmatter — **no body**) plus every edge (`source`, `target`, `purpose` ∈ `required for | supports | contradicts | related to`, the derived `type` ∈ `dependency | related`, and `meta`/`version`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
+The index you traverse is `GET /api/graphs/:gid/graph` → `{nodes, links}`: every node (`id`, `title`, `description`, `status`, plus the full `meta` frontmatter — **no body**) plus every edge (`source`, `target`, `purpose` ∈ `required for | supports | contradicts | related to | supersedes`, the derived `type` ∈ `dependency | related`, and `meta`/`version`). One cheap call gives you the whole structure; then pull only the bodies you need with `GET /tasks/:id`.
 
 ```bash
 # 1. INDEX — the whole map once (structure only, no bodies).
@@ -884,14 +892,34 @@ An absent filter → response byte-identical to the pre-filter contract. An inva
 ```bash
 curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/frontier" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
   -d '{"minImportance":2,"staleDays":90,"lowConfidenceBelow":0.5,"maxResults":50}'
-# → {frontier:[{id,title,status,type,importance,confidence,verified_at,stale,lowConfidence}], truncated, params}
+# → {frontier:[{id,title,status,type,importance,confidence,verified_at,stale,lowConfidence,
+#               refuted_at,r,stability,due_at,decays,checks}], truncated, params, model}
 ```
 
 All params optional (defaults shown). A node with no `verified_at` counts as stale (never verified). Plain tasks (no `confidence`, not a `reference`) are excluded. Over the cap → `truncated:true`. Importance is E17-aware: a claim whose `supports`/`required for` edge lands on a `type: decision` node also inherits that decision's own out-degree (one hop — a finding grounding a decision that gates ten build tasks is load-bearing even at direct out-degree 1), and equal importance breaks ties by `significance` so a significant orphan claim isn't buried below the cap.
 
+**Rational decay (E18.2).** Staleness is no longer one global window for every fact. Each node gets its OWN window `S`, derived from its verification history in the event log, and the route reports retrievability `R(t) = (1 + t/(9S))^-1` beside it. A claim that keeps surviving WELL-SPACED re-checks earns a longer leash (S: 90 → 108 → 129.6 → 155.52 days); one that fails a check collapses to 9 days and comes back immediately. Re-checking the same claim five times in one session buys 0.001 days — **spacing is the reward, not repetition**.
+
+Nothing about the existing parameters changed: `staleDays` is now `S_INIT`, and `R < 0.9` is algebraically "older than `staleDays`", so a node with no verification events behaves exactly as before. Two new params: `rThreshold` (default `0.9`) moves the surfacing threshold, and `rank` (`tiered` — today's order, the default — or `urgency`, the continuous `importance × (1 − R)` trade). Per-row additions: `refuted_at`, `r` (0..1), `stability` (S, days), `due_at` (**when this claim comes back — the time-to-surface handle**), `decays` (false for `decay: false` nodes), and `checks: {held, failed, deliberate, last_at, last_outcome}`. Top-level `model: {mode: 'scalar'|'decay', head_seq, verified_nodes}` says which path ran, so "no decay data yet" is distinguishable from "decay says fresh".
+
+### Recording a re-check (E18.2)
+
+```bash
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/tasks/$ID/verify" -H 'Content-Type: application/json' "${WRITE_HEADERS[@]}" \
+  -d '{"outcome":"held"}'
+# outcome: "held" | "failed"   (required)
+# optional: confidence (0..1, null clears), happened_at (ISO — the world time of
+#           the CHECK; backdate freely), cause_id, base_version (→ 409)
+# → the task row. held: verified_at := happened_at, refuted_at cleared.
+#   failed: refuted_at := happened_at, verified_at cleared, and the claim is
+#   back at the top of /frontier immediately.
+```
+
+Prefer this over a PATCH when you actually re-checked something: it records ONE atomic event with one `happened_at` (a failure plus its confidence drop is a single event), it is the only way to record a FAILED check, and it stamps `payload.intent` so the log can tell a deliberate re-check from an agent that happened to rewrite the node. A PATCH that sets `verified_at` still works and still counts as a hold — it just carries no intent. Repeating `held` at the same `happened_at` writes no second event and still answers 200. **Edit-gated** (a viewer gets 403).
+
 ### Decisions at risk — "which committed decisions no longer rest on solid ground"
 
-`POST /decisions/at-risk` (E17) returns every `type: decision` node with a shifted ground — **status-independent by design: `done` decisions surface.** "Done must never suppress the re-check" is a computed invariant here, not a prose vow. A ground (a node wired INTO the decision via `supports`/`required for`) puts the decision at risk when it is stale (frontier scope + rules), low-confidence, touched by a `contradicts` edge, or **edited after `decided_at`** (the pivot detector — falls back to the decision's `created_at`). A decision that itself touches a `contradicts` edge surfaces as `selfContradicted` even with no wired grounds.
+`POST /decisions/at-risk` (E17) returns every `type: decision` node with a shifted ground — **status-independent by design: `done` decisions surface.** "Done must never suppress the re-check" is a computed invariant here, not a prose vow. A ground (a node wired INTO the decision via `supports`/`required for`) puts the decision at risk when it is stale (frontier scope + rules), low-confidence, touched by a `contradicts` edge, **superseded** (E18.4 — `supersededGround`: the ground has been replaced by a newer version), or **edited after `decided_at`** (the pivot detector — falls back to the decision's `created_at`). A decision that has ITSELF been superseded drops out of the queue entirely — it is history, not a live commitment (`includeSuperseded: true` to see it). A decision that itself touches a `contradicts` edge surfaces as `selfContradicted` even with no wired grounds.
 
 ```bash
 curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/decisions/at-risk" -H 'Content-Type: application/json' "${READ_HEADERS[@]}" \
@@ -1314,16 +1342,18 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | GET | `/api/graphs/:gid/tasks/:id` | One task |
 | PATCH | `/api/graphs/:gid/tasks/:id` | `{content}` — full replace |
 | DELETE | `/api/graphs/:gid/tasks/:id` | Cascades to its edges |
+| POST | `/api/graphs/:gid/tasks/:id/verify` | **E18.2** record a deliberate re-check. `{outcome:"held"\|"failed", confidence?, happened_at?, cause_id?, base_version?}` → the task row. `held` sets `verified_at` and clears `refuted_at`; `failed` does the reverse, which puts the claim straight back on `/frontier`. One atomic event, stamped `intent`. **Edit-gated.** |
 | GET | `/api/graphs/:gid/tasks/leaves` | DAG roots (no incoming dep edges) |
-| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start — open questions (`status:todo`, no `confidence`) with all recursive prereqs `done`; see [§5](#5-status-aware-traversal-find-what-to-work-on-next-whats-blocking-what-gets-unblocked) for the exact predicate |
+| GET | `/api/graphs/:gid/tasks/ready` | Tasks ready to start — open questions (`status:todo`, no `confidence`) with all recursive prereqs `done`; see [§5](#5-status-aware-traversal-find-what-to-work-on-next-whats-blocking-what-gets-unblocked) for the exact predicate. Superseded nodes are excluded (`?includeSuperseded=1` to keep them); a superseded PREREQUISITE still blocks |
 | GET | `/api/graphs/:gid/tasks/:id/subtasks` | All recursive prerequisites — everything this node rests on |
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents — everything resting on this node |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs not yet done |
+| GET | `/api/graphs/:gid/tasks/:id/worldline[?axis=&asOf=&known=]` | **E18.4** — the fact's generations along its `supersedes` chain: `{node, as_of, generations:[{generation, id, title, valid_from, approximate_from, created_at, valid_to, open, closed_by}], branches, truncated}`. Intervals are half-open `[valid_from, valid_to)` and DERIVED from the log, never stored; same `asOf`/`axis`/`known` knobs (and the same errors) as `GET /graph`. **Read-gated.** |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
-| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See [The universal schema (E15)](#the-universal-schema-e15). |
+| POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to | supersedes`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See [The universal schema (E15)](#the-universal-schema-e15). |
 | POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; ≤500 edges per call; each edge takes `purpose` (required) |
-| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Caps: ≤500 nodes / ≤1000 edges per call; `external_id`/`run_id` ≤200 chars. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see [Using graphtask with dynamic workflows](#using-graphtask-with-dynamic-workflows). |
+| POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Caps: ≤500 nodes / ≤1000 edges per call; `external_id`/`run_id` ≤200 chars. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to | supersedes`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see [Using graphtask with dynamic workflows](#using-graphtask-with-dynamic-workflows). |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
 | GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
@@ -1331,7 +1361,7 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | GET | `/api/graphs/:gid/diagram?kind=&node=[&to=][&maxNodes=]` | Server-derived relationship diagram for report bodies: `kind` ∈ `fan\|chain\|cluster` → `{markdown, stats}` — a finished `.gt-fig` figure (theme-token inline SVG, aria-labelled, clickable node titles) built deterministically from the live edge list; paste it VERBATIM into a report (see § Document form). `fan` = supports/contradicts around `node`; `chain` = required-for path through `node` (or `node`→`to`); `cluster` = a decision's incoming grounds. 404 = no such diagram (missing seed or no qualifying edges) — skip, don't retry. **Read-gated.** |
 | POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). For content questions, prefer this over grep — see [§6](#6-search-the-graph-find--what-does-the-graph-say-about-x). |
 | POST | `/api/graphs/:gid/context` | Query- or node-seeded k-hop neighborhood WITH bodies (one cohesive KB call); **read-gated**. Body `{query?|seeds?, hops?, maxNodes?, edgeTypes?, alpha?, filter?}`. Optional `filter` (E15) applies at OUTPUT with the bridge rule (a node bridging two matching nodes is kept + marked `bridge:true`) — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). |
-| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?}` → `{frontier, truncated, params}`. **Read-gated.** |
+| POST | `/api/graphs/:gid/frontier` | **E15** re-verification frontier: load-bearing (out-degree of `required for`+`supports`, plus E17 decision-inherited importance) ∧ (stale ∨ low-confidence) confidence-bearing OR `type: reference` nodes. Body `{minImportance?, staleDays?, lowConfidenceBelow?, maxResults?, rThreshold?, rank?}` → `{frontier, truncated, params, model}`. **E18.2** adds per-node rational decay: `stability` (S), `r`, `due_at`, `decays`, `checks`, `refuted_at`. **Read-gated.** |
 | POST | `/api/graphs/:gid/decisions/at-risk` | **E17** decision re-check queue: `type: decision` nodes whose grounds (incoming `supports`/`required for`) are stale ∨ low-confidence ∨ contradicted ∨ edited after `decided_at`. Status-independent (`done` surfaces). Body `{staleDays?, lowConfidenceBelow?, maxResults?}` → `{atRisk, truncated, params}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/inconsistencies` | **E15** signed-cycle scan: directed cycles in the supports/contradicts subgraph with odd `contradicts`. Body `{start?, maxCycleLen?, maxCycles?}` (graph-wide, or per-claim when `start` is a node id) → `{mode, inconsistencies, truncated, scanned}`. **Read-gated.** |
 | POST | `/api/graphs/:gid/structure` | **E19** derived plan structure: the independent bodies of work as connected components of a purpose-filtered subgraph, each with a status rollup + entry/exit/ready, plus `seams` (bridges = single points of failure, never auto-cut). Body `{purposes?, minRegionSize?}` → `{regions, seams, singletons, params}`. **Read-gated.** See [Derived plan structure](#derived-plan-structure--what-are-the-bodies-of-work-in-here-and-where-is-each-one-up-to). |
@@ -1359,13 +1389,15 @@ status: todo | in_progress | review | done   # defaults to todo
 type: optional open string (≤40)             # E15; `reference` = an external source
 significance: optional number 0.0–1.0        # E15; how much this node matters (universal)
 confidence: optional number 0.0–1.0          # E15; how sure (a finding) / source reliability (research-tier)
-verified_at: optional ISO-8601 datetime      # E15; last DELIBERATE re-check (≠ auto updated_at)
+verified_at: optional ISO-8601 datetime      # E15; last DELIBERATE re-check that HELD (≠ auto updated_at)
+refuted_at: optional ISO-8601 datetime       # E18.2; last deliberate re-check that FAILED
+decay: optional boolean                      # E18.2; `false` = a fixed measurement, never goes stale
 background-image: optional URL string (≤500 chars)   # UI-managed; see below
 ---
 free-form markdown body
 ```
 
-Three of the four E15 fields — `significance`, `confidence`, `verified_at` — are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). `type` is validated when present but is NOT merge-protected: a body-rewriting PATCH that omits `type` drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content. See [The universal schema (E15)](#the-universal-schema-e15) for the predicates and conventions.
+Three of the four E15 fields — `significance`, `confidence`, `verified_at` — plus E17's `decided_at` and E18.2's `refuted_at` / `decay`, are validated only when present and merge-protected (a body-rewriting PATCH that omits them keeps them; explicit `null` clears). `type` is validated when present but is NOT merge-protected: a body-rewriting PATCH that omits `type` drops it, so always re-state `type` (e.g. `type: reference`) when you rewrite a node's content. See [The universal schema (E15)](#the-universal-schema-e15) for the predicates and conventions.
 
 `background-image` holds a URL into the graph's uploads (e.g.
 `/api/graphs/:gid/uploads/:id`). The canvas renders it inside the node frame
@@ -1446,7 +1478,7 @@ the graph?"* One line of confirmation is cheaper than an unwanted upload.
 }
 ```
 
-`purpose` ∈ `required for | supports | contradicts | related to` (E15 — the field you set; required on writes). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is no longer accepted as input. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See [The universal schema (E15)](#the-universal-schema-e15).
+`purpose` ∈ `required for | supports | contradicts | related to | supersedes` (E15, fifth value E18.4 — the field you set; required on writes). The server derives the structural `type` (`required for`→`dependency`, the rest→`related`) and emits both; a legacy `type` is no longer accepted as input. `required for` edges form a DAG; the server enforces this with a transactional cycle check on every insert/update (single + bulk). See [The universal schema (E15)](#the-universal-schema-e15).
 
 ## Setup (only if the user asks)
 

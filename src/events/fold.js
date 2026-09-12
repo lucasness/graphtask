@@ -217,6 +217,7 @@ const OP_BY_KIND = Object.freeze({
   'status.changed': 'UPDATE',
   'field.set': 'UPDATE',
   'claim.verified': 'UPDATE',
+  'claim.refuted': 'UPDATE',
   'decision.made': 'UPDATE',
   'decision.reopened': 'UPDATE',
   'edge.added': 'INSERT',
@@ -232,6 +233,20 @@ const OP_BY_KIND = Object.freeze({
 // itself must not empty it, or a truncated tail would erase a graph that the
 // replay had not yet been told about row by row.
 const GRAPH_KINDS = new Set(['graph.id_rotated', 'graph.deleted']);
+
+// E18.4 — ANNOTATIONS carry no row state either, but for a different reason
+// than the graph kinds above: `node.superseded` describes an edge write that
+// ALREADY produced its own edge event, and the supersession's state is that
+// edge. Without this guard the event falls through applyToIndex's UPDATE branch
+// and, when the subject node is ABSENT from the state (reachable via
+// happened-axis re-sorting, or a node deleted after being superseded),
+// MATERIALISES A GHOST NODE `{id, meta:{}, version:null}` plus a
+// `subject_absent_materialised_from_post_image` anomaly — a real corruption of
+// the reconstructed graph. Measured against this exact file before the guard.
+//
+// FOLD_VERSION deliberately stays 1: the kind folds to a no-op, so no stored
+// snapshot's meaning changes and nothing has to be rebuilt.
+const ANNOTATION_KINDS = new Set(['node.superseded']);
 
 function note(anomalies, event, reason) {
   if (!Array.isArray(anomalies)) return;
@@ -313,7 +328,7 @@ function toPresent(change) {
 
 function applyToIndex(ix, event, anomalies) {
   const kind = event?.kind ?? null;
-  if (GRAPH_KINDS.has(kind)) return;
+  if (GRAPH_KINDS.has(kind) || ANNOTATION_KINDS.has(kind)) return;
 
   const payload = plainObject(event?.payload);
   const table =

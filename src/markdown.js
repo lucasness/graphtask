@@ -106,6 +106,27 @@ export function validateMeta(meta) {
       return 'verified_at must be an ISO-8601 datetime';
     }
   }
+  // E18.2 — `refuted_at`: when a deliberate re-check FAILED. Same shape rules
+  // as verified_at, same explicit-null clear. It exists because a failure is
+  // not expressible as a verified_at assignment: clearing verified_at on a
+  // never-verified claim moves nothing, so the trigger would produce ch = '{}'
+  // and the log would record the failure nowhere.
+  if (meta.refuted_at !== undefined && meta.refuted_at !== null) {
+    if (!isIsoDatetime(meta.refuted_at)) {
+      return 'refuted_at must be an ISO-8601 datetime';
+    }
+  }
+  // E18.2 — `decay`: the per-node opt-OUT from verification decay. Absent or
+  // true means "this node's verification goes stale" (the default for every
+  // node in the corpus); `false` pins retrievability at 1, which is how a
+  // fixed MEASUREMENT — an extracted constant, a quoted spec value, a
+  // definition, a contract clause — says it does not rot. Boolean only, and
+  // only validated when present.
+  if (meta.decay !== undefined && meta.decay !== null) {
+    if (typeof meta.decay !== 'boolean') {
+      return 'decay must be true or false';
+    }
+  }
   // E17 — `decided_at`: when a human committed a `type: decision` node. Same
   // shape rules as verified_at; /decisions/at-risk compares each ground's
   // updated_at against it (falling back to the decision's created_at).
@@ -153,6 +174,9 @@ export function applyDefaults(meta) {
   }
   if (result.decided_at instanceof Date) {
     result.decided_at = result.decided_at.toISOString();
+  }
+  if (result.refuted_at instanceof Date) {
+    result.refuted_at = result.refuted_at.toISOString();
   }
   result.status = result.status || 'todo';
   return result;

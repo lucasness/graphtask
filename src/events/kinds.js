@@ -24,8 +24,18 @@ export const EVENT_KINDS = Object.freeze([
   'status.changed',
   'field.set',
   'claim.verified',
+  'claim.refuted',
   'decision.made',
   'decision.reopened',
+  // E18.4. An ANNOTATION, not state: the state of "is A superseded at time t?"
+  // is the EDGE SET the fold reconstructs, and this event is a dated assertion
+  // by an actor that A's story ended. There is deliberately no
+  // `node.unsuperseded` — withdrawing the supersedes edge does not un-happen
+  // the assertion, it revises it, and the revision is the edge.removed /
+  // edge.retyped event. It is emitted by gt_log_supersede with a literal
+  // `kinds` array and never enters gt_classify_edge's output, so the classifier
+  // parity test is untouched by it.
+  'node.superseded',
   'edge.added',
   'edge.removed',
   'edge.retyped',
@@ -41,6 +51,11 @@ export const EVENT_KINDS = Object.freeze([
 // visible instead of silently classified as one of the named transitions.
 export const NODE_SEMANTIC_KEYS = Object.freeze([
   'meta.decided_at',
+  // E18.2 — the negative half of the verification vocabulary. `refuted_at` is
+  // a scalar for the same reason `verified_at` is: a failed check must MOVE
+  // something, or failing a never-verified claim would produce ch = '{}' and
+  // record nothing at all.
+  'meta.refuted_at',
   'meta.verified_at',
   'meta.status',
   'meta.confidence',
@@ -94,6 +109,8 @@ export function classifyNode(changes) {
   if (present(changes, 'meta.decided_at')) {
     ks.push(toIsSet(changes, 'meta.decided_at') ? 'decision.made' : 'decision.reopened');
   }
+  // Before claim.verified: a change asserting both headlines the doubt.
+  if (toIsSet(changes, 'meta.refuted_at')) ks.push('claim.refuted');
   if (toIsSet(changes, 'meta.verified_at')) ks.push('claim.verified');
   if (present(changes, 'meta.status')) ks.push('status.changed');
   if (present(changes, 'meta.confidence') || present(changes, 'meta.significance')) {
@@ -130,14 +147,104 @@ export function headline(kinds, intent = null) {
   return ks.length > 0 ? ks[0] : null;
 }
 
-// E18.2 hook, deliberately inert in v1.
+// ── E18.2 — decay eligibility and the weakening hook ────────────────────────
+
+// Which nodes DECAY — i.e. whose verification goes stale with time.
 //
-// Every event already carries `payload.node_kind` (the node's `meta.type` at
-// event time), so the decay question — "does a CLAIM about the world go stale,
-// while an extracted MEASUREMENT does not?" — is answerable as a pure function
-// over data E18.1 already captures, with no schema change and no new capture
-// path. Returning `null` (not `false`) is the point: it means "E18.1 takes no
-// position", so a caller can tell "not eligible" from "not yet decided".
-export function isDecayEligible(_event, _nodeMeta) {
+// Measured against the production corpus before this was written: there is no
+// `claim` node type at all; 2983 of 4103 nodes are untyped; 1043 of the 1298
+// nodes carrying `verified_at` are untyped, and 190 are `reference`. A type
+// allowlist would therefore key the whole feature on a field 73% of the
+// relevant nodes do not have — and naming `claim` / `measurement` would
+// specialise E18 for one domain.
+//
+// So the gate is the population predicate `/frontier` has ALWAYS used
+// (`confidence IS NOT NULL OR type = 'reference'` — which is also the house
+// definition of a claim, SKILL.md), plus ONE general per-node opt-out,
+// `meta.decay: false`. Zero corpus nodes carry a `decay` key, so introducing it
+// cannot move any existing ranking; it moves only when someone sets it, which
+// is the point. A node that is a fixed MEASUREMENT (an extracted constant, a
+// quoted spec value, a definition, a contract clause) sets `decay: false` and
+// keeps R pinned at 1 — without E18 ever learning the words "claim" or
+// "measurement".
+//
+// The tri-state contract is unchanged from the E18.1 stub: `null` means "E18
+// takes no position", which a caller can tell apart from "not eligible".
+export function isDecayEligible(event, nodeMeta = null) {
+  const meta = nodeMeta && typeof nodeMeta === 'object' ? nodeMeta : null;
+  if (meta) {
+    // Explicit opt-out wins over everything, including `confidence`.
+    if (meta.decay === false) return false;
+    if (meta.confidence !== null && meta.confidence !== undefined) return true;
+    if (meta.type === 'reference') return true;
+    return false;
+  }
+  // No node given: answer from the event alone, using `payload.node_kind` —
+  // the node's `meta.type` at event time, which E18.1 already stamps on every
+  // event. Only `reference` is decisive from a type alone; anything else needs
+  // the node's `confidence`, which an event does not carry.
+  const nodeKind = event?.payload?.node_kind ?? null;
+  if (nodeKind === 'reference') return true;
+  return null;
+}
+
+// E18.3 seed extractor. Turns one event into "this made something less
+// believed", with a caller-interpretable magnitude and NO propagation weight,
+// NO attenuation constant and no decay-rate domain priors — those are the next
+// rung's to choose, not this one's to hardcode.
+//
+// The stability fold deliberately IGNORES `confidence_drop`: confidence already
+// reaches the frontier through `lowConfidence`, and letting it also move S
+// would make the two knobs interact invisibly.
+export function weakening(event) {
+  if (!event || typeof event !== 'object') return null;
+  const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+  const kinds = Array.isArray(payload.kinds) ? payload.kinds : [];
+  const seq = event.seq ?? null;
+  const subjectId = event.subject_id ?? null;
+  const happenedAt = event.happened_at ?? null;
+
+  if (kinds.includes('claim.refuted')) {
+    return { kind: 'refutation', magnitude: 1, seq, subject_id: subjectId, happened_at: happenedAt };
+  }
+  // E18.4 — a supersession is the third seed. Magnitude 1, like a refutation:
+  // the fact's story ended. It carries `superseded_by` (the successor node) and
+  // `cause_id` (the edge event that opened it) so E18.3's front can walk the
+  // cause chain without re-reading the log. NO propagation weight and NO
+  // attenuation constant, same standing rule as the other two.
+  //
+  // A supersession is NOT a check: stability.js's VERIFY_EVENTS_SQL filters an
+  // explicit ['claim.verified','claim.refuted'] allowlist, so checkFromEvent()
+  // keeps returning null here with no edit. Letting a supersession move S would
+  // be exactly the invisible knob interaction E18.2 refused for
+  // `confidence_drop` — nobody re-verified anything.
+  if (kinds.includes('node.superseded')) {
+    return {
+      kind: 'supersession',
+      magnitude: 1,
+      seq,
+      subject_id: subjectId,
+      happened_at: happenedAt,
+      superseded_by: payload.superseded_by ?? null,
+      cause_id: event.cause_id ?? null,
+    };
+  }
+  const entry = payload.changes && typeof payload.changes === 'object'
+    ? payload.changes['meta.confidence']
+    : null;
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    const from = entry.from;
+    const to = entry.to;
+    if (typeof from === 'number' && typeof to === 'number'
+        && Number.isFinite(from) && Number.isFinite(to) && to < from) {
+      return {
+        kind: 'confidence_drop',
+        magnitude: from - to,
+        seq,
+        subject_id: subjectId,
+        happened_at: happenedAt,
+      };
+    }
+  }
   return null;
 }

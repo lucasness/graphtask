@@ -119,7 +119,12 @@ describe('E17.2 /decisions/at-risk', () => {
     const res = await request(app).post(atRiskUrl()).send({});
     expect(res.status).toBe(200);
     expect(res.body.atRisk).toEqual([]);
-    expect(res.body.params).toEqual({ staleDays: 90, lowConfidenceBelow: 0.5, maxResults: 50 });
+    // E18.4 added `includeSuperseded` (default false) to this echo: a
+    // superseded decision is history, not a live commitment, so it is excluded
+    // by default and the answer must say which question it answered.
+    expect(res.body.params).toEqual({
+      staleDays: 90, lowConfidenceBelow: 0.5, maxResults: 50, includeSuperseded: false,
+    });
   });
 
   it('a decision on healthy grounds is NOT at risk (no noise on day one)', async () => {

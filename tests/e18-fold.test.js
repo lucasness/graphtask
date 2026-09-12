@@ -311,8 +311,32 @@ describe('E18.1 fold — applyEvent is idempotent for every kind', () => {
       'status.changed': [state, nodeUpdated({ id: 1, changes: { 'meta.status': { from: 'todo', to: 'review' } } })],
       'field.set': [state, nodeUpdated({ id: 1, changes: { 'meta.confidence': { from: null, to: 0.9 } } })],
       'claim.verified': [state, nodeUpdated({ id: 1, changes: { 'meta.verified_at': { from: null, to: '2026-02-02T00:00:00.000Z' } } })],
+      // E18.2 — the negative half. A refute SETS refuted_at and CLEARS
+      // verified_at in one change, which is what the verify route writes; the
+      // cleared key carries `to_present: false`, the gt_diff shape for a key
+      // that went away.
+      'claim.refuted': [state, nodeUpdated({ id: 1, changes: {
+        'meta.refuted_at': { from: null, to: '2026-02-02T00:00:00.000Z' },
+        'meta.verified_at': { from: '2026-01-01T00:00:00.000Z', to: null, to_present: false },
+      } })],
       'decision.made': [state, nodeUpdated({ id: 1, changes: { 'meta.decided_at': { from: null, to: '2026-02-02T00:00:00.000Z' } } })],
       'decision.reopened': [state, nodeUpdated({ id: 1, changes: { 'meta.decided_at': { from: '2026-02-02T00:00:00.000Z', to: null } } })],
+      // E18.4 — an ANNOTATION. It folds to nothing at all: the state of a
+      // supersession is the EDGE SET, and this event is a dated assertion
+      // ABOUT a node, not a row change. The subject is deliberately id 1,
+      // which the seeded state HOLDS, so this case proves the no-op; the
+      // ABSENT-subject case (the ghost-node guard) is its own test below.
+      'node.superseded': [state, evt({
+        kind: 'node.superseded',
+        subject_kind: 'node',
+        subject_id: 1,
+        cause_id: 7,
+        payload: {
+          v: 1, op: 'ANNOTATE', table: 'tasks',
+          kinds: ['node.superseded'], node_kind: 'finding',
+          superseded_by: 2, edge_id: 1, via: 'edge.added',
+        },
+      })],
       'edge.added': [state, edgeAdded({ id: 1, source: 1, target: 2, purpose: 'supports', type: 'related', version: 4 })],
       'edge.removed': [state, edgeRemoved({ id: 1 })],
       'edge.retyped': [state, edgeUpdated({ id: 1, changes: { purpose: { from: 'required for', to: 'contradicts' }, type: { from: 'dependency', to: 'related' } } })],
@@ -735,5 +759,62 @@ describe('E18.1 fold — toGraphPayload', () => {
 
   it('projects the empty substrate to an empty graph', () => {
     expect(toGraphPayload(emptyState())).toEqual({ nodes: [], links: [] });
+  });
+});
+
+// ── E18.4 — the annotation guard ─────────────────────────────────────────────
+//
+// `node.superseded` is emitted BESIDE the edge event that opened a
+// supersession. It carries no row state: the state of "is A superseded?" is the
+// EDGE SET this fold reconstructs. Left ungated it falls through applyToIndex's
+// UPDATE branch, which is harmless when the subject is present and CORRUPTING
+// when it is absent — it materialises a ghost node from the post-image. The
+// absent case is reachable (happened-axis re-sorting; a node deleted after
+// being superseded), so the guard is a correctness requirement, not tidiness.
+describe('E18.4 fold — node.superseded is an annotation, not state', () => {
+  const annotation = (subjectId) =>
+    evt({
+      kind: 'node.superseded',
+      subject_kind: 'node',
+      subject_id: subjectId,
+      cause_id: 4,
+      payload: {
+        v: 1, op: 'ANNOTATE', table: 'tasks',
+        kinds: ['node.superseded'], node_kind: null,
+        superseded_by: 99, edge_id: 1, via: 'edge.added',
+      },
+    });
+
+  it('leaves a state holding the subject byte-identical', () => {
+    const { state } = seeded();
+    const before = canonicalJson(state);
+    const anomalies = [];
+    const after = applyEvent(state, annotation(1), { anomalies });
+    expect(canonicalJson(after)).toBe(before);
+    expect(stateSha(after)).toBe(stateSha(state));
+    expect(anomalies).toEqual([]);
+  });
+
+  it('materialises NO ghost node and records NO anomaly when the subject is absent', () => {
+    // Without the ANNOTATION_KINDS guard this produces
+    // {id: 4242, meta: {}, version: null} plus a
+    // subject_absent_materialised_from_post_image anomaly. Measured against
+    // this exact file before the guard existed.
+    const { state } = seeded();
+    const anomalies = [];
+    const after = applyEvent(state, annotation(4242), { anomalies });
+    expect(after.nodes.map((n) => n.id)).not.toContain(4242);
+    expect(canonicalJson(after)).toBe(canonicalJson(state));
+    expect(anomalies).toEqual([]);
+  });
+
+  it('does not move stateSha when folded into a whole log', () => {
+    // FOLD_VERSION stays 1 precisely because of this: the kind folds to a
+    // no-op, so no stored snapshot's meaning changes and nothing is rebuilt.
+    nextSeq = 0;
+    const { events, state } = seeded();
+    const withAnnotations = foldEvents(emptyState(), [...events, annotation(1), annotation(2)]);
+    expect(stateSha(withAnnotations)).toBe(stateSha(state));
+    expect(FOLD_VERSION).toBe(1);
   });
 });

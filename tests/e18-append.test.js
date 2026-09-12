@@ -513,7 +513,16 @@ describe('E18.1 kinds.js', () => {
     expect(headline([])).toBeNull();
   });
 
-  it('leaves decay eligibility undecided in v1 (E18.2 hook)', () => {
-    expect(isDecayEligible({ payload: { node_kind: 'claim' } }, {})).toBeNull();
+  it('answers decay eligibility, and still says "no position" when it has none', () => {
+    // E18.1 shipped this as an inert stub returning null; E18.2 fills it in.
+    // The TRI-STATE contract is the part that had to survive: given a node's
+    // meta the answer is a boolean, and given only an event it may still be
+    // null — "E18 takes no position", which a caller can tell from "no".
+    // (Full cases live in tests/e18-stability.test.js.)
+    expect(isDecayEligible({ payload: { node_kind: 'claim' } }, {})).toBe(false);
+    expect(isDecayEligible({ payload: { node_kind: 'claim' } })).toBeNull();
+    expect(isDecayEligible({ payload: { node_kind: 'reference' } })).toBe(true);
+    expect(isDecayEligible(null, { confidence: 0.8 })).toBe(true);
+    expect(isDecayEligible(null, { confidence: 0.8, decay: false })).toBe(false);
   });
 });

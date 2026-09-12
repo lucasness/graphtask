@@ -86,8 +86,17 @@ describe('A1 derivation helpers', () => {
     expect(resolveEdgeKind({ purpose: 'causes' }).error).toMatch(/purpose must be one of/);
   });
 
-  it('EDGE_PURPOSES is the locked four-value vocabulary', () => {
-    expect(EDGE_PURPOSES).toEqual(['required for', 'supports', 'contradicts', 'related to']);
+  // E18.4 grew this list from four to five. The vocabulary is still LOCKED —
+  // adding a purpose is a deliberate, three-list edit (EDGE_PURPOSES,
+  // planRegions' ALL_PURPOSES, the edges_purpose_valid CHECK) — this assertion
+  // is what makes an accidental fourth copy or a silent drop fail loudly.
+  // `supersedes` joined on 2026-09-12 because the corpus was already expressing
+  // the relation in prose and mis-filing it as `contradicts` (33 candidate
+  // edges across 7 graphs, 11 of them typed `contradicts`).
+  it('EDGE_PURPOSES is the locked five-value vocabulary', () => {
+    expect(EDGE_PURPOSES).toEqual([
+      'required for', 'supports', 'contradicts', 'related to', 'supersedes',
+    ]);
   });
 });
 

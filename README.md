@@ -601,7 +601,7 @@ edges(
   graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
   source_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
   target_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  purpose TEXT NOT NULL DEFAULT 'related to', -- required for | supports | contradicts | related to (E15, canonical)
+  purpose TEXT NOT NULL DEFAULT 'related to', -- required for | supports | contradicts | related to | supersedes (E15 + E18.4, canonical)
   type edge_type,                            -- derived from purpose: required for→dependency, else→related
   meta JSONB NOT NULL,
   UNIQUE(source_id, target_id),
@@ -693,7 +693,8 @@ that made one backward-compatible schema serve both execution plans and deep
 research. Everything is additive and optional — a plain task graph that never
 sets these fields behaves exactly as before.
 
-- **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default). The server **derives** the structural `type` from it (`required for` → `dependency`, the other three → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose` (the only accepted edge field on writes — a legacy `type` is no longer accepted). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
+- **Edge `purpose`** is the canonical edge field, directed source→target, one of `required for` · `supports` · `contradicts` · `related to` (default) · `supersedes` (E18.4). The server **derives** the structural `type` from it (`required for` → `dependency`, the other four → `related`) and emits both, so the canvas and every dependency query (ready/blockers/unblocks/cycle-check) are unchanged. Writes set `purpose` (the only accepted edge field on writes — a legacy `type` is no longer accepted). Only `required for` is cycle-checked and traversed by the status queries; `supports`/`contradicts` are the directed **signed** relations the inconsistency scan reads.
+- **`supersedes` (E18.4)** says "the target was right for its time; the source replaces it" — which is NOT `contradicts` ("they cannot both be true"). Source is the successor. It is deliberately not cycle-checked, because a revert is legitimate history. Nothing is stored on the node: "is this superseded?" is derived from the edge set, so it is answered correctly at any point in time by `GET /graph?asOf=…`, and `GET /tasks/:id/worldline` returns the fact's generations with their half-open `[valid_from, valid_to)` intervals. A supersedes edge writes a second event, `node.superseded`, whose subject is the SUPERSEDED node and whose `cause_id` is the edge event — an annotation, not state. Superseded nodes drop out of `/frontier`, `/tasks/ready` and `/decisions/at-risk` (pass `includeSuperseded`), with one deliberate exception: a superseded *prerequisite* still blocks its dependents, because nothing auto-flips status.
 - **Reserved typed node fields** in `meta` (validated when present; no migration — `meta` is JSONB): `type` (open string ≤40; `reference` = an external source, `decision` = a committed choice, absent = a work/knowledge node), `significance` (number 0–1, universal), `confidence` (number 0–1, research-tier), `verified_at` (ISO-8601 datetime, a deliberate re-check, distinct from the automatic `updated_at`), `decided_at` (ISO-8601 datetime, when a human committed a `type: decision` node — the baseline `/decisions/at-risk` compares grounds against). The numeric/datetime fields are merge-protected like `x`/`y` (a body-rewriting agent PATCH that omits them keeps them; explicit `null` clears).
 - **Role predicates** (derived, not stored): a **claim** = `confidence` set AND `type` ≠ `reference`; an **open question** = `status: todo` with no `confidence`; a **reference** = `type: reference`.
 - **No canvas/UI rendering** for the new fields, by design — they're agent-/query-facing. The canvas still renders off the derived `type`.
@@ -723,8 +724,9 @@ All task/edge/graph-view routes are scoped to a graph via `:gid`.
 | GET | `/api/graphs/:gid/tasks/:id/ancestors` | All recursive dependents |
 | GET | `/api/graphs/:gid/tasks/:id/blockers` | Recursive prereqs whose status is not `done` |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were marked done |
+| GET | `/api/graphs/:gid/tasks/:id/worldline` | **E18.4** — the fact's generations along its `supersedes` chain, each with a half-open `[valid_from, valid_to)` interval derived from the log. Takes the same `?asOf`/`?asOfSeq`/`?axis`/`?known` knobs as `/graph`, so "was this superseded as far as we knew on Tuesday?" and "had it been superseded in the world by March?" are different, answerable questions |
 | GET | `/api/graphs/:gid/edges` | List edges in graph |
-| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for \| supports \| contradicts \| related to`, required (server derives + stores `type`; legacy `type` no longer accepted) |
+| POST | `/api/graphs/:gid/edges` | Body: `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for \| supports \| contradicts \| related to \| supersedes`, required (server derives + stores `type`; legacy `type` no longer accepted) |
 | POST | `/api/graphs/:gid/edges/bulk` | Body: `{edges: [...]}` — transactional, all-or-nothing; returns `{edges: [...]}` or `{error, failedAt}` |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update; supports endpoints, `purpose`, meta (a purpose change into/out of `required for` re-runs cycle detection) |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete edge |

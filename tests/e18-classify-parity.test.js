@@ -104,6 +104,56 @@ const NODE_CASES = [
   ['decided_at cleared (a decision reopened)', { 'meta.decided_at': d(T1, null) }],
   ['decided_at moved', { 'meta.decided_at': d(T1, T2) }],
 
+  // -- E18.2: refuted_at, the negative half of the verification vocabulary ---
+  ['refuted_at appearing (a check that FAILED)', { 'meta.refuted_at': d(null, T1) }],
+  ['refuted_at cleared (clearing a refutation is NOT a refutation)', {
+    'meta.refuted_at': d(T1, null),
+  }],
+  ['refuted_at moved (a second failed check)', { 'meta.refuted_at': d(T1, T2) }],
+  // What POST /:id/verify {outcome:"failed"} actually writes: refuted_at set,
+  // verified_at removed. gt_diff gives a removed key `to_present: false`.
+  ['the verify route\u2019s FAIL shape', {
+    'meta.refuted_at': d(null, T2),
+    'meta.verified_at': { from: T1, to: null, to_present: false },
+  }],
+  // ... and its HOLD shape: verified_at set, refuted_at removed.
+  ['the verify route\u2019s HOLD shape', {
+    'meta.refuted_at': { from: T1, to: null, to_present: false },
+    'meta.verified_at': d(null, T2),
+  }],
+  ['a fail that also drops confidence', {
+    'meta.refuted_at': d(null, T1),
+    'meta.confidence': d(0.9, 0.2),
+  }],
+  ['a fail that also moves status', {
+    'meta.refuted_at': d(null, T1),
+    'meta.status': d('done', 'review'),
+  }],
+  ['a fail alongside a body rewrite', {
+    'meta.refuted_at': d(null, T1),
+    content: body('a'.repeat(64), '# why it failed'),
+  }],
+  // BOTH set in one change: the doubt must headline, so claim.refuted comes
+  // first in the array and gt_headline() takes ks[1] (1-based).
+  ['refuted_at AND verified_at both SET', {
+    'meta.refuted_at': d(null, T1),
+    'meta.verified_at': d(null, T2),
+  }],
+  ['refuted_at declared AFTER verified_at (insertion order must not matter)', {
+    'meta.verified_at': d(null, T2),
+    'meta.refuted_at': d(null, T1),
+  }],
+  ['refuted_at with to:"" — SET, not truthy', { 'meta.refuted_at': d(null, '') }],
+  ['refuted_at whose entry is JSON null', { 'meta.refuted_at': null }],
+  ['all six semantic keys at once', {
+    'meta.decided_at': d(null, T1),
+    'meta.refuted_at': d(null, T1),
+    'meta.verified_at': d(null, T2),
+    'meta.status': d('todo', 'done'),
+    'meta.confidence': d(null, 0.9),
+    'meta.significance': d(null, 2),
+  }],
+
   // -- simultaneous changes: order of the kinds array is the assertion -------
   ['status AND confidence in one patch', {
     'meta.status': d('todo', 'done'),
@@ -350,6 +400,7 @@ describe('E18.1 classifier parity — the guard on the guard', () => {
     expect([...seen].sort()).toEqual(
       [
         'claim.verified',
+        'claim.refuted',
         'decision.made',
         'decision.reopened',
         'edge.patched',

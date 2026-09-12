@@ -44,6 +44,8 @@ const MAX_ID_LEN = 200; // cap on client-supplied external_id / run_id (TEXT col
 const PROTECTED_TASK_KEYS = [
   'status', 'x', 'y', 'color', 'background-image',
   'significance', 'confidence', 'verified_at', 'decided_at',
+  // E18.2 — refuted_at (a failed check) and decay (a structural property).
+  'refuted_at', 'decay',
 ];
 const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve'];
 

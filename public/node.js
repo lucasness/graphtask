@@ -39,17 +39,22 @@ const OUTGOING_LABEL = {
   supports: 'Supports',
   contradicts: 'Contradicts',
   'related to': 'Related to',
+  // E18.4. An unmapped purpose produces an `undefined` group heading on this
+  // page, so the five-value vocabulary must be complete here.
+  supersedes: 'Supersedes',
 };
 const INCOMING_LABEL = {
   'required for': 'Requires',
   supports: 'Supported by',
   contradicts: 'Contradicted by',
   'related to': 'Related to',
+  supersedes: 'Superseded by',
 };
 // Evidence first, then dependency, then the catch-all — the order a reader
 // arriving from a citation cares about.
 const GROUP_ORDER = [
   'Supports', 'Supported by', 'Contradicts', 'Contradicted by',
+  'Supersedes', 'Superseded by',
   'Required for', 'Requires', 'Related to',
 ];
 

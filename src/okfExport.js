@@ -27,12 +27,17 @@ const OUT_LABEL = {
   supports: 'Supports',
   contradicts: 'Contradicts',
   'related to': 'Related to',
+  // E18.4. The bundle lists EVERY edge, so a purpose missing from these two
+  // maps renders as `* undefined: [title](/path)` — which is how a vocabulary
+  // addition turns into a visible export bug.
+  supersedes: 'Supersedes',
 };
 const IN_LABEL = {
   'required for': 'Requires',
   supports: 'Supported by',
   contradicts: 'Contradicted by',
   'related to': 'Related to',
+  supersedes: 'Superseded by',
 };
 
 // Lowercase ASCII slug from a title. May legitimately return '' (emoji-only or

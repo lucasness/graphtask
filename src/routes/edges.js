@@ -13,6 +13,7 @@ import {
   VALID_TYPES,
   EDGE_PURPOSES,
   DEFAULT_PURPOSE,
+  PURPOSE_ERROR,
   purposeToType,
   resolveEdgeKind,
 } from '../edgePurpose.js';
@@ -23,6 +24,7 @@ export {
   VALID_TYPES,
   EDGE_PURPOSES,
   DEFAULT_PURPOSE,
+  PURPOSE_ERROR,
   purposeToType,
   resolveEdgeKind,
 };
@@ -354,10 +356,11 @@ router.patch('/:id', validateId, async (req, res) => {
   // below. `type` is no longer accepted as input.
   let writerPurpose;
   if (req.body.purpose !== undefined && req.body.purpose !== null) {
+    // The message is imported, never retyped: this branch is the third copy of
+    // the vocabulary and was the one most likely to go stale when E18.4 added
+    // a fifth purpose.
     if (!EDGE_PURPOSES.includes(req.body.purpose))
-      return res.status(400).json({
-        error: "purpose must be one of 'required for', 'supports', 'contradicts', 'related to'",
-      });
+      return res.status(400).json({ error: PURPOSE_ERROR });
     writerPurpose = req.body.purpose;
   }
 

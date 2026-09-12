@@ -13,13 +13,19 @@
 //   - lowConfidence  — confidence < lowConfidenceBelow;
 //   - contradicted   — the ground touches a `contradicts` edge, either
 //                      direction;
+//   - supersededGround — E18.4: a `supersedes` edge targets the ground, i.e.
+//                      someone has declared that this ground WAS right for its
+//                      time and something else replaced it. The decision still
+//                      rests on the old version;
 //   - changedSinceDecision — the ground's updated_at is newer than the
 //                      decision's decided_at (falling back to the decision's
 //                      created_at). This is the pivot detector: a requirement
 //                      edited after the decision was committed means the
 //                      decision was made against outdated grounds.
 // A decision that itself touches a `contradicts` edge is also at risk
-// (selfContradicted), even with no wired grounds.
+// (selfContradicted), even with no wired grounds. A decision that has itself
+// been SUPERSEDED is the opposite case and drops out entirely (E18.4): it is no
+// longer a live commitment, it is history.
 //
 // STATUS-INDEPENDENT by design: `done` decisions surface. "Done-status must
 // never suppress the re-check" is a computed invariant here, not a prose vow
@@ -32,6 +38,7 @@
 
 import { Router } from 'express';
 import pool from '../db.js';
+import { SUPERSEDES } from '../supersession.js';
 
 const router = Router({ mergeParams: true });
 
@@ -57,17 +64,29 @@ router.post('/', async (req, res, next) => {
   for (const r of [staleDays, lowConfidenceBelow, maxResults]) {
     if (r.error) return res.status(400).json({ error: r.error });
   }
+  // E18.4 — a SUPERSEDED decision is not at risk, it is HISTORY: re-checking it
+  // is work nobody should be handed. Default-excluded, `includeSuperseded: true`
+  // is the way back.
+  const includeSuperseded = b.includeSuperseded === true;
 
   try {
     // One pass: decisions + their blast radius, their grounds with per-ground
     // risk booleans, and the contradicts-touch set. Fetch maxResults+1 so
     // truncation is flagged without a second COUNT (same as /frontier).
     const { rows } = await pool.query(
-      `WITH decisions AS (
+      `WITH sup AS (
+         -- E18.4. The supersession set, read from the EDGE SET and never from a
+         -- flag on the row — that is what keeps "is this superseded?" a
+         -- function of time rather than a permanent mark. Served by the partial
+         -- index edges_supersedes_idx.
+         SELECT target_id AS id FROM edges WHERE graph_id = $1 AND purpose = '${SUPERSEDES}'
+       ),
+       decisions AS (
          SELECT t.id, t.meta, t.created_at,
                 (t.meta->>'decided_at')::timestamptz AS decided_at
            FROM tasks t
           WHERE t.graph_id = $1 AND t.meta->>'type' = 'decision'
+            ${includeSuperseded ? '' : 'AND t.id NOT IN (SELECT id FROM sup)'}
        ),
        contra AS (
          SELECT source_id AS id FROM edges WHERE graph_id = $1 AND purpose = 'contradicts'
@@ -84,6 +103,11 @@ router.post('/', async (req, res, next) => {
                 (s.meta->>'confidence' IS NOT NULL
                   AND (s.meta->>'confidence')::numeric < $3) AS low_confidence,
                 (s.id IN (SELECT id FROM contra)) AS contradicted,
+                -- The single most actionable at-risk signal there is: the
+                -- ground this decision rests on has been REPLACED. Without it,
+                -- retyping a mis-filed contradicts edge to supersedes would
+                -- make the at-risk queue go QUIETER, which is backwards.
+                (s.id IN (SELECT id FROM sup)) AS superseded_ground,
                 (s.updated_at > COALESCE(d.decided_at, d.created_at)) AS changed_since_decision
            FROM edges e
            JOIN decisions d ON d.id = e.target_id
@@ -98,10 +122,12 @@ router.post('/', async (req, res, next) => {
                   'stale', stale,
                   'lowConfidence', low_confidence,
                   'contradicted', contradicted,
+                  'supersededGround', superseded_ground,
                   'changedSinceDecision', changed_since_decision
                 ) ORDER BY source_id) AS reasons
            FROM grounds
-          WHERE stale OR low_confidence OR contradicted OR changed_since_decision
+          WHERE stale OR low_confidence OR contradicted OR superseded_ground
+                OR changed_since_decision
           GROUP BY decision_id
        )
        SELECT d.id,
@@ -136,6 +162,7 @@ router.post('/', async (req, res, next) => {
           ...(g.stale ? ['stale'] : []),
           ...(g.lowConfidence ? ['lowConfidence'] : []),
           ...(g.contradicted ? ['contradicted'] : []),
+          ...(g.supersededGround ? ['supersededGround'] : []),
           ...(g.changedSinceDecision ? ['changedSinceDecision'] : []),
         ],
       })),
@@ -148,6 +175,7 @@ router.post('/', async (req, res, next) => {
         staleDays: staleDays.value,
         lowConfidenceBelow: lowConfidenceBelow.value,
         maxResults: maxResults.value,
+        includeSuperseded,
       },
     });
   } catch (err) {

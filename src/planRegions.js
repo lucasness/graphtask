@@ -22,7 +22,7 @@
 // on the far side is cut off from the work that feeds it. That is a real
 // plan-risk signal, which is what `seams` are for. Never auto-cut.
 
-const ALL_PURPOSES = ['required for', 'supports', 'contradicts', 'related to'];
+const ALL_PURPOSES = ['required for', 'supports', 'contradicts', 'related to', 'supersedes'];
 const DEFAULT_PURPOSES = ['required for'];
 
 // Normalize either shape we get fed: PG rows ({source_id,target_id,purpose}) or

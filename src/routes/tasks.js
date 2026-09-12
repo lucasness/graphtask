@@ -10,6 +10,8 @@ import {
 import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '../markdown.js';
 import { mergeFields } from '../merge.js';
 import { requireIntegerParam } from './_validate.js';
+import { notSupersededSql } from '../supersession.js';
+import { worldlineHandler } from './worldline.js';
 
 // Tasks store frontmatter (meta) + body in a single markdown blob. To do
 // field-level three-way merge, we flatten {meta, body} into one object.
@@ -138,6 +140,13 @@ router.get('/leaves', async (req, res) => {
 // a human dragging a claimed card back to todo IS the release/override.
 router.get('/ready', async (req, res) => {
   const { gid } = req.params;
+  // E18.4 — a SUPERSEDED node is not ready work: someone has declared that its
+  // fact's story ended and a successor replaced it. Default-excluded, with
+  // `?includeSuperseded=1` as the way back, so the change is auditable rather
+  // than silent. Zero corpus rows are affected either way (no graph carries a
+  // supersedes edge today).
+  const includeSuperseded = req.query.includeSuperseded === '1'
+    || req.query.includeSuperseded === 'true';
   const result = await pool.query(
     `WITH RECURSIVE prereqs AS (
        SELECT t.id AS root, e.source_id AS prereq
@@ -163,11 +172,23 @@ router.get('/ready', async (req, res) => {
           JOIN tasks tp ON tp.id = p.prereq
           WHERE p.root = t.id AND tp.meta->>'status' <> 'done'
         )
+        -- E18.4 exclusion. It filters the RESULT ROWS ONLY, and it must NEVER
+        -- move into the recursive prereqs CTE above: dropping a superseded
+        -- PREREQUISITE from that walk would treat it as SATISFIED and silently
+        -- auto-unblock its dependents, violating the locked rule that nothing
+        -- auto-flips status. A superseded prerequisite still blocks; the remedy
+        -- is for someone to rewire the required-for edge onto the successor,
+        -- which is a deliberate act and gets its own edge.rewired event.
+        ${includeSuperseded ? '' : `AND ${notSupersededSql('t')}`}
       ORDER BY t.id`,
     [gid]
   );
   res.json(result.rows);
 });
+
+// E18.4 — a fact's worldline. Registered here rather than as its own mount so
+// it inherits tasksRouter's read guard; the handler lives in ./worldline.js.
+router.get('/:id/worldline', validateId, worldlineHandler);
 
 router.get('/:id', validateId, async (req, res) => {
   const { gid, id } = req.params;
@@ -253,6 +274,10 @@ router.patch('/:id', validateId, async (req, res) => {
         protectedFromAgentRemoval: [
           'x', 'y', 'color', 'background-image',
           'significance', 'confidence', 'verified_at', 'decided_at',
+          // E18.2: `refuted_at` records a failed check and `decay` is a
+          // structural property of the node. Both are exactly the kind of key
+          // a body-rewriting agent PATCH omits and would otherwise wipe.
+          'refuted_at', 'decay',
         ],
       },
     );
@@ -457,6 +482,118 @@ router.delete('/:id/claim', validateId, async (req, res) => {
     );
     return { code: 200, body: { released: true, task: upd.rows[0] } };
   }, { reason: 'release' });
+  res.status(out.code).json(out.body);
+});
+
+// ---- E18.2: the deliberate re-check ----
+//
+// POST /:id/verify is the one surface a FAILED check can be expressed on. A
+// failure is not expressible as a `verified_at` assignment — clearing the
+// scalar on a never-verified claim moves nothing, the trigger's `ch = '{}'`
+// suppression fires, and the log records the failure NOWHERE. So `failed`
+// writes a `refuted_at` scalar, which the SQL classifier reads as
+// `claim.refuted`, mirroring decision.made / decision.reopened exactly.
+//
+// Inference from PATCH is UNCHANGED: a PATCH that sets `verified_at` still
+// emits `claim.verified`. The only difference is `payload.intent`, which this
+// route sets and an incidental PATCH does not — so deliberate and incidental
+// verifications are distinguishable in the log by a key that is present on one
+// and absent on the other. `gt.intent` still cannot FABRICATE a kind
+// (gt_headline only promotes one the diff already produced), so the outcome
+// remains mechanically derived from the row change and unforgeable.
+//
+// Clearing `verified_at` on a fail is also what makes v1 and v2 agree about
+// refuted claims without either knowing about the other: today's frontier
+// query already surfaces a node with no `verified_at` as stale.
+//
+// IDEMPOTENCE IS NOT SPECIAL-CASED. A repeat `held` at the same `happened_at`
+// produces an identical row, hence `ch = '{}'`, hence NO second event — the
+// existing suppression, not a new rule. The route still answers 200.
+const VERIFY_OUTCOMES = ['held', 'failed'];
+
+router.post('/:id/verify', validateId, async (req, res) => {
+  const { gid, id } = req.params;
+  const b = req.body || {};
+
+  if (!VERIFY_OUTCOMES.includes(b.outcome)) {
+    return res.status(400).json({ error: "outcome must be 'held' or 'failed'" });
+  }
+  // Validated BEFORE any write, so a malformed value yields a 400 and NO event.
+  if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
+
+  const hasConfidence = Object.prototype.hasOwnProperty.call(b, 'confidence');
+  if (hasConfidence && b.confidence !== null) {
+    const c = b.confidence;
+    if (typeof c !== 'number' || !Number.isFinite(c) || c < 0 || c > 1) {
+      return res.status(400).json({ error: 'confidence must be a number between 0.0 and 1.0' });
+    }
+  }
+  if (b.base_version !== undefined && !Number.isInteger(b.base_version)) {
+    return res.status(400).json({ error: 'base_version must be an integer' });
+  }
+
+  // The world time of the CHECK. One instant for the whole event: the scalar
+  // the handler writes and the event's `happened_at` are the SAME value, so
+  // checkFromEvent()'s `min(verified_at.to, happened_at)` rule and the scalar
+  // agree by construction.
+  const happenedAt = parseHappenedAt(b.happened_at ?? req.headers?.[HAPPENED_AT_HEADER]).value
+    ?? new Date().toISOString();
+
+  const out = await withEventTx(
+    req,
+    async (client) => {
+      const cur = await client.query(
+        'SELECT * FROM tasks WHERE id = $1 AND graph_id = $2 FOR UPDATE',
+        [id, gid],
+      );
+      if (cur.rows.length === 0) return { code: 410, body: { error: 'task no longer exists' } };
+      const row = cur.rows[0];
+      if (b.base_version !== undefined && row.version !== b.base_version) {
+        return {
+          code: 409,
+          body: { error: 'version_conflict', detail: 'the task moved since base_version', current: row },
+        };
+      }
+
+      // The handler NEVER touches the body, and rewrites exactly three meta
+      // keys. held: verified_at := happened_at, refuted_at deleted.
+      // failed: refuted_at := happened_at, verified_at deleted.
+      const parsed = parseMarkdown(row.content);
+      const meta = applyDefaults(parsed.meta);
+      if (b.outcome === 'held') {
+        meta.verified_at = happenedAt;
+        delete meta.refuted_at;
+      } else {
+        meta.refuted_at = happenedAt;
+        delete meta.verified_at;
+      }
+      if (hasConfidence) {
+        if (b.confidence === null) delete meta.confidence;
+        else meta.confidence = b.confidence;
+      }
+
+      const err = validateMeta(meta);
+      if (err) return { code: 400, body: { error: err } };
+
+      const normalized = serializeMarkdown(meta, parsed.body);
+      const upd = await client.query(
+        `UPDATE tasks
+            SET content = $1, meta = $2, version = version + 1,
+                last_modified_by = $3, last_modified_by_user = $4, updated_at = NOW()
+          WHERE id = $5 AND graph_id = $6 RETURNING *`,
+        [normalized, JSON.stringify(meta), req.writerType, req.user?.id ?? null, id, gid],
+      );
+      return { code: 200, body: upd.rows[0] };
+    },
+    {
+      // `intent` PROMOTES the mechanically-derived kind to the headline and is
+      // recorded in the payload; `reason` says which surface asked.
+      intent: b.outcome === 'held' ? 'claim.verified' : 'claim.refuted',
+      reason: 'verify',
+      happened_at: happenedAt,
+    },
+  );
   res.status(out.code).json(out.body);
 });
 

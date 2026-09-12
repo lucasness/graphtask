@@ -468,10 +468,23 @@ CREATE INDEX IF NOT EXISTS edges_run_id_idx ON edges(run_id) WHERE run_id IS NOT
 --      type='dependency' (and only when not already promoted) so it's a no-op
 --      on every boot after the first and never churns correctly-synced rows.
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'related to';
+-- E18.4 widened this list IN PLACE, and it MUST stay that way. schema.sql is
+-- applied as ONE multi-statement query on every boot (db.js) and a failure
+-- process.exit(1)s the server. `ALTER TABLE ... ADD CONSTRAINT` VALIDATES
+-- IMMEDIATELY, so a widened CHECK appended at the END of this file would still
+-- let this narrow block run first and fail on the rows the new purpose created:
+--   ERROR: new row for relation "edges" violates check constraint
+--          "edges_purpose_valid"
+-- Same outcome as the 55P04 enum trap, different mechanism, and invisible on a
+-- fresh test database. Widening in place is always safe — a more permissive
+-- CHECK cannot fail on rows that already satisfied the narrower one.
+-- `supersedes` derives type='related' (purposeToType), an EXISTING enum label,
+-- so no ALTER TYPE ... ADD VALUE is issued and 55P04 cannot apply either.
 DO $$ BEGIN
   ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_purpose_valid;
   ALTER TABLE edges ADD CONSTRAINT edges_purpose_valid
-    CHECK (purpose IN ('required for', 'supports', 'contradicts', 'related to'));
+    CHECK (purpose IN ('required for', 'supports', 'contradicts', 'related to',
+                       'supersedes'));
 END $$;
 UPDATE edges SET purpose = 'required for'
  WHERE type = 'dependency' AND purpose <> 'required for';
@@ -731,11 +744,16 @@ CREATE TABLE IF NOT EXISTS events (
 -- the new literal later in the same file fails 55P04 and rolls back the whole
 -- boot apply. Migrated with the house drop/re-add DO block (schema.sql:460) so
 -- E18.2/E18.4 can add a kind on an EXISTING db with a one-block edit.
+-- E18.4 added 'node.superseded' IN PLACE, for the reason spelled out over
+-- edges_purpose_valid above: an APPENDED widening runs after this block and
+-- this block then fails on the feature's own rows (reproduced verbatim:
+-- `check constraint "events_kind_valid" ... is violated by some row`).
 DO $$ BEGIN
   ALTER TABLE events DROP CONSTRAINT IF EXISTS events_kind_valid;
   ALTER TABLE events ADD CONSTRAINT events_kind_valid CHECK (kind IN (
     'node.created','node.patched','node.removed',
-    'status.changed','field.set','claim.verified','decision.made','decision.reopened',
+    'status.changed','field.set','claim.verified','claim.refuted',
+    'decision.made','decision.reopened','node.superseded',
     'edge.added','edge.removed','edge.retyped','edge.rewired','edge.patched',
     'graph.id_rotated','graph.deleted'));
 END $$;
@@ -890,14 +908,20 @@ BEGIN
       THEN ks := array_append(ks, 'decision.made');
       ELSE ks := array_append(ks, 'decision.reopened'); END IF;
   END IF;
+  -- claim.refuted mirrors decision.made/decision.reopened's set-vs-clear shape
+  -- three lines above, and is placed BEFORE claim.verified so a change that
+  -- asserts both headlines the doubt. array_append, never `ks := ks || 'lit'`
+  -- (42804). E18.2.
+  IF ch ? 'meta.refuted_at' AND (ch #>> '{meta.refuted_at,to}') IS NOT NULL
+    THEN ks := array_append(ks, 'claim.refuted'); END IF;
   IF ch ? 'meta.verified_at' AND (ch #>> '{meta.verified_at,to}') IS NOT NULL
     THEN ks := array_append(ks, 'claim.verified'); END IF;
   IF ch ? 'meta.status' THEN ks := array_append(ks, 'status.changed'); END IF;
   IF ch ? 'meta.confidence' OR ch ? 'meta.significance'
     THEN ks := array_append(ks, 'field.set'); END IF;
   IF array_length(ks, 1) IS NULL
-     OR (ch - ARRAY['meta.decided_at','meta.verified_at','meta.status',
-                    'meta.confidence','meta.significance']) <> '{}'::jsonb
+     OR (ch - ARRAY['meta.decided_at','meta.refuted_at','meta.verified_at',
+                    'meta.status','meta.confidence','meta.significance']) <> '{}'::jsonb
     THEN ks := array_append(ks, 'node.patched'); END IF;
   RETURN ks;
 END $$ LANGUAGE plpgsql IMMUTABLE;
@@ -1005,7 +1029,11 @@ BEGIN
           'node', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
           jsonb_build_object('v',1,'op','UPDATE','table','tasks',
             'kinds', to_jsonb(ks), 'node_kind', NEW.meta ->> 'type',
-            'version', NEW.version, 'reason', gt_ctx('gt.reason'), 'changes', ch));
+            'version', NEW.version, 'reason', gt_ctx('gt.reason'),
+            -- E18.2: `intent` DECLARES deliberateness. gt_headline() still
+            -- refuses to let it fabricate a kind; recording it is what makes a
+            -- deliberate verification distinguishable from an incidental one.
+            'intent', gt_ctx('gt.intent'), 'changes', ch));
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 
@@ -1016,10 +1044,50 @@ DROP TRIGGER IF EXISTS gt_log_task_after_write ON tasks;
 CREATE TRIGGER gt_log_task_after_write AFTER INSERT OR UPDATE ON tasks
   FOR EACH ROW EXECUTE FUNCTION gt_log_task();
 
+-- E18.4 — the supersession ANNOTATION. `supersedes` is an ordinary edge
+-- purpose and the STATE it expresses is the EDGE SET, which the fold already
+-- reconstructs at any (axis, asOf, known); this second event is not that state.
+-- It exists because the edge event cannot answer the questions a consumer asks:
+--   * its subject_id is an EDGE id, so "show me node A's worldline" could not
+--     be an index seek on events_subject_idx and a seed extractor would mix id
+--     spaces;
+--   * `edge.retyped`'s `changes` names purpose/type ONLY — it never says which
+--     nodes the edge joins — so an event that turns a `contradicts` edge INTO a
+--     supersession could not name the superseded node without folding forward;
+--   * supersession can begin through three different edge kinds (added,
+--     retyped, rewired) and one kind unifies them.
+-- subject = the SUPERSEDED node. cause_id = the edge event's own seq, allocated
+-- one gt_next_seq() call earlier and therefore strictly lower, so
+-- events_cause_precedes (the strict-DAG CHECK) holds BY CONSTRUCTION.
+-- It calls gt_next_seq() a second time inside the SAME transaction, where the
+-- graphs-row FOR NO KEY UPDATE is already held: no new lock, so the
+-- graphs-then-edges lock order tests/e18-concurrency.test.js pins is untouched.
+-- `op` is 'ANNOTATE' — deliberately not INSERT/UPDATE/DELETE — so the event is
+-- loudly non-row-changing even if the fold's ANNOTATION_KINDS guard is ever
+-- removed.
+CREATE OR REPLACE FUNCTION gt_log_supersede(
+  gid TEXT, edge_id BIGINT, src BIGINT, tgt BIGINT, cause BIGINT, via TEXT
+) RETURNS VOID AS $$
+DECLARE s BIGINT; nk TEXT;
+BEGIN
+  SELECT meta ->> 'type' INTO nk FROM tasks WHERE id = tgt;
+  s := gt_next_seq(gid);
+  INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                      subject_kind, subject_id, cause_id, request_id, txid, payload)
+  VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'node.superseded',
+          'node', tgt, cause, gt_ctx('gt.request_id'), 0,
+          jsonb_build_object('v',1,'op','ANNOTATE','table','tasks',
+            'kinds', jsonb_build_array('node.superseded'),
+            'node_kind', nk,
+            'superseded_by', src, 'edge_id', edge_id, 'via', via,
+            'reason', gt_ctx('gt.reason'), 'intent', gt_ctx('gt.intent')));
+END $$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION gt_log_edge() RETURNS TRIGGER AS $$
 DECLARE
   gid  TEXT := COALESCE(NEW.graph_id, OLD.graph_id);
   ch   JSONB; ks TEXT[]; gone BIGINT; cause BIGINT; s BIGINT;
+  sup_before BOOLEAN; sup_new BOOLEAN; via TEXT;
   drop_cols TEXT[] := ARRAY['id','graph_id','created_at','version',
     'last_modified_by','last_modified_by_user','meta'];
 BEGIN
@@ -1034,6 +1102,14 @@ BEGIN
             jsonb_build_object('v',1,'op','INSERT','table','edges',
               'kinds', jsonb_build_array('edge.added'),
               'version', NEW.version, 'after', to_jsonb(NEW) - 'graph_id'));
+    -- E18.4 emission rule, stated once and mechanically: emit node.superseded
+    -- for NEW.target_id whenever, AFTER this write, the edge's purpose is
+    -- 'supersedes' AND the pair (purpose='supersedes', target_id) is NEW
+    -- relative to the before-image. On INSERT there is no before-image, so the
+    -- pair is new exactly when the purpose is 'supersedes'.
+    IF NEW.purpose = 'supersedes' THEN
+      PERFORM gt_log_supersede(gid, NEW.id, NEW.source_id, NEW.target_id, s, 'edge.added');
+    END IF;
     RETURN NULL;
   END IF;
 
@@ -1074,13 +1150,43 @@ BEGIN
           'edge', NEW.id, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
           jsonb_build_object('v',1,'op','UPDATE','table','edges',
             'kinds', to_jsonb(ks), 'version', NEW.version,
-            'reason', gt_ctx('gt.reason'), 'changes', ch));
+            'reason', gt_ctx('gt.reason'),
+            -- E18.4: endpoints on EVERY edge UPDATE event. `changes` for a
+            -- retype names purpose/type only, so without this an event that
+            -- turns an edge INTO a supersession cannot say which node was
+            -- superseded without folding the whole log forward. Purely
+            -- additive; ~40 bytes per edge patch.
+            'endpoints', jsonb_build_object('source_id', NEW.source_id,
+                                            'target_id', NEW.target_id),
+            'changes', ch));
+
+  -- Fire ONLY when the (purpose='supersedes', target_id) pair is NEW for this
+  -- row. A meta-only patch on a live supersedes edge, a retype AWAY from
+  -- supersedes, and a delete all leave the pair unchanged or gone, so none of
+  -- them annotates. A rewire of a live supersedes edge onto a different target
+  -- does produce a new pair, and annotates the NEW target.
+  sup_before := (OLD.purpose = 'supersedes');
+  sup_new    := (NEW.purpose = 'supersedes')
+                AND (NOT sup_before OR NEW.target_id IS DISTINCT FROM OLD.target_id);
+  IF sup_new THEN
+    via := CASE WHEN NOT sup_before THEN 'edge.retyped' ELSE 'edge.rewired' END;
+    PERFORM gt_log_supersede(gid, NEW.id, NEW.source_id, NEW.target_id, s, via);
+  END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS gt_log_edge_after_write ON edges;
 CREATE TRIGGER gt_log_edge_after_write AFTER INSERT OR UPDATE OR DELETE ON edges
   FOR EACH ROW EXECUTE FUNCTION gt_log_edge();
+
+-- E18.4 exclusion probe. The bare `NOT EXISTS (... purpose='supersedes' ...)`
+-- is a bitmap heap scan (measured on the largest real graph, 2289 edges:
+-- 0.589 ms, 86 buffers, 2289 rows removed by filter). With this partial index
+-- it is an Index Only Scan — 0.032 ms, 2 buffers, 18x faster — and the index
+-- is ONE EMPTY PAGE (8192 bytes) today because no corpus row qualifies. It
+-- serves /frontier's probe, /ready's per-row term and /decisions/at-risk alike.
+CREATE INDEX IF NOT EXISTS edges_supersedes_idx
+  ON edges (graph_id, target_id) WHERE purpose = 'supersedes';
 
 -- rotate-id: no FK carries events/snapshots, so move them explicitly, then one
 -- graph.id_rotated. graph DELETE: set gt.graph_deleting so the cascaded row
