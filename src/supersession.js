@@ -153,6 +153,12 @@ function byGenerationOrder(a, b) {
 //                       are reported; neither is collapsed into the other.
 //   valid_to          = the MIN over live supersessions targeting the node,
 //                       or null = still open.
+//
+// Returns `{generations, roots, branches, merges, truncated}`. `roots` and
+// `merges` exist because A WORLDLINE IS NOT ALWAYS A LINE: a merge (two facts,
+// one replacement) has two roots, and both are reported at generation 0 rather
+// than one being chosen and the other dropped. `truncated` covers BOTH caps —
+// and the window it cuts is centred on the queried node, which is never removed.
 export function buildWorldline(nodeId, records, nodeInfo = new Map(), opts = {}) {
   const maxGenerations = opts.maxGenerations ?? MAX_GENERATIONS;
   const maxNodes = opts.maxNodes ?? MAX_WORLDLINE_NODES;
@@ -178,32 +184,65 @@ export function buildWorldline(nodeId, records, nodeInfo = new Map(), opts = {})
 
   // Walk BACK to the chain head. A node's predecessors are the TARGETS of the
   // supersedes edges it is the SOURCE of.
+  //
+  // DEPTH-LIMITED, and that is a fix, not an optimisation. The forward walk
+  // below stops after `maxGenerations` counted from the ROOT, so on a chain
+  // longer than the cap an unbounded backward walk puts the queried node PAST
+  // the cut and the answer omits the very node the caller named. The window is
+  // therefore CENTRED ON THE SUBJECT: at most `backLimit` generations of
+  // ancestry are seeded, which leaves the subject at generation <= backLimit
+  // and the remaining budget (>= half) for its descendants. Truncation may
+  // shorten a worldline at either end; it may never remove its subject.
+  const backLimit = Math.max(0, Math.floor((maxGenerations - 1) / 2));
   const seenBack = new Set([nodeId]);
-  const queue = [nodeId];
-  while (queue.length) {
-    const n = queue.shift();
+  let backFrontier = [nodeId];
+  for (let depth = 0; depth < backLimit && backFrontier.length; depth += 1) {
+    const nextBack = [];
+    for (const n of backFrontier) {
+      for (const r of predecessorsOf.get(n) ?? []) {
+        if (seenBack.has(r.superseded)) continue;      // cycle: visited set, mandatory
+        if (seenBack.size >= maxNodes) { truncated = true; continue; }
+        seenBack.add(r.superseded);
+        nextBack.push(r.superseded);
+      }
+    }
+    backFrontier = nextBack;
+  }
+  // Whatever the depth limit refused to expand is a cut, and it is reported.
+  for (const n of backFrontier) {
     for (const r of predecessorsOf.get(n) ?? []) {
-      if (seenBack.has(r.superseded)) continue;      // cycle: visited set, mandatory
-      if (seenBack.size >= maxNodes) { truncated = true; break; }
-      seenBack.add(r.superseded);
-      queue.push(r.superseded);
+      if (!seenBack.has(r.superseded)) truncated = true;
     }
   }
-  // Roots are the backward-reachable nodes with no predecessor of their own. A
-  // pure cycle (A supersedes B, B supersedes A) has none, so the lowest id
-  // stands in — deterministic, and every member still appears exactly once.
-  const roots = [...seenBack].filter((n) => (predecessorsOf.get(n) ?? []).length === 0);
-  const root = roots.length
-    ? roots.sort((a, b) => a - b)[0]
-    : [...seenBack].sort((a, b) => a - b)[0];
+
+  // ROOTS, PLURAL. A worldline is not always a line: a MERGE — two old facts
+  // both superseded by one new fact — is backward-reachable from two roots, and
+  // seeding the forward walk with one of them (the lowest id, say) silently
+  // drops the other root and everything reachable only from it, with nothing in
+  // the response saying so. Every root is seeded; `merges` names the nodes where
+  // the lines join so the shape is legible rather than implied.
+  //
+  // A root is a backward-reached node with no predecessor INSIDE the reached
+  // set — which is the same thing as "no predecessor at all" when the walk ran
+  // to completion, and is also the right answer for a node the depth/node cap
+  // cut off mid-ancestry. A pure cycle (A supersedes B, B supersedes A) has no
+  // root, so the lowest id stands in — deterministic, and every member still
+  // appears exactly once.
+  const roots = [...seenBack].filter(
+    (n) => !(predecessorsOf.get(n) ?? []).some((r) => seenBack.has(r.superseded)),
+  );
+  const seeds = (roots.length ? roots : [[...seenBack].sort((a, b) => a - b)[0]])
+    .slice()
+    .sort((a, b) => a - b);
 
   // Forward BFS, generation = depth. valid_from of a child is its PARENT's
   // valid_to, so two successors of one predecessor share a valid_from and the
   // event_seq tie-break is what orders them.
   const generations = [];
   const branches = [];
+  const merges = [];
   const visited = new Set();
-  let frontier = [{ id: root, validFrom: null, approximateFrom: null }];
+  let frontier = seeds.map((id) => ({ id, validFrom: null, approximateFrom: null }));
   for (let gen = 0; frontier.length > 0; gen += 1) {
     if (gen >= maxGenerations) { truncated = true; break; }
     const rows = [];
@@ -218,6 +257,17 @@ export function buildWorldline(nodeId, records, nodeInfo = new Map(), opts = {})
       const approximateFrom = isRoot
         ? info.created_event_at === null || info.created_event_at === undefined
         : item.approximateFrom === true;
+      const validTo = close ? close.opened_at ?? null : null;
+      // The two axes are allowed to disagree and the fold must not reconcile
+      // them (E18.1), so a supersession BACKDATED to before the fact it ends
+      // was itself recorded as starting keeps both timestamps exactly as
+      // recorded — no clamp, no zero-length substitute. What is NOT allowed is
+      // handing back `[later, earlier)` as if it were an ordinary interval:
+      // the flag is how the output stops claiming a negative duration, and it
+      // is also what explains the one place `valid_from` stops ascending from
+      // one generation to the next.
+      const fromMs = ms(validFrom);
+      const toMs = ms(validTo);
       rows.push({
         generation: gen,
         id: item.id,
@@ -225,8 +275,9 @@ export function buildWorldline(nodeId, records, nodeInfo = new Map(), opts = {})
         valid_from: validFrom ?? null,
         approximate_from: approximateFrom === true,
         created_at: info.created_at ?? null,
-        valid_to: close ? close.opened_at ?? null : null,
+        valid_to: validTo,
         open: close === null,
+        interval_inverted: fromMs !== null && toMs !== null && toMs < fromMs,
         closed_by: close
           ? {
               edge_id: close.edge_id ?? null,
@@ -240,29 +291,46 @@ export function buildWorldline(nodeId, records, nodeInfo = new Map(), opts = {})
       });
     }
     rows.sort(byGenerationOrder);
-    const next = [];
+    // Deduped by id: a merge node is pushed by every predecessor in this
+    // generation, and the EARLIEST of their valid_to is its left edge — the
+    // same MIN rule `earlier()` uses to close an interval. An unreadable date
+    // sorts last, so it never wins over a dated one.
+    const next = new Map();
     for (const row of rows) {
       const { _seq, ...out } = row;
       generations.push(out);
-      const succ = (successorsOf.get(row.id) ?? [])
+      const rs = successorsOf.get(row.id) ?? [];
+      const succ = rs
         .map((r) => r.successor)
         .filter((id, i, arr) => arr.indexOf(id) === i)
         .sort((a, b) => a - b);
       if (succ.length > 1) branches.push({ generation: row.generation, id: row.id, successors: succ });
-      for (const r of successorsOf.get(row.id) ?? []) {
+      const preds = (predecessorsOf.get(row.id) ?? [])
+        .map((r) => r.superseded)
+        .filter((id, i, arr) => arr.indexOf(id) === i)
+        .sort((a, b) => a - b);
+      if (preds.length > 1) merges.push({ generation: row.generation, id: row.id, predecessors: preds });
+      for (const r of rs) {
         if (visited.has(r.successor)) continue;
-        next.push({
+        const item = {
           id: r.successor,
           // The predecessor's story ended at ITS valid_to, which is the MIN over
           // all of its supersessions — so both siblings of a branch inherit the
           // same left edge.
           validFrom: row.valid_to,
           approximateFrom: row.closed_by?.approximate === true,
-        });
+        };
+        const held = next.get(r.successor);
+        if (!held) { next.set(r.successor, item); continue; }
+        const heldMs = ms(held.validFrom);
+        const itemMs = ms(item.validFrom);
+        if (heldMs === null ? itemMs !== null : itemMs !== null && itemMs < heldMs) {
+          next.set(r.successor, item);
+        }
       }
     }
-    frontier = next;
+    frontier = [...next.values()];
   }
 
-  return { generations, branches, truncated };
+  return { generations, roots: seeds, branches, merges, truncated };
 }

@@ -43,12 +43,31 @@ import {
 //
 // "LAST in the axis ordering", not "first": an edge can be retyped away from
 // `supersedes` and back, and the CURRENT opening is the most recent one.
+//
+// THE RECTANGLE IS A SELECT-LIST FLAG, NOT A WHERE CLAUSE, and that is
+// deliberate. Two things have to be told apart and a filtered query cannot tell
+// them apart, because both come back as zero rows:
+//
+//   * no `node.superseded` event ANYWHERE in the log for this (node, edge) —
+//     an edge that predates E18.4, or one written with `gt.capture=off`. THAT
+//     is what the `edges.created_at` fallback was designed for.
+//   * an opening that exists but sits OUTSIDE the requested rectangle — one seq
+//     later on the learned axis (the annotation is a second event in the same
+//     transaction as `edge.added`), or not yet learned by `known`. The
+//     supersession has not been recorded as far as this rectangle can see, so
+//     the fact is still OPEN in it. Falling back to `edges.created_at` here
+//     invented a closing time out of a live-table column that the rectangle
+//     cannot see at all — a wall-clock "closed just now" in a pinned past.
+//
+// The scan is over `node.superseded` events only — a kind that exists at the
+// rate of 33 candidate relations across the entire 4103-node corpus.
 const OPENED_SQL = (tail) => `SELECT seq, subject_id, happened_at,
                                      (payload ->> 'edge_id')::bigint AS edge_id,
-                                     payload ->> 'via' AS via
+                                     payload ->> 'via' AS via,
+                                     (TRUE${tail}) AS in_rect
                                 FROM events
                                WHERE graph_id = $1 AND subject_kind = 'node'
-                                 AND kind = 'node.superseded'${tail}
+                                 AND kind = 'node.superseded'
                                ORDER BY happened_at, seq`;
 
 // gen 0's left edge. One row per node in normal operation; MIN over
@@ -138,17 +157,18 @@ export async function worldlineHandler(req, res, next) {
     const relations = supersessionsFromLinks(links);
     const { tail, args } = tailFilter(params, resolvedSeq);
 
-    // Date every live supersession from the event that opened it. The scan is
-    // over `node.superseded` events only — a kind that exists at the rate of
-    // 33 candidate relations across the entire 4103-node corpus.
+    // Date every live supersession from the event that opened it.
     const openedRows = relations.length
       ? (await pool.query(OPENED_SQL(tail), [gid, ...args])).rows
       : [];
-    const opened = new Map();
+    const opened = new Map();   // openings INSIDE the rectangle
+    const everOpened = new Set(); // openings anywhere in the log
     for (const row of openedRows) {
+      const key = `${Number(row.subject_id)}:${Number(row.edge_id)}`;
+      everOpened.add(key);
       // LAST wins: the rows arrive in axis order, so a plain overwrite is
       // "the most recent opening for this (node, edge) pair".
-      opened.set(`${Number(row.subject_id)}:${Number(row.edge_id)}`, row);
+      if (row.in_rect) opened.set(key, row);
     }
 
     // Fallback for an edge that predates E18.4, or one written with
@@ -163,16 +183,26 @@ export async function worldlineHandler(req, res, next) {
       for (const r of rows) edgeCreated.set(Number(r.id), isoOrNull(r.created_at));
     }
 
-    const records = relations.map((r) => {
-      const hit = opened.get(`${r.superseded}:${r.edge_id}`) ?? null;
-      return {
+    const records = [];
+    for (const r of relations) {
+      const key = `${r.superseded}:${r.edge_id}`;
+      const hit = opened.get(key) ?? null;
+      // Recorded, but not inside this rectangle: the edge is in the fold (the
+      // `edge.added` is one seq earlier) while the assertion that dated it is
+      // not. "Had we been told by then?" is a learned-axis question and the
+      // answer here is NO, so this supersession is not part of the worldline
+      // the rectangle can see and the fact reads as still open. Only a
+      // supersession with no opening event AT ALL takes the approximate
+      // `edges.created_at` fallback.
+      if (!hit && everOpened.has(key)) continue;
+      records.push({
         ...r,
         opened_at: hit ? isoOrNull(hit.happened_at) : edgeCreated.get(r.edge_id) ?? null,
         event_seq: hit ? Number(hit.seq) : null,
         via: hit ? hit.via ?? null : null,
         approximate: hit === null,
-      };
-    });
+      });
+    }
 
     // gen 0's left edge, and the row created_at beside it — REPORTED SEPARATELY
     // and never collapsed: `valid_from` is when the fact was true, `created_at`
@@ -215,7 +245,12 @@ export async function worldlineHandler(req, res, next) {
       purpose: SUPERSEDES,
       as_of: asOfEnvelope,
       generations: walk.generations,
+      // A worldline is not always a line. `roots` names every chain head the
+      // walk was seeded from (a merge has more than one), `merges` the nodes
+      // where separate lines join — the dual of `branches`.
+      roots: walk.roots,
       branches: walk.branches,
+      merges: walk.merges,
       truncated: walk.truncated,
     });
   } catch (err) {

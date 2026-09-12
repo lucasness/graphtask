@@ -743,6 +743,96 @@ describe('E18.4 worldline — intervals derived from the log', () => {
     expect(res.body.branches).toEqual([{ generation: 0, id: a, successors: [b, c].sort((x, y) => x - y) }]);
   });
 
+  it('a MERGE keeps BOTH predecessor lines — two roots, nothing dropped', async () => {
+    // The realistic multi-root shape: two old facts, one replacement. The
+    // backward walk finds two roots and seeding the forward walk with only one
+    // of them (the lowest id) drops the other generation ENTIRELY — and drops
+    // it silently: `truncated` stays false and `branches` is empty, because
+    // neither reports a lost root. A worldline is not always a line, so the
+    // shape says so: `roots` names every chain head and `merges` — the dual of
+    // `branches` — names the node where the lines join.
+    const a = await insNode({ title: 'A (old fact)' });
+    const b = await insNode({ title: 'B (other old fact)' });
+    const c = await insNode({ title: 'C (replaces both)' });
+    await insEdge(c, a, 'supersedes', '2026-03-01T00:00:00.000Z');
+    await insEdge(c, b, 'supersedes', '2026-04-01T00:00:00.000Z');
+
+    const res = await request(app).get(worldlineUrl(c));
+    expect(res.status).toBe(200);
+    const asc = (x, y) => x - y;
+    const gen0 = res.body.generations.filter((g) => g.generation === 0).map((g) => g.id);
+    expect(gen0.slice().sort(asc)).toEqual([a, b].sort(asc));
+    expect(res.body.roots).toEqual([a, b].sort(asc));
+    expect(res.body.merges).toEqual([{ generation: 1, id: c, predecessors: [a, b].sort(asc) }]);
+    expect(res.body.generations.map((g) => g.id).sort(asc)).toEqual([a, b, c].sort(asc));
+    expect(res.body.truncated).toBe(false);
+    // Both old facts are closed, and the merge node's left edge is the EARLIER
+    // of the two closings — the same MIN rule that closes an interval.
+    for (const g of res.body.generations.filter((x) => x.generation === 0)) expect(g.open).toBe(false);
+    const merged = res.body.generations.find((g) => g.id === c);
+    expect(merged.valid_from).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  it('?asOfSeq= AT the edge.added seq reports gen 0 OPEN, not closed-just-now', async () => {
+    // `node.superseded` is a SECOND event in the same transaction, one seq
+    // after `edge.added`. A prefix that lands between them holds the edge but
+    // not the assertion that dated it, and "had we been told by then?" is a
+    // learned-axis question whose answer is no. Dating it from
+    // `edges.created_at` instead fabricated a valid_to — the wall clock of the
+    // request, a value the pinned prefix cannot see at all — and flagged the
+    // supersession approximate to cover for it.
+    const a = await insNode({ title: 'A' });
+    const b = await insNode({ title: 'B' });
+    await insEdge(b, a, 'supersedes', '2026-03-01T00:00:00.000Z');
+    const { rows } = await pool.query(
+      "SELECT seq FROM events WHERE graph_id = $1 AND kind = 'edge.added' ORDER BY seq DESC LIMIT 1", [gid],
+    );
+    const addedSeq = Number(rows[0].seq);
+
+    const at = await request(app).get(`${worldlineUrl(a)}?asOfSeq=${addedSeq}`);
+    expect(at.status).toBe(200);
+    expect(at.body.generations).toHaveLength(1);
+    expect(at.body.generations[0]).toMatchObject({ id: a, open: true, valid_to: null, closed_by: null });
+
+    // One seq later the annotation IS inside the prefix, and the fact closes on
+    // its real world-time date — the ordinary path, unchanged.
+    const after = await request(app).get(`${worldlineUrl(a)}?asOfSeq=${addedSeq + 1}`);
+    expect(after.body.generations[0]).toMatchObject({
+      open: false, valid_to: '2026-03-01T00:00:00.000Z',
+    });
+    expect(after.body.generations[0].closed_by).toMatchObject({ approximate: false, via: 'edge.added' });
+  });
+
+  it('a BACKDATED supersession is flagged, not clamped: the axes may disagree', async () => {
+    // A correction can be backdated to before the fact it ends was itself
+    // recorded as starting, and E18.1 forbids the fold from reconciling the two
+    // axes — so both timestamps are reported exactly as recorded. What the
+    // OUTPUT may not do is hand back `[later, earlier)` as an ordinary
+    // half-open interval: `interval_inverted` is what stops it claiming a
+    // negative duration, and it marks the one place `valid_from` stops
+    // ascending from one generation to the next.
+    const a = await insNodeAt({ title: 'A' }, '2026-06-01T00:00:00.000Z');
+    const b = await insNodeAt({ title: 'B' }, '2026-07-01T00:00:00.000Z');
+    await insEdge(b, a, 'supersedes', '2026-03-01T00:00:00.000Z');
+
+    const res = await request(app).get(worldlineUrl(a));
+    expect(res.status).toBe(200);
+    const [gen0, gen1] = res.body.generations;
+    expect(gen0).toMatchObject({
+      id: a,
+      valid_from: '2026-06-01T00:00:00.000Z',   // unclamped
+      valid_to: '2026-03-01T00:00:00.000Z',     // unclamped, and EARLIER
+      interval_inverted: true,
+    });
+    expect(gen1).toMatchObject({ id: b, valid_from: '2026-03-01T00:00:00.000Z', interval_inverted: false });
+    // A forward-dated supersession on the same shape is NOT flagged.
+    const c = await insNodeAt({ title: 'C' }, '2026-06-01T00:00:00.000Z');
+    const d = await insNodeAt({ title: 'D' }, '2026-07-01T00:00:00.000Z');
+    await insEdge(d, c, 'supersedes', '2026-08-01T00:00:00.000Z');
+    const ok = await request(app).get(worldlineUrl(c));
+    expect(ok.body.generations[0]).toMatchObject({ valid_to: '2026-08-01T00:00:00.000Z', interval_inverted: false });
+  });
+
   it('a supersedes cycle terminates, with every node appearing exactly once', async () => {
     const a = await insNode({ title: 'A' });
     const b = await insNode({ title: 'B' });
@@ -845,6 +935,27 @@ describe('E18.4 worldline — the pure walk', () => {
     const out = buildWorldline(1, records);
     expect(out.truncated).toBe(true);
     expect(out.generations.length).toBeLessThanOrEqual(MAX_GENERATIONS);
+  });
+
+  it('truncation never removes the SUBJECT — a long chain queried from its tail', () => {
+    // The forward walk is capped from the chain HEAD, and the queried node sits
+    // at the END of a long chain: counting the cap from the root puts the cut
+    // in FRONT of the subject and the answer omits the very node the caller
+    // named. The window is centred on the subject instead — at most half the
+    // generation budget of ancestry is seeded, leaving the rest for what came
+    // after — so a cut can shorten a worldline at either end but never remove
+    // what it is a worldline OF.
+    const records = [];
+    for (let i = 1; i <= MAX_GENERATIONS + 5; i += 1) {
+      records.push(rec(i, i + 1, i, `2026-01-${String((i % 27) + 1).padStart(2, '0')}T00:00:00.000Z`, i));
+    }
+    const tail = MAX_GENERATIONS + 6;
+    const out = buildWorldline(tail, records);
+    expect(out.truncated).toBe(true);
+    expect(out.generations.length).toBeLessThanOrEqual(MAX_GENERATIONS);
+    expect(out.generations.map((g) => g.id)).toContain(tail);
+    // and it is the LAST generation: what was cut is the ancestry in front of it.
+    expect(out.generations[out.generations.length - 1].id).toBe(tail);
   });
 
   it('reports approximate_from when the rectangle holds no creation event', () => {
