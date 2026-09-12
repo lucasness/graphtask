@@ -837,7 +837,7 @@ BEGIN
   VALUES (NEW.id, 'learned', 0, 'genesis', COALESCE(NEW.created_at, clock_timestamp()),
           COALESCE(NEW.created_at, clock_timestamp()),
           '{"v":1,"nodes":[],"edges":[]}'::jsonb,
-          encode(sha256('{"v":1,"nodes":[],"edges":[]}'::bytea), 'hex'), 0, 0)
+          encode(sha256(convert_to('{"v":1,"nodes":[],"edges":[]}', 'UTF8')), 'hex'), 0, 0)
   ON CONFLICT DO NOTHING;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
@@ -896,11 +896,20 @@ $$ LANGUAGE sql STABLE;
 
 -- Bodies: whole on the `to` side (forward replay is exact), digest on the
 -- `from` side, capped at 128 KB.
+-- convert_to(..., 'UTF8'), never `::bytea`. A text -> bytea CAST parses the
+-- string as bytea ESCAPE input, so any body containing a backslash that does
+-- not begin a valid escape (a `\d` regex, a `C:\Users` path, LaTeX) raises
+-- 22P02 and takes the whole write down with it. Measured on production data:
+-- 118 nodes across 10 of 65 graphs, including this project's own build graph.
+-- convert_to() is the encoding conversion this always meant, it cannot fail,
+-- it agrees byte-for-byte with the cast on every input the cast accepts
+-- (ASCII and multibyte UTF-8 alike), and it is what Node's
+-- createHash('sha256').update(text) already hashes on the JS side.
 CREATE OR REPLACE FUNCTION gt_content_change(old_c text, new_c text) RETURNS jsonb AS $$
   SELECT jsonb_build_object(
-    'from_sha',  encode(sha256(COALESCE(old_c,'')::bytea), 'hex'),
+    'from_sha',  encode(sha256(convert_to(COALESCE(old_c,''), 'UTF8')), 'hex'),
     'to',        CASE WHEN length(COALESCE(new_c,'')) <= 131072 THEN to_jsonb(new_c) ELSE 'null'::jsonb END,
-    'to_sha',    encode(sha256(COALESCE(new_c,'')::bytea), 'hex'),
+    'to_sha',    encode(sha256(convert_to(COALESCE(new_c,''), 'UTF8')), 'hex'),
     'to_len',    length(COALESCE(new_c,'')),
     'truncated', length(COALESCE(new_c,'')) > 131072)
 $$ LANGUAGE sql IMMUTABLE;
