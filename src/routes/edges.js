@@ -21,6 +21,10 @@ import {
 // module beside the default weight map, so the write path and the walk cannot
 // disagree about what a legal weight is.
 import { MIN_PROPAGATION, MAX_PROPAGATION } from '../doubt.js';
+// E18.5 — the option tag. The validator lives beside the readers in the pure
+// module so the write path and the branch derivation cannot disagree about what
+// a legal role is.
+import { BRANCH_META_KEY, normalizeBranch } from '../branches.js';
 
 // Re-export the pure derivation helpers so existing importers (batch.js, tests)
 // can keep pulling them from the edges route module.
@@ -156,6 +160,21 @@ export function normalizeMeta(raw = {}) {
       };
     }
     meta.propagation = propagation;
+  }
+  // E18.5 — `branch`: which road this option edge is. `{role: 'chosen' |
+  // 'alternative'}` on a `related to` edge from a decision to an option node,
+  // and the ONLY new vocabulary the branch-point rung adds.
+  //
+  // THIS FUNCTION IS AN ALLOWLIST — it builds a FRESH object and copies only the
+  // keys it knows — so a key it does not learn is dropped SILENTLY, with a 200.
+  // Ship the branch reader before this line and the tagging simply disappears
+  // with no error anywhere, which is why this is the first edit of the rung and
+  // not the last.
+  if (raw[BRANCH_META_KEY] !== undefined && raw[BRANCH_META_KEY] !== null
+      && raw[BRANCH_META_KEY] !== '') {
+    const branch = normalizeBranch(raw[BRANCH_META_KEY]);
+    if (branch.error) return { error: branch.error };
+    meta[BRANCH_META_KEY] = branch.value;
   }
   return { meta };
 }
@@ -429,6 +448,7 @@ router.patch('/:id', validateId, async (req, res) => {
     if (req.body.meta.curve === null) delete writerMeta.curve;
     if (req.body.meta.color === null) delete writerMeta.color;
     if (req.body.meta.propagation === null) delete writerMeta.propagation;
+    if (req.body.meta[BRANCH_META_KEY] === null) delete writerMeta[BRANCH_META_KEY];
   }
   const writerRow = {
     source_id: source_id !== undefined ? source_id : base.source_id,
@@ -461,7 +481,13 @@ router.patch('/:id', validateId, async (req, res) => {
         // used for `refuted_at` and `decay`: it is a STRUCTURAL property of the
         // relation — how much doubt this edge conducts — and an agent rewiring
         // an edge without mentioning it must not wipe it.
-        protectedFromAgentRemoval: ['meta.color', 'meta.curve', 'meta.propagation'],
+        // E18.5's `meta.branch` joins them for the same reason, and the stakes
+        // are the highest yet: it is WHICH ROAD WAS TAKEN. An agent PATCHing an
+        // edge to fix a colour must not be able to erase that — this is the
+        // `meta.propagation` incident's exact shape, one rung along.
+        protectedFromAgentRemoval: [
+          'meta.color', 'meta.curve', 'meta.propagation', `meta.${BRANCH_META_KEY}`,
+        ],
       },
     );
     finalRow = unflattenEdge(merged);

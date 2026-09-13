@@ -11,6 +11,7 @@ import { parseMarkdown, serializeMarkdown, validateMeta, applyDefaults } from '.
 import { mergeFields } from '../merge.js';
 import { requireIntegerParam } from './_validate.js';
 import { notSupersededSql } from '../supersession.js';
+import { notDormantSql } from '../branches.js';
 import { worldlineHandler } from './worldline.js';
 
 // Tasks store frontmatter (meta) + body in a single markdown blob. To do
@@ -147,6 +148,19 @@ router.get('/ready', async (req, res) => {
   // supersedes edge today).
   const includeSuperseded = req.query.includeSuperseded === '1'
     || req.query.includeSuperseded === 'true';
+  // E18.5 — a DORMANT node is not ready work either: it sits under an option
+  // nobody chose, on a decision that is currently committed. Same shape as the
+  // supersession exclusion above — default-excluded, `?includeDormant=1` is the
+  // way back — and zero corpus rows move today, because no edge in any graph
+  // carries `meta.branch`.
+  //
+  // MEASURED, and the reason this exclusion exists at all: the dormant SUBTREE
+  // already falls out for free (the un-chosen option is an un-done transitive
+  // prerequisite), but the option NODE ITSELF is offered as ready work in every
+  // case, and one human marking an alternative `done` — a plausible way to say
+  // "we are not doing this" — LEAKS THE WHOLE BRANCH into the queue.
+  const includeDormant = req.query.includeDormant === '1'
+    || req.query.includeDormant === 'true';
   const result = await pool.query(
     `WITH RECURSIVE prereqs AS (
        SELECT t.id AS root, e.source_id AS prereq
@@ -180,6 +194,13 @@ router.get('/ready', async (req, res) => {
         -- is for someone to rewire the required-for edge onto the successor,
         -- which is a deliberate act and gets its own edge.rewired event.
         ${includeSuperseded ? '' : `AND ${notSupersededSql('t')}`}
+        -- E18.5 exclusion. The SAME rule applies as one line above and it is
+        -- the sharper trap here: this filters RESULT ROWS ONLY and must NEVER
+        -- move into the recursive prereqs CTE. Dropping a dormant PREREQUISITE
+        -- from that walk would treat it as SATISFIED and silently auto-unblock
+        -- its dependents — the locked "nothing auto-flips a status" rule. A
+        -- dormant prerequisite still blocks.
+        ${includeDormant ? '' : `AND ${notDormantSql('t')}`}
       ORDER BY t.id`,
     [gid]
   );

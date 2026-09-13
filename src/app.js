@@ -23,6 +23,7 @@ import contextRouter from './routes/context.js';
 import frontierRouter from './routes/frontier.js';
 import decisionsAtRiskRouter from './routes/decisionsAtRisk.js';
 import doubtRouter from './routes/doubt.js';
+import branchPointsRouter from './routes/branchPoints.js';
 import changesRouter from './routes/changes.js';
 import inconsistencyRouter from './routes/inconsistency.js';
 import structureRouter from './routes/structure.js';
@@ -159,6 +160,12 @@ app.use('/api/reports', reportsAllRouter);
 app.use('/api/graphs/:gid/context', requireGraph('read'), contextRouter);
 app.use('/api/graphs/:gid/frontier', requireGraph('read'), frontierRouter);
 app.use('/api/graphs/:gid/decisions/at-risk', requireGraph('read'), decisionsAtRiskRouter);
+// E18.5 — decision branch points: options + overlays + the confrontation view.
+// MOUNTED AFTER the at-risk router on purpose: Express matches in registration
+// order and `/decisions/at-risk` is an exact prefix of this mount's path, so it
+// must be tried first. Read-gated, and both handlers are SELECT-only — they hold
+// no transaction, emit no event and flip no status.
+app.use('/api/graphs/:gid/decisions', requireGraph('read'), branchPointsRouter);
 // E18.3 — the transitive doubt front. Read gate, and it could not mutate if it
 // tried: the handler issues four SELECTs and holds no transaction.
 app.use('/api/graphs/:gid/doubt', requireGraph('read'), doubtRouter);

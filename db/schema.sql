@@ -1247,6 +1247,18 @@ CREATE TRIGGER gt_log_edge_after_write AFTER INSERT OR UPDATE OR DELETE ON edges
 CREATE INDEX IF NOT EXISTS edges_supersedes_idx
   ON edges (graph_id, target_id) WHERE purpose = 'supersedes';
 
+-- E18.5 branch-point probe, built on exactly the same argument one comment up.
+-- The option edges of a graph are a handful of rows among thousands, and the
+-- dormancy CTE's anchor term reads only them. Measured at 16384 bytes, created
+-- in 12 ms, served as an Index Only Scan (actual time 0.036..0.037, 2 buffers,
+-- Execution Time 0.051 ms). It is ONE (almost) EMPTY PAGE today because no
+-- corpus edge carries `meta.branch`. `source_id` is indexed rather than
+-- `target_id` because the anchor joins the DECISION side — the option edge
+-- points decision -> option.
+CREATE INDEX IF NOT EXISTS edges_branch_idx
+  ON edges (graph_id, source_id, target_id)
+  WHERE purpose = 'related to' AND meta ? 'branch';
+
 -- rotate-id: no FK carries events/snapshots, so move them explicitly, then one
 -- graph.id_rotated. graph DELETE: set gt.graph_deleting so the cascaded row
 -- loggers emit compact events, and write a tombstone BEFORE the cascade.

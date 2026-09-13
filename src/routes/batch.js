@@ -57,7 +57,12 @@ const PROTECTED_TASK_KEYS = [
 // dropped it, which is the 4283-live-edges mistake applied to the one knob this
 // rung exists to provide: a node resting on a refuted claim fell off the doubt
 // front entirely once its declared weight reverted to the default.
-const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve', 'meta.propagation'];
+// E18.5 adds `meta.branch` — which road a decision took. /batch's ordinary
+// agent re-run writes `{source, target, purpose}` with no `meta` at all, so it
+// reaches the merge with the key absent; leaving it off this list would let a
+// routine re-run silently un-tag the chosen option, and the whole rung derives
+// from that tag.
+const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve', 'meta.propagation', 'meta.branch'];
 
 // Order-independent deep stringify, so an idempotent re-run that produces
 // semantically identical meta/body is detected as unchanged even when JSONB or
