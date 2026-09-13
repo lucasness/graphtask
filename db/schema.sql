@@ -420,6 +420,38 @@ CREATE TABLE IF NOT EXISTS user_graph_prefs (
   PRIMARY KEY (user_id, graph_id)
 );
 
+-- E18.3 — the PERSONAL "changed since I last looked" cursor.
+--
+-- WHY THIS TABLE AND NOT A NEW `user_graph_cursors`. The PK is already
+-- (user_id, graph_id); the FK is already ON UPDATE CASCADE, so `rotate-id`
+-- carries the cursor for free; and ON DELETE CASCADE is right here — a cursor
+-- into a deleted graph is meaningless, unlike `events`, which deliberately
+-- carries no FK so history outlives the graph. A new table would duplicate all
+-- three and buy nothing.
+--
+-- THE `DROP NOT NULL` IS REQUIRED, NOT COSMETIC. A user who marks a graph as
+-- read but has never touched the follow toggle would otherwise force the
+-- INSERT ... ON CONFLICT to INVENT an `agent_follow` value — which is exactly
+-- the "a partial write must never silently change a field it did not mention"
+-- rule that cost 4283 live edges their meaning. It is behaviour-preserving for
+-- every existing consumer: GET /prefs/me already answers `agent_follow: null`
+-- for a missing row (graphPrefs.js: `r.rows[0]?.agent_follow ?? null`),
+-- public/app.js resolves null against the global default, and three existing
+-- tests already assert that null. PUT /prefs/me always supplies a boolean, so
+-- no existing write path can produce a NULL. Widening a NOT NULL is also
+-- strictly MORE PERMISSIVE, so unlike E18.4's CHECK widening it cannot fail on
+-- existing rows — but the rule it learned is restated anyway: a widening goes
+-- IN PLACE beside the definition, never appended after the feature's own rows
+-- exist.
+ALTER TABLE user_graph_prefs ALTER COLUMN agent_follow DROP NOT NULL;
+ALTER TABLE user_graph_prefs ADD COLUMN IF NOT EXISTS last_seen_seq BIGINT;
+ALTER TABLE user_graph_prefs ADD COLUMN IF NOT EXISTS last_seen_at  TIMESTAMPTZ;
+DO $$ BEGIN
+  ALTER TABLE user_graph_prefs DROP CONSTRAINT IF EXISTS ugp_last_seen_seq_sane;
+  ALTER TABLE user_graph_prefs ADD CONSTRAINT ugp_last_seen_seq_sane
+    CHECK (last_seen_seq IS NULL OR last_seen_seq >= 0);
+END $$;
+
 -- Per-user global default for "new graphs I haven't toggled yet". Toggling
 -- on any graph also writes-through to this row, so the user's most recent
 -- choice becomes the default for FUTURE graphs without changing existing
@@ -771,11 +803,38 @@ CREATE INDEX IF NOT EXISTS events_kinds_gin          ON events USING gin ((paylo
 -- 06.698, seq 2 learned 06.296 under now(); monotone under clock_timestamp()).
 -- Backdating is additionally flagged in the payload so it can never be disguised.
 CREATE OR REPLACE FUNCTION gt_events_stamp() RETURNS TRIGGER AS $$
+DECLARE
+  pw text;
+  pwn numeric;
 BEGIN
   NEW.learned_at := clock_timestamp();
   NEW.txid := pg_current_xact_id()::text::bigint;
   IF NEW.happened_at < NEW.learned_at - INTERVAL '1 second' THEN
     NEW.payload := NEW.payload || jsonb_build_object('backdated', true);
+  END IF;
+  -- E18.3 — `gt.propagation_weight` -> `payload.weight`. The SEED strength of
+  -- this one weakening, NOT an edge attenuation, and the distinction is the
+  -- whole reason it lands here: a GUC lands on ONE EVENT, so it describes the
+  -- moment a fact was weakened. The standing strength of a RELATION belongs on
+  -- the relation (edges.meta.propagation). A writer who knows "this refutation
+  -- is worth 0.4, not a full 1" sets the GUC; src/doubt.js's seedsFromEvents
+  -- reads payload.weight and reports weight_source: 'payload'.
+  --
+  -- The interval is (0, 1] — E18.3's termination argument, not tidiness — and
+  -- an unparseable or out-of-range value is IGNORED rather than clamped,
+  -- because a silently-clamped amplifier is worse than a missing knob. Nothing
+  -- is stamped when the GUC is unset, so every existing payload is byte-for-byte
+  -- what it was.
+  pw := current_setting('gt.propagation_weight', true);
+  IF pw IS NOT NULL AND pw <> '' THEN
+    BEGIN
+      pwn := pw::numeric;
+      IF pwn > 0 AND pwn <= 1 THEN
+        NEW.payload := NEW.payload || jsonb_build_object('weight', pwn);
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      NULL;
+    END;
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;

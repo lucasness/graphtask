@@ -22,6 +22,8 @@ import reportsAllRouter from './routes/reportsAll.js';
 import contextRouter from './routes/context.js';
 import frontierRouter from './routes/frontier.js';
 import decisionsAtRiskRouter from './routes/decisionsAtRisk.js';
+import doubtRouter from './routes/doubt.js';
+import changesRouter from './routes/changes.js';
 import inconsistencyRouter from './routes/inconsistency.js';
 import structureRouter from './routes/structure.js';
 import exportRouter from './routes/export.js';
@@ -157,6 +159,13 @@ app.use('/api/reports', reportsAllRouter);
 app.use('/api/graphs/:gid/context', requireGraph('read'), contextRouter);
 app.use('/api/graphs/:gid/frontier', requireGraph('read'), frontierRouter);
 app.use('/api/graphs/:gid/decisions/at-risk', requireGraph('read'), decisionsAtRiskRouter);
+// E18.3 — the transitive doubt front. Read gate, and it could not mutate if it
+// tried: the handler issues four SELECTs and holds no transaction.
+app.use('/api/graphs/:gid/doubt', requireGraph('read'), doubtRouter);
+// E18.3 — the personal change feed. The PUT writes the USER'S OWN ROW, not the
+// graph, so a viewer-member may mark as read on a graph they cannot edit —
+// deliberate, and it matches graphPrefs.js's existing comment.
+app.use('/api/graphs/:gid/changes', requireGraph('read'), changesRouter);
 app.use('/api/graphs/:gid/inconsistencies', requireGraph('read'), inconsistencyRouter);
 app.use('/api/graphs/:gid/structure', requireGraph('read'), structureRouter);
 // OKF v0.2 bundle export: a read-only snapshot of the whole graph as markdown

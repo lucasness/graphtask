@@ -98,7 +98,12 @@ const EVENT_COLS = `graph_id, seq, happened_at, learned_at, actor, kind,
 // there is exactly ONE prepared statement shape whatever the caller asks for.
 // `seq > $2 ORDER BY seq` is an index-ordered range scan on the primary key
 // (graph_id, seq) — no sort, no extra index.
-const PAGE_SQL = `SELECT ${EVENT_COLS}
+// EXPORTED for src/routes/changes.js (E18.3), which is a thin PERSONAL wrapper
+// over this reader and not a second one. It inherits, rather than re-derives,
+// the load-bearing rule in this file's header — the head is read BEFORE the
+// page — because two log readers is how two definitions of "what changed"
+// drift. No logic moved; three names became exports.
+export const PAGE_SQL = `SELECT ${EVENT_COLS}
      FROM events
     WHERE graph_id = $1 AND seq > $2
       AND ($3::text   IS NULL OR kind = $3)
@@ -107,7 +112,7 @@ const PAGE_SQL = `SELECT ${EVENT_COLS}
     ORDER BY seq
     LIMIT $6`;
 
-const HEAD_SQL = `SELECT COALESCE(MAX(seq), 0) AS head_seq FROM events WHERE graph_id = $1`;
+export const HEAD_SQL = `SELECT COALESCE(MAX(seq), 0) AS head_seq FROM events WHERE graph_id = $1`;
 
 function isoOrNull(value) {
   if (value === null || value === undefined) return null;
@@ -123,7 +128,7 @@ function num(value) {
   return value === null || value === undefined ? null : Number(value);
 }
 
-function shapeEvent(row) {
+export function shapeEvent(row) {
   return {
     graph_id: row.graph_id,
     seq: num(row.seq),

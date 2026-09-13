@@ -17,6 +17,10 @@ import {
   purposeToType,
   resolveEdgeKind,
 } from '../edgePurpose.js';
+// E18.3 — the per-edge doubt-propagation weight. The interval lives in the pure
+// module beside the default weight map, so the write path and the walk cannot
+// disagree about what a legal weight is.
+import { MIN_PROPAGATION, MAX_PROPAGATION } from '../doubt.js';
 
 // Re-export the pure derivation helpers so existing importers (batch.js, tests)
 // can keep pulling them from the edges route module.
@@ -127,6 +131,31 @@ export function normalizeMeta(raw = {}) {
       return { error: 'color must be a 6-digit hex value' };
     }
     meta.color = color;
+  }
+  // E18.3 — `propagation`: how much of a weakening this relation carries to its
+  // target, in (0, 1]. The deterministic-engine hook — a pipeline that knows the
+  // exact magnitude writes it on the RELATION and the ripple carries it exactly,
+  // which is what a per-request weight map cannot express.
+  //
+  // NOT `meta.weight`, and the reason is three lines up: `meta.curve.weight` is
+  // already the bezier control-point position along the edge, 0..1, with
+  // MIN_WEIGHT / MAX_WEIGHT taken for it in this very file. A sibling
+  // `meta.weight` meaning "doubt attenuation" would sit one key away from a
+  // rendering parameter with the same name and the same range.
+  //
+  // THE INTERVAL IS OPEN AT ZERO AND CLOSED AT ONE, and that is not tidiness:
+  // it is E18.3's termination argument. A weight > 1 lets a `supports` cycle
+  // amplify without bound and demotes a correctness property to a configuration
+  // accident. So: 400, never a clamp.
+  if (raw.propagation !== undefined && raw.propagation !== null && raw.propagation !== '') {
+    const propagation = Number(raw.propagation);
+    if (!Number.isFinite(propagation)
+        || propagation <= MIN_PROPAGATION || propagation > MAX_PROPAGATION) {
+      return {
+        error: `propagation must be a number greater than ${MIN_PROPAGATION} and at most ${MAX_PROPAGATION}`,
+      };
+    }
+    meta.propagation = propagation;
   }
   return { meta };
 }
@@ -399,6 +428,7 @@ router.patch('/:id', validateId, async (req, res) => {
     writerMeta = { ...writerMeta, ...normalizedMeta.meta };
     if (req.body.meta.curve === null) delete writerMeta.curve;
     if (req.body.meta.color === null) delete writerMeta.color;
+    if (req.body.meta.propagation === null) delete writerMeta.propagation;
   }
   const writerRow = {
     source_id: source_id !== undefined ? source_id : base.source_id,
@@ -427,7 +457,11 @@ router.patch('/:id', validateId, async (req, res) => {
         // palette writes `meta.color`. Agents that PATCH edges without
         // those keys (typical when rewiring source/target/type) would
         // otherwise wipe user bezier shaping and color.
-        protectedFromAgentRemoval: ['meta.color', 'meta.curve'],
+        // `meta.propagation` (E18.3) joins them on the same reasoning E18.2
+        // used for `refuted_at` and `decay`: it is a STRUCTURAL property of the
+        // relation — how much doubt this edge conducts — and an agent rewiring
+        // an edge without mentioning it must not wipe it.
+        protectedFromAgentRemoval: ['meta.color', 'meta.curve', 'meta.propagation'],
       },
     );
     finalRow = unflattenEdge(merged);
