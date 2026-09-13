@@ -45,13 +45,28 @@
 //     not evidence that the decision held.
 //   * "WE CANNOT SEE THAT FAR BACK" IS NEVER RENDERED AS "IT DID NOT EXIST":
 //     when the reconstruction is incomplete, `present_at_decision` is `null` on
-//     every ground and never `false`.
+//     every ground and never `false`. `basis: 'none'` IS such a case — head
+//     state is not a reconstruction of a moment the view cannot locate — so it
+//     reports `complete: false` and nulls every decision-time field.
+//   * A BOUND IS NEVER SILENT. Every cap that could have shortened this answer
+//     is named in `truncation.reasons`, including the ONE GLOBAL cause walk
+//     shared across all grounds: a ground starved by that cap says
+//     `outcomes_truncated_by: ['cause_walk_cap']` rather than reporting the
+//     silence the cap created as `unconfronted`.
+//   * A SUMMARY DESCRIBES THE DECISION, NOT THE PAGE. `confronted` counts over
+//     every ground the decision has, never over the `maxResults` slice that was
+//     returned; the page size is stated as `confronted.returned`. A paged read
+//     that summarised its own page reported a decision whose grounds had been
+//     contradicted as one where nothing had been confronted at all.
+//   * DIRECTION IS NOT DISCARDED. `supersedes` is directed (source = SUCCESSOR,
+//     target = SUPERSEDED), so a ground that REPLACED something is not reported
+//     as having been replaced. `contradicts` stays symmetric.
 
 import { Router } from 'express';
 import pool from '../db.js';
 import { requireIntegerParam } from './_validate.js';
 import { cacheControlFor, graphAsOf, parseAsOfQuery } from '../events/store.js';
-import { SUPERSEDES, supersededIds } from '../supersession.js';
+import { SUPERSEDES, outcomeEndpoints, supersededIds } from '../supersession.js';
 import {
   DEFAULT_CHAIN_LIMIT,
   DEFAULT_MAX_DEPTH,
@@ -158,6 +173,20 @@ const DECISION_EVENTS_SQL = `SELECT seq, kind, happened_at, learned_at, actor, c
                               WHERE graph_id = $1 AND subject_kind = 'node' AND subject_id = $2
                                 AND payload -> 'kinds' ?| ARRAY['decision.made','decision.reopened']
                               ORDER BY seq`;
+
+// A node CREATED already carrying `decided_at` emits `node.created` and NO
+// `decision.made` at all — the INSERT logger writes one literal kind, and
+// gt_classify_node() only ever runs on an UPDATE's `changes`. So when such a
+// node is later REOPENED the commitment leaves no `decision.made` behind, and
+// the creation event is the commitment's own seq, exactly. `/branches` already
+// reasons from this shape (see its `state` comment); this is the query that
+// lets the confrontation do the same instead of falling through to head state.
+const CREATED_DECIDED_SQL = `SELECT seq FROM events
+                              WHERE graph_id = $1 AND subject_kind = 'node' AND subject_id = $2
+                                AND kind = 'node.created' AND seq <= $3
+                                AND payload -> 'after' -> 'meta' ->> 'decided_at' IS NOT NULL
+                              ORDER BY seq
+                              LIMIT 1`;
 
 // The last event at or before the decision that CHANGED the body. `node.created`
 // qualifies because a node born with its rationale never emits a `content`
@@ -513,20 +542,43 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       else if (kinds.includes('decision.reopened')) reopenedEvents.push(row);
     }
 
-    // THREE HONEST BASES, mirroring resolveAnchor() in src/routes/doubt.js.
-    //   event_seq — a decision.made event exists: exact.
-    //   scalar    — no event, but meta.decided_at is set. EVERY node in the
-    //               corpus predates the log, so this is the common case today
-    //               and it sharpens from ship day forward.
-    //   none      — neither: head state, no decision point, outcomes empty.
-    const basis = decisionEvent !== null ? 'event_seq' : (decidedAt ? 'scalar' : 'none');
+    // FOUR HONEST BASES, mirroring resolveAnchor() in src/routes/doubt.js.
+    //   event_seq  — a decision.made event exists: exact.
+    //   scalar     — no event, but meta.decided_at is set. EVERY node in the
+    //                corpus predates the log, so this is the common case today
+    //                and it sharpens from ship day forward.
+    //   reopen_seq — decided_at is GONE and no decision.made was ever written,
+    //                but `decision.reopened` events exist — and a reopen CANNOT
+    //                EXIST unless a commitment once did. Reading that as "no
+    //                decision point" made the view report HEAD STATE as the
+    //                decision's context and skip every outcome leg, so a
+    //                refutation sitting in the log came back `unconfronted`.
+    //                The anchor is the creation event when the node was born
+    //                carrying decided_at (exact), else the EARLIEST reopen,
+    //                which bounds the commitment from ABOVE and says so.
+    //   none       — no trace of a commitment at all. Head state, no decision
+    //                point, no outcomes — and, because that is not a
+    //                reconstruction of any moment, `complete: false` and
+    //                decision-time fields NULL (below).
     const decisionSeq = decisionEvent !== null ? Number(decisionEvent.seq) : null;
+    let anchor = decisionSeq === null
+      ? null
+      : { seq: decisionSeq, bound: 'exact', event_kind: 'decision.made' };
+    if (anchor === null && !decidedAt && reopenedEvents.length > 0) {
+      const firstReopen = Number(reopenedEvents[0].seq);
+      const { rows } = await pool.query(CREATED_DECIDED_SQL, [gid, decisionId, firstReopen]);
+      anchor = rows.length
+        ? { seq: Number(rows[0].seq), bound: 'exact', event_kind: 'node.created' }
+        : { seq: firstReopen, bound: 'upper', event_kind: 'decision.reopened' };
+    }
 
-    const contextParams = basis === 'event_seq'
-      ? { axis: 'learned', asOf: null, asOfSeq: decisionSeq, known: null }
-      : basis === 'scalar'
-        ? { axis: 'happened', asOf: decidedAt, asOfSeq: null, known: null }
-        : { axis: 'learned', asOf: null, asOfSeq: null, known: null };
+    const basis = decisionEvent !== null
+      ? 'event_seq'
+      : (decidedAt ? 'scalar' : (anchor !== null ? 'reopen_seq' : 'none'));
+
+    const contextParams = basis === 'scalar'
+      ? { axis: 'happened', asOf: decidedAt, asOfSeq: null, known: null }
+      : { axis: 'learned', asOf: null, asOfSeq: anchor === null ? null : anchor.seq, known: null };
     const context = await graphAsOf(pool, gid, contextParams);
 
     // SECONDARY, reported BESIDE the primary and never instead of it: what the
@@ -551,7 +603,12 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       };
     }
 
-    const contextComplete = !(context.as_of.truncated || context.as_of.pre_history_approximation);
+    // `basis: 'none'` means the view could not locate the moment AT ALL, so what
+    // it just reconstructed is HEAD STATE and not a reconstruction of anything.
+    // Calling that `complete` was the view's worst lie: it made every head
+    // ground `present_at_decision: true` at its CURRENT confidence.
+    const contextComplete = basis !== 'none'
+      && !(context.as_of.truncated || context.as_of.pre_history_approximation);
 
     // ── the grounds ──────────────────────────────────────────────────────────
     const contextGrounds = new Map();
@@ -571,8 +628,8 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       .sort((a, b) => a - b);
 
     // ── legs (b): outcomes, by three separate mechanisms ─────────────────────
-    const boundaryIsSeq = basis === 'event_seq';
-    const boundaryValue = boundaryIsSeq ? decisionSeq : decidedAt;
+    const boundaryIsSeq = anchor !== null;
+    const boundaryValue = boundaryIsSeq ? anchor.seq : decidedAt;
     const boundaryLabel = boundaryIsSeq ? 'seq' : 'happened_at';
 
     const outcomesByNode = new Map();
@@ -615,8 +672,21 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       }
     }
 
-    if (basis === 'event_seq') {
-      const { rows } = await pool.query(CAUSED_SQL, [gid, decisionSeq, p.maxOutcomes + 1]);
+    // THE CAUSE CAP IS GLOBAL, AND THAT IS WHY IT MUST BE ANNOUNCED. One
+    // recursive walk rooted at the commitment's seq serves EVERY ground, so its
+    // `LIMIT` cannot be split per ground without either running the walk once
+    // per ground or fetching it unbounded — and an unbounded walk over the cause
+    // DAG is exactly the shape that spills temp files. So the cap stays global
+    // and the response STATES that it is global: `truncation.cause_walk_scope`.
+    //
+    // What is not allowed is what this did before — fetching maxOutcomes + 1,
+    // throwing the overflow row away and recording nothing, so a ground whose
+    // outcomes fell off the end came back `unconfronted`, which in this view
+    // means NOBODY CHECKED. That is silence manufactured by a cap.
+    let causeTruncated = false;
+    if (anchor !== null && anchor.bound === 'exact') {
+      const { rows } = await pool.query(CAUSED_SQL, [gid, anchor.seq, p.maxOutcomes + 1]);
+      causeTruncated = rows.length > p.maxOutcomes;
       for (const row of rows.slice(0, p.maxOutcomes)) {
         const nodeId = row.subject_kind === 'node' ? Number(row.subject_id) : null;
         const outcome = {
@@ -655,13 +725,26 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
           boundary: boundaryLabel,
           effect: effectOf('edge.added', row.purpose),
         };
+        // WHOSE OUTCOME IS THIS? Not "whichever end is a ground": `supersedes`
+        // is DIRECTED — source = SUCCESSOR, target = SUPERSEDED — so a ground
+        // that is the SOURCE did the replacing and nothing happened to it.
+        // Attaching to both ends made "our ground replaced something" and "our
+        // ground was replaced" produce the SAME status, which is the one field
+        // a human reads. outcomeEndpoints() is the at-risk rule, once.
+        const bearing = outcomeEndpoints({ purpose: row.purpose, source, target });
         let attached = false;
-        for (const endpoint of [source, target]) {
+        for (const endpoint of bearing) {
           if (!groundSet.has(endpoint)) continue;
           push(endpoint, { ...base, node_id: endpoint });
           attached = true;
         }
-        if (!attached) unpaired.push({ ...base, node_id: source === decisionId ? target : source });
+        if (!attached) {
+          // Still listed, never discarded — under the node it actually happened
+          // to, which for a supersedes edge is the superseded end.
+          const affected = bearing.find((n) => n !== decisionId)
+            ?? (source === decisionId ? target : source);
+          unpaired.push({ ...base, node_id: affected });
+        }
       }
     }
 
@@ -696,6 +779,16 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       all.sort((a, b) => a.seq - b.seq);
       const outcomes = all.slice(0, p.maxOutcomes);
 
+      // TWO WAYS AN OUTCOME LIST CAN BE SHORT, NAMED SEPARATELY. The per-ground
+      // slice cut THIS ground's tail; the global cause walk may have starved ANY
+      // ground before its rows were ever fetched, and there is no way to know
+      // which — so when it capped, every ground says so. A caller can tell a
+      // capped answer from a complete one, and `unconfronted` under
+      // `cause_walk_cap` reads as "we stopped looking", not "nobody checked".
+      const truncatedBy = [];
+      if (all.length > outcomes.length) truncatedBy.push('per_ground_cap');
+      if (causeTruncated) truncatedBy.push('cause_walk_cap');
+
       grounds.push({
         id,
         title: contextNode?.title ?? headMeta?.title ?? null,
@@ -707,10 +800,14 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
         present_at_decision: contextComplete ? inContext : null,
         prediction,
         prediction_basis: predictionBasis,
-        confidence_at_decision: confidenceAt,
+        // With no anchor there is no decision-time, so there is no decision-time
+        // confidence either. Reporting the CURRENT number in this field dressed
+        // head state up as what was on record then.
+        confidence_at_decision: basis === 'none' ? null : confidenceAt,
         confidence_now: confidenceNow,
         outcomes,
-        outcomes_truncated: all.length > outcomes.length,
+        outcomes_truncated: truncatedBy.length > 0,
+        outcomes_truncated_by: truncatedBy,
         status: statusFor(outcomes),
       });
     }
@@ -854,7 +951,27 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
       ? 'committed'
       : (decisionEvent || reopenedEvents.length ? 'reopened' : 'never_decided');
     const page = grounds.slice(0, p.maxResults);
-    const withOutcomes = page.filter((g) => g.outcomes.length > 0).length;
+
+    // ANYTHING BOUNDED REPORTS THAT IT WAS BOUNDED, and names WHICH bound bit.
+    // A bare `truncated: true` cannot tell a caller whether it is missing
+    // grounds, a ground's later outcomes, or outcomes that the shared cause walk
+    // never fetched at all — and those three call for different next moves.
+    const truncation = {
+      grounds: grounds.length > page.length,
+      // Over ALL grounds, not the page: a cap that bit an off-page ground still
+      // shortened that ground's outcome list, and `confronted` counts that
+      // ground's `status` — which was folded from the SHORTENED list. Read off
+      // the page this flag went silent about a bound that moved the summary.
+      ground_outcomes: grounds.some((g) => g.outcomes_truncated_by.includes('per_ground_cap')),
+      cause_walk: causeTruncated,
+      cause_walk_scope: 'global',   // ONE walk serves every ground: see above.
+      unpaired_outcomes: unpaired.length > p.maxOutcomes,
+      reasons: [],
+    };
+    if (truncation.grounds) truncation.reasons.push('grounds_page');
+    if (truncation.ground_outcomes) truncation.reasons.push('ground_outcomes_capped');
+    if (truncation.cause_walk) truncation.reasons.push('cause_walk_capped');
+    if (truncation.unpaired_outcomes) truncation.reasons.push('unpaired_outcomes_capped');
 
     res.set('Cache-Control', 'no-store');
     res.json({
@@ -884,6 +1001,11 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
         axis: contextParams.axis,
         complete: contextComplete,
         no_decision_point: basis === 'none',
+        // WHICH EVENT THE RECONSTRUCTION IS PINNED TO, and whether that pin is
+        // the commitment itself (`exact`) or merely a seq the commitment must
+        // precede (`upper`). A reopen proves a commitment existed without
+        // saying when, and the difference has to be readable.
+        anchor: anchor === null ? null : { ...anchor },
         node_count: context.nodes.length,
         edge_count: context.links.length,
         as_of: context.as_of,
@@ -895,11 +1017,23 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
         .sort((a, b) => a.seq - b.seq)
         .slice(0, p.maxOutcomes),
       benchmark,
+      // THE SUMMARY DESCRIBES THE DECISION, NOT THE PAGE. Computed off `page`
+      // these four numbers answered "how much of the first maxResults grounds
+      // was confronted" while wearing the name of "how much of this decision
+      // was confronted": a decision with 5 grounds, 2 of them contradicted
+      // since, reported `{grounds: 2, with_outcomes: 0, unconfronted: 2}` under
+      // `maxResults: 2` — a summary in which nothing had been confronted at
+      // all. `truncated: true` does not repair it, because it says the GROUNDS
+      // LIST was cut and not that the SUMMARY was. So every count is over the
+      // whole `grounds` array — which is what `benchmark` above already does —
+      // and the page size is STATED as `returned` rather than implied by
+      // `grounds`.
       confronted: {
-        grounds: page.length,
-        predictions: page.filter((g) => g.prediction).length,
-        with_outcomes: withOutcomes,
-        unconfronted: page.filter((g) => g.status === 'unconfronted').length,
+        grounds: grounds.length,
+        returned: page.length,
+        predictions: grounds.filter((g) => g.prediction).length,
+        with_outcomes: grounds.filter((g) => g.outcomes.length > 0).length,
+        unconfronted: grounds.filter((g) => g.status === 'unconfronted').length,
       },
       // MACHINE-READABLE REFUSALS, not prose, so a caller cannot mistake what it
       // is holding. Every one of these is a constant.
@@ -915,9 +1049,8 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
         maxOutcomes: p.maxOutcomes,
         predictionTypes: p.predictionTypes,
       },
-      truncated: grounds.length > page.length
-        || unpaired.length > p.maxOutcomes
-        || page.some((g) => g.outcomes_truncated),
+      truncation,
+      truncated: truncation.reasons.length > 0,
     });
   } catch (err) {
     next(err);

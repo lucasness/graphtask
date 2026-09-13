@@ -146,7 +146,7 @@ describe('E18.5 the context leg', () => {
     expect(res.body.grounds.map((g) => g.id)).toEqual([ground]);
     expect(res.body.grounds[0].outcomes).toEqual([]);
     expect(res.body.confronted).toEqual({
-      grounds: 1, predictions: 1, with_outcomes: 0, unconfronted: 1,
+      grounds: 1, returned: 1, predictions: 1, with_outcomes: 0, unconfronted: 1,
     });
   });
 

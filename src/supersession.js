@@ -63,6 +63,24 @@ export function supersededIds(links) {
   return out;
 }
 
+// The endpoints one STRUCTURAL edge's outcome BEARS ON — "who did this happen
+// to" — for a view that pairs an edge against a node.
+//
+// `contradicts` is SYMMETRIC: a contradiction names both ends, which is the
+// either-direction rule /decisions/at-risk already applies (its `contra` CTE
+// unions source_id and target_id). `supersedes` is DIRECTED, and the SUCCESSOR
+// is the end nothing happened to: it did the replacing.
+//
+// THE DIRECTION IS NOT RESTATED HERE. It is read off supersededIds(), the one
+// function that owns it, because a second copy of the semantics is exactly how
+// the confrontation view came to report a surviving ground as replaced.
+export function outcomeEndpoints(link) {
+  if (link?.purpose === SUPERSEDES) return [...supersededIds([link])];
+  const source = Number(link?.source ?? link?.source_id);
+  const target = Number(link?.target ?? link?.target_id);
+  return [source, target].filter((n) => Number.isFinite(n));
+}
+
 // The supersession relations in an edge set, normalised. `successor` is the
 // edge's SOURCE (the replacement), `superseded` its TARGET (the fact whose
 // story ended).
