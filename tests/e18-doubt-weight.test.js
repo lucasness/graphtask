@@ -194,3 +194,79 @@ describe('E18.3 an agent PATCH cannot silently wipe the weight', () => {
     expect(meta.color).toBe('#00ff00');
   });
 });
+
+// The same rule on the OTHER bulk path. /batch is what the skill documents as
+// the agent write-back route, and its own worked example writes edges as
+// `{source, target, purpose}` with no `meta` at all — so the ordinary
+// idempotent re-run reaches the merge with `propagation` absent. It was listed
+// as a propagation WRITE path and guarded on only one of the four, so a re-run
+// deleted the value: the edge reverted to the `supports` default and a node
+// resting on a refuted claim dropped off the doubt front entirely once its
+// accumulated weight fell under the floor.
+describe('E18.3 an agent /batch re-run cannot silently wipe the weight', () => {
+  // The nodes must be created THROUGH /batch so the re-run resolves to the same
+  // rows; /batch identifies an edge by its endpoints, so an external_id that
+  // does not already exist would simply make a new node and a new edge and the
+  // merge would never engage.
+  async function batchNodes(names) {
+    const res = await request(app).post(`/api/graphs/${gid}/batch`).send({
+      nodes: names.map((n) => ({ external_id: n, content: node({ title: n }) })),
+    });
+    expect(res.status).toBe(200);
+    return Object.fromEntries(res.body.nodes.map((r) => [r.external_id, r.id]));
+  }
+
+  it('re-asserting an edge without meta keeps propagation, exactly as color is kept', async () => {
+    const ids = await batchNodes(['a', 'b']);
+    const created = await request(app).post(edgesUrl()).send({
+      source_id: ids.a, target_id: ids.b, purpose: 'supports',
+      meta: { propagation: 0.25, color: '#ff0000' },
+    });
+    expect(created.status).toBe(201);
+
+    const res = await request(app).post(`/api/graphs/${gid}/batch`)
+      .set('X-Writer-Type', 'agent')
+      .send({ edges: [{ source: 'a', target: 'b', purpose: 'supports' }] });
+    expect(res.status).toBe(200);
+    expect(res.body.edges[0].id).toBe(created.body.id);
+
+    const meta = await storedMeta(created.body.id);
+    // color proves the protected-list mechanism is engaged at all; propagation
+    // is the key that used to fall out of it.
+    expect(meta.color).toBe('#ff0000');
+    expect(meta.propagation).toBe(0.25);
+  });
+
+  it('a node deep in a chain stays ON the doubt front after an agent /batch re-run', async () => {
+    // The observable consequence, not just the stored field: six `supports`
+    // hops each declared at full strength keep the tail visible; reverting them
+    // to the 0.6 default takes the tail under the 0.05 floor and it vanishes.
+    const names = Array.from({ length: 7 }, (_, i) => `n${i}`);
+    const ids = await batchNodes(names);
+    for (let i = 0; i < 6; i++) {
+      const r = await request(app).post(edgesUrl()).send({
+        source_id: ids[names[i]], target_id: ids[names[i + 1]],
+        purpose: 'supports', meta: { propagation: 1 },
+      });
+      expect(r.status).toBe(201);
+    }
+    await request(app).post(`/api/graphs/${gid}/tasks/${ids.n0}/verify`).send({ outcome: 'failed' });
+
+    const before = await request(app).post(`/api/graphs/${gid}/doubt`).send({});
+    expect(before.status).toBe(200);
+    expect(before.body.doubt.map((x) => x.id)).toContain(ids.n6);
+
+    const re = await request(app).post(`/api/graphs/${gid}/batch`)
+      .set('X-Writer-Type', 'agent')
+      .send({
+        edges: Array.from({ length: 6 }, (_, i) => ({
+          source: names[i], target: names[i + 1], purpose: 'supports',
+        })),
+      });
+    expect(re.status).toBe(200);
+
+    const after = await request(app).post(`/api/graphs/${gid}/doubt`).send({});
+    expect(after.status).toBe(200);
+    expect(after.body.doubt.map((x) => x.id)).toContain(ids.n6);
+  });
+});

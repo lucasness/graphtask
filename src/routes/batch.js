@@ -47,7 +47,17 @@ const PROTECTED_TASK_KEYS = [
   // E18.2 — refuted_at (a failed check) and decay (a structural property).
   'refuted_at', 'decay',
 ];
-const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve'];
+// MUST match `protectedFromAgentRemoval` in src/routes/edges.js. These are the
+// keys an agent write that simply does not MENTION them must never delete:
+// color and curve are the canvas's, and E18.3's `propagation` is a caller's
+// declared doubt magnitude on this relation. /batch identifies an edge by its
+// endpoints, so the ordinary agent re-run — `{source, target, purpose}` with no
+// `meta`, exactly as the skill's own worked example writes it — reaches the
+// merge with the key absent. Leaving `propagation` off this list silently
+// dropped it, which is the 4283-live-edges mistake applied to the one knob this
+// rung exists to provide: a node resting on a refuted claim fell off the doubt
+// front entirely once its declared weight reverted to the default.
+const PROTECTED_EDGE_KEYS = ['meta.color', 'meta.curve', 'meta.propagation'];
 
 // Order-independent deep stringify, so an idempotent re-run that produces
 // semantically identical meta/body is detected as unchanged even when JSONB or
