@@ -350,6 +350,108 @@ describe('E18.3 chains — reconstructed from parent pointers, cut at the trigge
   });
 });
 
+// ── the item's three claims are ONE statement ───────────────────────────────
+
+describe('E18.3 weight, hops and the chain must agree — TRUNCATED OR NOT', () => {
+  // The shape that used to break it. Layer 1 relaxes 2 (0.6, via 1) and 3
+  // (1, via 1). Layer 2 relaxes 4 FROM THE 0.6 RECORD and only THEN improves 2
+  // to 1.0 via 3 — so 2's parent pointer now describes a better path than the
+  // one 4's weight came from, and 4 is corrected on LAYER 3. Stop at maxDepth 2
+  // and that correction never runs.
+  const late = () => adj([
+    [1, 1, 2, 'supports'],       // 1 -> 2   0.6
+    [2, 1, 3, 'required for'],   // 1 -> 3   1
+    [3, 2, 4, 'required for'],   // 2 -> 4   relaxed from the WORSE record
+    [4, 3, 2, 'required for'],   // 3 -> 2   improves 2, one layer too late
+  ]);
+
+  it('a chain cut short by maxDepth explains the weight it is printed beside', () => {
+    const walk = layeredWalk(late(), [seed(1)], opts({ maxDepth: 2 }));
+    const record = walk.best.get(walkKey(4, 100));
+    const chain = chainFor(walk.best, 4, 100, DEFAULT_CHAIN_LIMIT);
+    expect(walk.truncated).toBe(true);
+    expect(walk.stoppedBy).toContain('depth');
+    // The reported numbers came from 1 -supports-> 2 -required for-> 4, and the
+    // chain must be THAT path — not the better 1 -> 3 -> 2 -> 4 the walk had
+    // found for 2 but had not yet pushed through to 4.
+    expect(record.w).toBeCloseTo(0.6, 10);
+    expect(chain.hops.map((h) => h.from)).toEqual([1, 2]);
+    expect(chain.hops).toHaveLength(record.hops);
+    expect(chain.hops.reduce((acc, h) => acc * h.weight, 1)).toBeCloseTo(record.w, 10);
+  });
+
+  it('one more layer finds the better path, and the chain moves WITH the weight', () => {
+    const walk = layeredWalk(late(), [seed(1)], opts({ maxDepth: 3 }));
+    const record = walk.best.get(walkKey(4, 100));
+    const chain = chainFor(walk.best, 4, 100, DEFAULT_CHAIN_LIMIT);
+    expect(record.w).toBe(1);
+    expect(record.hops).toBe(3);
+    expect(chain.hops.map((h) => h.from)).toEqual([1, 3, 2]);
+    expect(chain.hops).toHaveLength(record.hops);
+  });
+
+  it('THE INVARIANT, over every reached record at every depth: w = product(chain), hops = |chain|', () => {
+    // Not one shape but every prefix of the walk on a graph with parallel paths
+    // of different lengths and different attenuations — the family where a
+    // parent improves after a child has already been relaxed from it.
+    const edges = adj([
+      [1, 1, 2, 'supports'], [2, 1, 3, 'required for'], [3, 1, 6, 'supports', 0.3],
+      [4, 2, 4, 'required for'], [5, 3, 2, 'required for'], [6, 4, 5, 'supports'],
+      [7, 6, 4, 'required for'], [8, 5, 2, 'supports'], [9, 3, 7, 'supports'],
+      [10, 7, 4, 'required for'], [11, 5, 7, 'required for'],
+    ]);
+    for (const maxDepth of [1, 2, 3, 4, 5, 6, 12]) {
+      const walk = layeredWalk(edges, [seed(1)], opts({ maxDepth, weightFloor: 1e-9 }));
+      for (const record of walk.best.values()) {
+        const chain = chainFor(walk.best, record.node, record.triggerSeq, CHAIN_LIMIT_CAP);
+        const product = chain.hops.reduce((acc, h) => acc * h.weight, 1);
+        expect({ depth: maxDepth, node: record.node, hops: chain.hops.length, w: product })
+          .toEqual({ depth: maxDepth, node: record.node, hops: record.hops, w: expect.closeTo(record.w, 10) });
+        // And the chain is a real, connected path that starts at a seed.
+        for (let i = 1; i < chain.hops.length; i += 1) {
+          expect(chain.hops[i].from).toBe(chain.hops[i - 1].to);
+        }
+        if (chain.hops.length) expect(chain.hops[0].from).toBe(1);
+      }
+    }
+  });
+});
+
+// ── the floor is ONE rule ───────────────────────────────────────────────────
+
+describe('E18.3 weightFloor applies to SEEDS as well as relaxations', () => {
+  it('a sub-floor seed is not an item either — the front cannot show a cause and hide its consequences', () => {
+    // A confidence drop 0.9 -> 0.88 is magnitude 0.02, under the 0.05 default.
+    // It used to be returned as an ITEM while its dependent across a
+    // `required for` edge — weight 1, so EXACTLY as doubtful by definition —
+    // was cut by the same floor one line later.
+    const hard = adj([[1, 1, 2, 'required for']]);
+    const walk = layeredWalk(hard, [seed(1, { w: 0.02 })], opts());
+    expect(walk.best.size).toBe(0);
+    expect(walk.nodes).toBe(0);
+    // Said, not implied — and NOT `truncated`: the floor is a filter the caller
+    // asked for, exactly as it already is on the relaxation side.
+    expect(walk.stoppedBy).toContain('floor');
+    expect(walk.truncated).toBe(false);
+  });
+
+  it('a seed AT the floor is kept, with everything the hard edge carries it to', () => {
+    const hard = adj([[1, 1, 2, 'required for']]);
+    const walk = layeredWalk(hard, [seed(1, { w: DEFAULT_WEIGHT_FLOOR })], opts());
+    expect(walk.nodes).toBe(2);
+    expect(weightOf(walk, 2)).toBeCloseTo(DEFAULT_WEIGHT_FLOOR, 10);
+    expect(walk.stoppedBy).toEqual([]);
+  });
+
+  it('a caller who wants the whole front lowers the floor and gets the seed back', () => {
+    const hard = adj([[1, 1, 2, 'required for']]);
+    const walk = layeredWalk(hard, [seed(1, { w: 0.02 })], opts({ weightFloor: 1e-9 }));
+    expect(walk.nodes).toBe(2);
+    expect(weightOf(walk, 1)).toBeCloseTo(0.02, 10);
+    expect(weightOf(walk, 2)).toBeCloseTo(0.02, 10);
+  });
+});
+
 // ── per-trigger attribution ─────────────────────────────────────────────────
 
 describe('E18.3 the walk is keyed by (node, trigger)', () => {
@@ -402,6 +504,42 @@ describe('E18.3 the anchor gate, on the learned axis', () => {
     expect(onFront(trigger, anchor, 'happened')).toBe(false);  // the world moved first
     expect(verifiedAfterInWorld(trigger, anchor)).toBe(true);
     expect(AXES).toEqual(['learned', 'happened']);
+  });
+
+  it('WORLD TIME IS COMPARED IN MILLISECONDS, across the two types it really arrives in', () => {
+    // A trigger's happened_at is the raw Date pg returns for a timestamptz
+    // (seedsFromEvents copies it straight through); an anchor's has been through
+    // the route's isoOrNull() and is an ISO STRING. `Date.parse` takes a string,
+    // so a Date argument is coerced by toString() — "Thu Jun 04 2026 15:40:45
+    // GMT+0000", WITH NO MILLISECONDS — and the trigger's world time was floored
+    // to the whole second before every comparison. Events written in one burst
+    // (one test, one agent run, one import) are exactly this close.
+    const dateTrigger = (ms) => ({ happened_at: new Date(`2026-06-04T15:40:45.${ms}Z`) });
+    const isoAnchor = (ms) => ({ happened_at: `2026-06-04T15:40:45.${ms}Z` });
+
+    // 600 ms AFTER the last check: on the front, and NOT "verified after".
+    expect(onFront(dateTrigger('800'), isoAnchor('200'), 'happened')).toBe(true);
+    expect(verifiedAfterInWorld(dateTrigger('900'), isoAnchor('100'))).toBe(false);
+    // 600 ms BEFORE it: off the happened front, and the later check is reported.
+    expect(onFront(dateTrigger('200'), isoAnchor('800'), 'happened')).toBe(false);
+    expect(verifiedAfterInWorld(dateTrigger('200'), isoAnchor('800'))).toBe(true);
+    // Same instant is not "after", on either side.
+    expect(onFront(dateTrigger('500'), isoAnchor('500'), 'happened')).toBe(false);
+    expect(verifiedAfterInWorld(dateTrigger('500'), isoAnchor('500'))).toBe(false);
+
+    // And the answer does not depend on WHICH SIDE is the Date: all four
+    // type pairings agree.
+    const asIso = (t) => ({ happened_at: t.happened_at.toISOString() });
+    const asDate = (a) => ({ happened_at: new Date(a.happened_at) });
+    for (const [t, a] of [['800', '200'], ['200', '800'], ['500', '500']]) {
+      const T = dateTrigger(t);
+      const A = isoAnchor(a);
+      const pairs = [[T, A], [asIso(T), A], [T, asDate(A)], [asIso(T), asDate(A)]];
+      const fronts = pairs.map(([x, y]) => onFront(x, y, 'happened'));
+      const afters = pairs.map(([x, y]) => verifiedAfterInWorld(x, y));
+      expect(new Set(fronts).size).toBe(1);
+      expect(new Set(afters).size).toBe(1);
+    }
   });
 
   it('happened axis: no anchor in any world means every weakening is newer', () => {

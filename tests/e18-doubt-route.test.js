@@ -418,6 +418,108 @@ describe('E18.3 NO HARDCODED ATTENUATION — through the route', () => {
   });
 });
 
+// ── the item's numbers explain the item's chain ─────────────────────────────
+
+describe('E18.3 a returned item is ONE statement: weight, hops and cause agree', () => {
+  it('under maxDepth truncation the chain is the path the weight came from', async () => {
+    // A -supports-> B (0.6) and A -required for-> C (1) at layer 1. At layer 2,
+    // B relaxes to D from the 0.6 record and only THEN C improves B to 1.0 — so
+    // B's parent pointer describes a better path than D's weight came from, and
+    // D is corrected on layer 3. maxDepth 2 stops before that correction, and
+    // the item must still be internally consistent: re-reading B's LIVE pointer
+    // printed a 3-hop chain of product 1 beside "weight 0.6, hops 2".
+    const a = await mkNode('A', { confidence: 0.8 });
+    const b = await mkNode('B', { confidence: 0.8 });
+    const c = await mkNode('C', { confidence: 0.8 });
+    const d = await mkNode('D', { confidence: 0.8 });
+    await mkEdge(a, b, 'supports');
+    await mkEdge(a, c, 'required for');
+    await mkEdge(b, d, 'required for');
+    await mkEdge(c, b, 'required for');
+    await request(app).post(verifyUrl(a)).send({ outcome: 'failed', happened_at: '2026-09-01T00:00:00.000Z' });
+
+    const res = await doubt({ maxDepth: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.walk.stopped_by).toContain('depth');
+
+    const item = itemOf(res, d);
+    expect(item.weight).toBeCloseTo(0.6, 10);
+    expect(item.hops).toBe(2);
+    expect(item.cause.hops.map((h) => h.from)).toEqual([a, b]);
+    // The two numbers a reader acts on and the chain they are printed beside
+    // are the SAME path: |chain| is the hop count, and the chain's own per-hop
+    // weights multiply back to the weight.
+    expect(item.cause.hops).toHaveLength(item.hops);
+    expect(item.cause.hops.reduce((acc, h) => acc * h.weight, 1)).toBeCloseTo(item.weight, 10);
+
+    // One layer deeper the walk finds the better path, and BOTH move together.
+    const deeper = await doubt({ maxDepth: 3 });
+    const better = itemOf(deeper, d);
+    expect(better.weight).toBe(1);
+    expect(better.hops).toBe(3);
+    expect(better.cause.hops.map((h) => h.from)).toEqual([a, c, b]);
+    expect(better.cause.hops).toHaveLength(better.hops);
+  });
+
+  it('EVERY returned item, on a graph with competing paths, at every depth', async () => {
+    const ids = [];
+    for (let i = 0; i < 6; i += 1) ids.push(await mkNode(`n${i}`, { confidence: 0.8 }));
+    const [n0, n1, n2, n3, n4, n5] = ids;
+    await mkEdge(n0, n1, 'supports');
+    await mkEdge(n0, n2, 'required for');
+    await mkEdge(n1, n3, 'required for');
+    await mkEdge(n2, n1, 'required for');
+    await mkEdge(n3, n4, 'supports');
+    await mkEdge(n2, n5, 'supports');
+    await mkEdge(n5, n3, 'required for');
+    await request(app).post(verifyUrl(n0)).send({ outcome: 'failed', happened_at: '2026-09-01T00:00:00.000Z' });
+
+    for (const maxDepth of [1, 2, 3, 4, 12]) {
+      const res = await doubt({ maxDepth });
+      for (const item of res.body.doubt) {
+        expect(item.cause.hops).toHaveLength(item.hops);
+        expect(item.cause.hops.reduce((acc, h) => acc * h.weight, 1)).toBeCloseTo(item.weight, 10);
+        for (let i = 1; i < item.cause.hops.length; i += 1) {
+          expect(item.cause.hops[i].from).toBe(item.cause.hops[i - 1].to);
+        }
+        if (item.cause.hops.length) expect(item.cause.hops[0].from).toBe(n0);
+        expect(item.cause.hops.at(-1)?.to ?? item.id).toBe(item.id);
+      }
+    }
+  });
+
+  it('a SUB-FLOOR SEED is filtered like everything else it would have doubted', async () => {
+    // 0.9 -> 0.88 is magnitude 0.02, under the 0.05 default floor. It used to be
+    // returned as an item while B — its dependent across a `required for` edge,
+    // weight 1, so exactly as doubtful — was cut by the same floor. The front
+    // showed a cause and hid its consequence.
+    const a = await mkNode('A', { confidence: 0.9 });
+    const b = await mkNode('B', { confidence: 0.8 });
+    await mkEdge(a, b, 'required for');
+    await request(app).patch(`${tasksUrl()}/${a}`)
+      .send({ content: node({ title: 'A', status: 'review', confidence: 0.88 }) });
+
+    const res = await doubt();
+    expect(res.status).toBe(200);
+    expect(res.body.doubt).toEqual([]);
+    // The weakening is still REPORTED — it reached nothing at this floor, and
+    // the response says which knob did it.
+    expect(res.body.triggers).toHaveLength(1);
+    expect(res.body.triggers[0]).toMatchObject({ kind: 'confidence_drop', subject_id: a, reached: 0 });
+    expect(res.body.triggers[0].weight).toBeCloseTo(0.02, 10);
+    expect(res.body.walk.stopped_by).toContain('floor');
+    expect(res.body.walk.nodes_visited).toBe(0);
+    expect(res.body.params.weightFloor).toBe(0.05);
+
+    // And the floor is the caller's: lower it and BOTH come back together.
+    const all = await doubt({ weightFloor: 1e-9 });
+    expect(idsOf(all).sort()).toEqual([a, b].sort());
+    expect(itemOf(all, a).weight).toBeCloseTo(0.02, 10);
+    expect(itemOf(all, b).weight).toBeCloseTo(0.02, 10);
+  });
+});
+
 // ── termination on a real cyclic graph ──────────────────────────────────────
 
 describe('E18.3 a `supports` cycle in the DATABASE terminates with no attenuation', () => {
@@ -554,5 +656,157 @@ describe('E18.3 the read gate, mirroring /graph', () => {
 
     expect((await post(gid)).status).toBe(200);              // legacy owner-less
     expect((await post('nope404nope404xx')).status).toBe(404);
+  });
+});
+
+// ── the seed read is BOUNDED ─────────────────────────────────────────────────
+//
+// The route keeps the newest `maxTriggers` (32) weakenings and throws the rest
+// away. It used to FETCH the rest first: `SEEDS_SQL` had no LIMIT, so at the
+// default `since: 0` it matched — and deserialised into Node — every
+// field.set / claim.refuted / node.superseded event the graph had ever
+// recorded. The work was thrown away and grew without bound with the log.
+//
+// Two things have to hold at once, and they pull against each other:
+//
+//   * the read must be BOUNDED, which the row-counting test below pins; and
+//   * it must return the SAME ANSWER as the unbounded read, which the sparse
+//     test pins. The naive bound — one `ORDER BY seq DESC LIMIT 32` — fails
+//     that one, because the SQL predicate is a PREFILTER and not the
+//     definition: it matches every title edit, and weakening() is what decides.
+//     Reproduced before the fix: 40 confidence drops buried under 100 later
+//     title edits yield 0 seeds under a naive LIMIT and 32 under the real read.
+describe('E18.3 the seed read is bounded and the answer is unchanged', () => {
+  let dbPool;
+
+  beforeAll(async () => {
+    dbPool = (await import('../src/db.js')).default;
+  });
+
+  // Raw event rows, so a long log is cheap to build. `drop` writes the
+  // confidence change weakening() classifies as a confidence_drop; otherwise a
+  // plain title field.set, which the SQL prefilter matches and weakening()
+  // discards — the whole reason a naive LIMIT is wrong.
+  async function bulkEvents(n, { drop, subject, startSeq }) {
+    const payload = drop
+      ? `jsonb_build_object('kinds', jsonb_build_array('field.set'), 'changes',
+           jsonb_build_object('meta.confidence', jsonb_build_object('from', 0.9, 'to', 0.4)))`
+      : `jsonb_build_object('kinds', jsonb_build_array('field.set'), 'changes',
+           jsonb_build_object('meta.title', jsonb_build_object('from', 'a', 'to', 'b')))`;
+    await pool.query(
+      `INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                           subject_kind, subject_id, txid, payload)
+       SELECT $1, $2 + g, NOW(), NOW(), '{"type":"system"}'::jsonb, 'node.patched',
+              'node', $3, 0, ${payload}
+         FROM generate_series(1, $4) g`,
+      [gid, startSeq, subject, n],
+    );
+  }
+
+  const headOf = async () => Number((await pool.query(
+    'SELECT COALESCE(MAX(seq),0) s FROM events WHERE graph_id = $1', [gid])).rows[0].s);
+
+  // Count the event rows the SEED read actually pulls into Node. The fragment
+  // is SEEDS_SQL's stripped-payload projection, which no other query in the
+  // route uses.
+  async function seedRowsPulled(body = {}) {
+    const orig = dbPool.query;
+    let rows = 0;
+    dbPool.query = async function counting(text, params) {
+      const r = await orig.call(this, text, params);
+      if (typeof text === 'string' && text.includes("payload #- '{changes,content}'")) {
+        rows += r.rows.length;
+      }
+      return r;
+    };
+    let res;
+    try {
+      res = await doubt(body);
+    } finally {
+      dbPool.query = orig;
+    }
+    expect(res.status).toBe(200);
+    return { rows, res };
+  }
+
+  it('500 weakenings, cap 32: the read does not pull the whole log into Node', async () => {
+    const a = await mkNode('A claim', { confidence: 0.9 });
+    await bulkEvents(500, { drop: true, subject: a, startSeq: await headOf() });
+
+    const { rows, res } = await seedRowsPulled();
+    // 33 is what settles the answer: 32 triggers plus the one extra row that
+    // PROVES truncation. Generous room for a growth step, and still nowhere
+    // near the 500+ the unbounded read pulled.
+    expect(rows).toBeLessThanOrEqual(64);
+    expect(res.body.triggers.length).toBe(32);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.walk.stopped_by).toContain('trigger_cap');
+    // `trigger_count` is the triggers this answer is built from — always the
+    // length of `triggers`, never a number the bounded read cannot know.
+    expect(res.body.model.trigger_count).toBe(res.body.triggers.length);
+  });
+
+  it('a raised maxTriggers raises the bound with it — the cap is what bounds it', async () => {
+    const a = await mkNode('A claim', { confidence: 0.9 });
+    await bulkEvents(500, { drop: true, subject: a, startSeq: await headOf() });
+
+    const small = await seedRowsPulled({ maxTriggers: 5 });
+    const large = await seedRowsPulled({ maxTriggers: 200 });
+    expect(small.res.body.triggers.length).toBe(5);
+    expect(large.res.body.triggers.length).toBe(200);
+    expect(small.rows).toBeLessThan(large.rows);
+    expect(small.rows).toBeLessThanOrEqual(16);
+    expect(large.rows).toBeLessThanOrEqual(400);
+  });
+
+  it('THE PREFILTER IS NOT THE PREDICATE: 40 drops under 1000 later title edits still give the newest 32 drops', async () => {
+    const a = await mkNode('A claim', { confidence: 0.9 });
+    const base = await headOf();
+    await bulkEvents(40, { drop: true, subject: a, startSeq: base });
+    await bulkEvents(1000, { drop: false, subject: a, startSeq: base + 40 });
+
+    const { rows, res } = await seedRowsPulled();
+    const seqs = res.body.triggers.map((t) => t.seq);
+    // Exactly the newest 32 of the 40 real weakenings — the same answer the
+    // unbounded read gave, reached without reading all 1040 rows.
+    expect(seqs.length).toBe(32);
+    expect(seqs[0]).toBe(base + 9);
+    expect(seqs[seqs.length - 1]).toBe(base + 40);
+    expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+    expect(res.body.truncated).toBe(true);
+    // AND THE HONEST COST OF BEING RIGHT: when the weakenings are the OLDEST
+    // events under a thousand later title edits, a newest-first read has to
+    // reach all the way down to find 33 of them, so this shape reads the whole
+    // range — the same rows the unbounded read took, in a few pages instead of
+    // one query. Correctness first; the bound pays where weakenings are recent,
+    // which is the shape a live graph's doubt front actually has.
+    expect(rows).toBe(1040);
+  });
+
+  it('under the cap nothing is truncated and every weakening is still a trigger', async () => {
+    const a = await mkNode('A claim', { confidence: 0.9 });
+    const base = await headOf();
+    await bulkEvents(7, { drop: true, subject: a, startSeq: base });
+    await bulkEvents(50, { drop: false, subject: a, startSeq: base + 7 });
+
+    const res = await doubt();
+    expect(res.status).toBe(200);
+    expect(res.body.triggers.map((t) => t.seq)).toEqual(
+      Array.from({ length: 7 }, (_, i) => base + 1 + i),
+    );
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.walk.stopped_by).not.toContain('trigger_cap');
+    expect(res.body.model.trigger_count).toBe(7);
+  });
+
+  it('`since` still bounds the window from below, and the page respects it', async () => {
+    const a = await mkNode('A claim', { confidence: 0.9 });
+    const base = await headOf();
+    await bulkEvents(100, { drop: true, subject: a, startSeq: base });
+
+    const res = await doubt({ since: base + 95 });
+    expect(res.status).toBe(200);
+    expect(res.body.triggers.map((t) => t.seq)).toEqual([96, 97, 98, 99, 100].map((n) => base + n));
+    expect(res.body.truncated).toBe(false);
   });
 });

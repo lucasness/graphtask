@@ -286,17 +286,31 @@ export function layeredWalk(adjacency, seeds, opts) {
   const { weights, weightFloor, maxDepth, maxNodes } = opts;
   const best = new Map();          // "node:trigger" -> record
   const nodeCount = new Set();     // distinct nodes, for maxNodes
-  let frontier = new Map();        // "node:trigger" -> weight
+  let frontier = new Map();        // "node:trigger" -> the RECORD, not its weight
   let truncated = false;
   let relaxed = 0;
   let deepest = 0;
   const stoppedBy = new Set();
 
   for (const seed of seeds) {
+    // THE FLOOR IS ONE RULE AND IT APPLIES TO SEEDS TOO.
+    //
+    // It used to guard relaxations only, which made the answer internally
+    // incoherent: a seed of magnitude 0.02 was returned as an ITEM while its
+    // dependent across a `required for` edge — weight 1, "a dependent cannot be
+    // more believed than its prereq", so by definition EXACTLY as doubtful —
+    // was cut by the same floor one line later. The front showed a cause and
+    // hid its consequences. `weightFloor` is a caller-owned relevance threshold
+    // on a doubt weight, so the coherent reading is "every item at or above the
+    // floor", seeds included; a front that also carried sub-floor seeds but not
+    // their dependents answered neither question. Reported via stoppedBy, NOT
+    // via `truncated`: the floor is a filter the caller asked for and echoed in
+    // `params.weightFloor`, exactly as it already is for relaxations.
+    if (seed.w < weightFloor) { stoppedBy.add('floor'); continue; }
     const key = walkKey(seed.node, seed.seq);
     const prev = best.get(key);
     if (prev && prev.w >= seed.w) continue;
-    best.set(key, {
+    const record = {
       node: seed.node,
       triggerSeq: seed.seq,
       w: seed.w,
@@ -305,22 +319,37 @@ export function layeredWalk(adjacency, seeds, opts) {
       viaNode: null,
       viaPurpose: null,
       viaWeight: null,
-    });
+      via: null,
+    };
+    best.set(key, record);
     nodeCount.add(seed.node);
-    frontier.set(key, seed.w);
+    frontier.set(key, record);
   }
 
   for (let d = 1; d <= maxDepth && frontier.size > 0; d += 1) {
     const next = new Map();
-    for (const [key, w] of frontier) {
-      const from = best.get(key);
+    // THE FRONTIER CARRIES THE PRODUCING RECORD, NOT A LOOSE WEIGHT, and every
+    // new record keeps a pointer to the one it was relaxed FROM (`via`).
+    //
+    // A node's parent pointer is overwritten whenever a strictly better path
+    // turns up, and a node already relaxed from the older, worse record is only
+    // corrected on a LATER layer. When the loop stops at maxDepth that later
+    // layer never runs — so re-reading a LIVE parent pointer at chain time
+    // described a different, better path than the one the reported `weight` and
+    // `hops` came from: the numbers did not explain the chain and the chain's
+    // own edge weights did not multiply back to the weight. Holding the exact
+    // producing record makes the three agree by construction, at every depth,
+    // truncated or not: `w` is the product along `via`, and `hops` is that
+    // chain's length because it is counted from the parent rather than from the
+    // layer number.
+    for (const from of frontier.values()) {
       for (const edge of adjacency.get(from.node) ?? []) {
         relaxed += 1;
         // The ONLY place a weight is chosen, and it contains no number:
         // per-edge beats per-request beats the exported default.
         const ew = edge.propagation ?? weights[edge.purpose];
         if (!(ew > MIN_PROPAGATION)) continue;   // a purpose we do not traverse
-        const nw = w * ew;
+        const nw = from.w * ew;
         if (nw < weightFloor) { stoppedBy.add('floor'); continue; }
         const targetKey = walkKey(edge.target_id, from.triggerSeq);
         const prev = best.get(targetKey);
@@ -336,19 +365,21 @@ export function layeredWalk(adjacency, seeds, opts) {
           stoppedBy.add('node_cap');
           continue;
         }
-        best.set(targetKey, {
+        const record = {
           node: edge.target_id,
           triggerSeq: from.triggerSeq,
           w: nw,
-          hops: d,
+          hops: from.hops + 1,
           viaEdge: edge.id,
           viaNode: from.node,
           viaPurpose: edge.purpose,
           viaWeight: ew,
-        });
+          via: from,
+        };
+        best.set(targetKey, record);
         nodeCount.add(edge.target_id);
         const held = next.get(targetKey);
-        if (held === undefined || held < nw) next.set(targetKey, nw);
+        if (held === undefined || held.w < nw) next.set(targetKey, record);
       }
     }
     frontier = next;
@@ -388,21 +419,30 @@ export function byNode(best) {
 // `triggers[]` regardless. Because maxDepth defaults to 12 and chainLimit to
 // 16, the DEFAULT configuration can never truncate a chain.
 //
-// The `seen` guard is belt-and-braces. viaNode is assigned only on a strict
+// IT FOLLOWS `record.via` — THE RECORD THIS ONE WAS RELAXED FROM — AND NOT THE
+// LIVE `best` ENTRY FOR `viaNode`. The two differ exactly when the parent was
+// improved after the child was relaxed and the walk stopped (at maxDepth)
+// before the child could be corrected; re-reading the live entry there returned
+// a chain that described a DIFFERENT, better path than the `weight` and `hops`
+// reported beside it. Following the producing record keeps the item's three
+// claims — weight, hop count, chain — one statement: `weight` is the seed
+// weight times the chain's own per-hop weights, and `hops` is the chain's
+// length. `best` is still the way in (the caller names an item by id), and the
+// walkKey lookup remains the fallback for a record from an older shape.
+//
+// The `seen` guard is belt-and-braces. `via` is assigned only on a strict
 // weight improvement, so a cycle in the parent pointers is impossible by
 // construction; the guard exists so a hypothetical corruption is non-fatal
 // rather than an infinite loop on a read path.
 export function chainFor(best, node, triggerSeq, limit, superseded = null) {
   const hops = [];
   const seen = new Set();
-  let cursor = node;
+  let record = best.get(walkKey(node, triggerSeq));
   let omitted = 0;
-  while (cursor !== null && cursor !== undefined) {
-    const key = walkKey(cursor, triggerSeq);
-    if (seen.has(key)) break;
-    seen.add(key);
-    const record = best.get(key);
-    if (!record || record.viaNode === null || record.viaNode === undefined) break;
+  while (record) {
+    if (seen.has(record)) break;
+    seen.add(record);
+    if (record.viaNode === null || record.viaNode === undefined) break;
     hops.push({
       from: record.viaNode,
       to: record.node,
@@ -411,7 +451,7 @@ export function chainFor(best, node, triggerSeq, limit, superseded = null) {
       weight: record.viaWeight,
       from_superseded: superseded ? superseded.has(record.viaNode) : false,
     });
-    cursor = record.viaNode;
+    record = record.via ?? best.get(walkKey(record.viaNode, triggerSeq));
   }
   hops.reverse();                     // trigger end first, item end last
   if (hops.length > limit) {
@@ -424,6 +464,36 @@ export function chainFor(best, node, triggerSeq, limit, superseded = null) {
 // ── the anchor gate ─────────────────────────────────────────────────────────
 
 export const AXES = Object.freeze(['learned', 'happened']);
+
+// EPOCH MILLISECONDS FROM WHATEVER SHAPE A TIMESTAMP ARRIVES IN — the one place
+// world time is turned into a number, used by BOTH comparisons below.
+//
+// The two sides genuinely arrive as different types and always will: an
+// anchor's `happened_at` is run through the route's isoOrNull() and is an ISO
+// STRING, while a trigger's is the raw `Date` pg returns for a timestamptz,
+// copied straight through seedsFromEvents. `Date.parse` takes a string, so a
+// Date argument is coerced by `Date.prototype.toString()` —
+// "Thu Jun 04 2026 15:40:45 GMT+0000", WHICH RENDERS NO MILLISECONDS. The
+// trigger's world time was therefore floored to the whole second before every
+// comparison, and a weakening and a verification less than a second apart
+// compared wrongly in both directions: measured, a trigger at .800 against an
+// anchor at .200 read as NOT newer (the node was silenced off the front), and a
+// trigger at .900 against an anchor at .100 read as "verified after in world"
+// (a false demotion flag). Events written in one burst — one test, one agent
+// run, one import — are exactly this close.
+//
+// Normalising HERE rather than at the seed factory because `onFront` and
+// `verifiedAfterInWorld` are exported and take raw trigger/anchor objects from
+// anywhere: fixing only seedsFromEvents would leave the gate itself
+// type-fragile for the next caller. Date, ISO string and epoch number all land
+// on the same number; anything else is NaN, and every comparison against NaN is
+// false, which is the pre-existing behaviour for an unparseable timestamp.
+function epochMs(value) {
+  if (value === null || value === undefined) return NaN;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  return Date.parse(value);
+}
 
 // "Since it was last verified or decided."
 //
@@ -461,7 +531,7 @@ export function onFront(trigger, anchor, axis) {
     if (anchorAt === null) return true;              // never checked in any world
     const triggerAt = trigger?.happened_at ?? null;
     if (triggerAt === null) return false;
-    return Date.parse(triggerAt) > Date.parse(anchorAt);
+    return epochMs(triggerAt) > epochMs(anchorAt);
   }
   const anchorSeq = Number(anchor?.seq ?? 0) || 0;
   return Number(trigger?.seq ?? 0) > anchorSeq;
@@ -477,8 +547,8 @@ export function verifiedAfterInWorld(trigger, anchor) {
   const anchorAt = anchor?.happened_at ?? null;
   const triggerAt = trigger?.happened_at ?? null;
   if (anchorAt === null || triggerAt === null) return false;
-  const a = Date.parse(anchorAt);
-  const t = Date.parse(triggerAt);
+  const a = epochMs(anchorAt);
+  const t = epochMs(triggerAt);
   if (!Number.isFinite(a) || !Number.isFinite(t)) return false;
   return a > t;
 }
