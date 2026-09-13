@@ -119,4 +119,37 @@ describe('Follow-prefs API (authed)', () => {
       .set('X-Test-User-Id', user.provider_user_id);
     expect(r.body.agent_follow).toBeNull();
   });
+
+  // REGRESSION — the graph vanishing between requireGraph and the upsert used
+  // to be a bare 500. requireGraph('read') loads the graph and takes no lock on
+  // it; a concurrent DELETE (or rotate-id, which UPDATEs graphs.id) commits in
+  // that window and the FK check raises 23503 on user_graph_prefs_graph_id_fkey.
+  //
+  // The race is made DETERMINISTIC rather than slept on: a second connection
+  // holds an uncommitted DELETE, so requireGraph's plain SELECT still sees the
+  // row under MVCC while the upsert's FK check blocks on the delete's lock.
+  // Committing the delete then decides the FK check — exactly the real race,
+  // with the timing pinned.
+  it('answers 404, not 500, when the graph is deleted mid-request', async () => {
+    const killer = await pool.connect();
+    let res;
+    try {
+      await killer.query('BEGIN');
+      await killer.query('DELETE FROM graphs WHERE id = $1', [graph.id]);
+      // `.then()` is what starts a supertest request — without it nothing is
+      // in flight and the COMMIT below would simply precede the whole call.
+      const inflight = request(app)
+        .put(`/api/graphs/${graph.id}/prefs/me`)
+        .set('X-Test-User-Id', user.provider_user_id)
+        .send({ agent_follow: true })
+        .then((r) => r);
+      await new Promise((r) => setTimeout(r, 300));
+      await killer.query('COMMIT');
+      res = await inflight;
+    } finally {
+      killer.release();
+    }
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'not found' });
+  });
 });

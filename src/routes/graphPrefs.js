@@ -37,24 +37,35 @@ router.put('/me', requireUser, async (req, res) => {
   if (typeof agent_follow !== 'boolean') {
     return res.status(400).json({ error: 'agent_follow must be boolean' });
   }
-  await withTx(async (client) => {
-    await client.query(
-      `INSERT INTO user_graph_prefs (user_id, graph_id, agent_follow, updated_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (user_id, graph_id) DO UPDATE SET
-         agent_follow = EXCLUDED.agent_follow,
-         updated_at = NOW()`,
-      [req.user.id, gid, agent_follow],
-    );
-    await client.query(
-      `INSERT INTO user_prefs (user_id, agent_follow_default, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id) DO UPDATE SET
-         agent_follow_default = EXCLUDED.agent_follow_default,
-         updated_at = NOW()`,
-      [req.user.id, agent_follow],
-    );
-  });
+  // THE GRAPH CAN VANISH BETWEEN THE GUARD AND THE WRITE. requireGraph('read')
+  // loaded the row and took no lock on it, so a concurrent DELETE /api/graphs/:id
+  // — or rotate-id, which UPDATEs graphs.id — can commit inside this window and
+  // the FK check raises 23503 on user_graph_prefs_graph_id_fkey. Unhandled that
+  // is a bare 500; 404 is what requireGraph itself answers one retry later, so
+  // the two agree. Same window, same handling, in routes/changes.js's PUT /seen.
+  try {
+    await withTx(async (client) => {
+      await client.query(
+        `INSERT INTO user_graph_prefs (user_id, graph_id, agent_follow, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, graph_id) DO UPDATE SET
+           agent_follow = EXCLUDED.agent_follow,
+           updated_at = NOW()`,
+        [req.user.id, gid, agent_follow],
+      );
+      await client.query(
+        `INSERT INTO user_prefs (user_id, agent_follow_default, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET
+           agent_follow_default = EXCLUDED.agent_follow_default,
+           updated_at = NOW()`,
+        [req.user.id, agent_follow],
+      );
+    });
+  } catch (err) {
+    if (err?.code === '23503') return res.status(404).json({ error: 'not found' });
+    throw err;
+  }
   res.json({ agent_follow });
 });
 

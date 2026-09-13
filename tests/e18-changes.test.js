@@ -272,3 +272,46 @@ describe('E18.3 the schema widening', () => {
     )).rejects.toThrow();
   });
 });
+
+describe('E18.3 the cursor write survives the graph disappearing under it', () => {
+  // REGRESSION — this used to be a bare 500 with no JSON body at all.
+  //
+  // requireGraph('read') loads the graph and takes NO LOCK on it, and the
+  // cursor upsert runs in no transaction, so a concurrent DELETE /api/graphs/:id
+  // — or POST /:id/rotate-id, which UPDATEs graphs.id — commits inside that
+  // window and the FK check raises 23503 on user_graph_prefs_graph_id_fkey.
+  // 404 is what requireGraph itself answers a moment later, so the client sees
+  // one story instead of "500 now, 404 on retry".
+  //
+  // The race is DETERMINISTIC, not slept on: a second connection holds an
+  // UNCOMMITTED DELETE, so requireGraph's plain SELECT still sees the row under
+  // MVCC while the upsert's FK check blocks on that connection's row lock.
+  // Committing the delete is what decides the FK check.
+  it('PUT /changes/seen answers 404, not 500, when the graph is deleted mid-request', async () => {
+    await mkNode('A');
+    const killer = await pool.connect();
+    let res;
+    try {
+      await killer.query('BEGIN');
+      await killer.query('DELETE FROM graphs WHERE id = $1', [gid]);
+      // `.then()` is what puts a supertest request in flight — without it the
+      // COMMIT below would simply precede the whole call and we would be
+      // testing the ordinary 404, not the race.
+      const inflight = seen(1).then((r) => r);
+      await new Promise((r) => setTimeout(r, 300));
+      await killer.query('COMMIT');
+      res = await inflight;
+    } finally {
+      killer.release();
+    }
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'not found' });
+  });
+
+  it('the ordinary write still succeeds — the guard did not swallow the happy path', async () => {
+    await mkNode('A');
+    const res = await seen(1);
+    expect(res.status).toBe(200);
+    expect(res.body.last_seen_seq).toBe(1);
+  });
+});

@@ -121,12 +121,76 @@ const HEAD_SQL = `SELECT COALESCE(MAX(seq), 0) AS head_seq FROM events WHERE gra
 // event's `changes.content` is two full node bodies (measured at 128 KB each on
 // real data) and nothing here reads a byte of it. E18.2 measured the same
 // operator at 2x faster and 65x less data on VERIFY_EVENTS_SQL.
+//
+// AND IT IS READ NEWEST-FIRST, IN BOUNDED PAGES — see fetchSeeds() below. At
+// `since: 0` this predicate matches every field.set the graph has ever recorded
+// and the walk then keeps the newest `maxTriggers` (32) of them; reading all of
+// them to throw all but 32 away is unbounded work that grows with the log.
+// Measured on a 5000-weakening graph: 50.4 ms unbounded vs 9.0 ms for the
+// bounded page, and the whole route 55.7 ms vs 9.4 ms. On the opposite shape —
+// 5000 field.set events and NO weakening at all — the pages have to walk the
+// whole range anyway and it is a wash (61.2 ms vs 47.0 ms, same rows, 2 round
+// trips instead of 1).
 const SEEDS_SQL = `SELECT seq, subject_id, happened_at, learned_at, cause_id,
                           payload #- '{changes,content}' AS payload
      FROM events
-    WHERE graph_id = $1 AND seq > $2 AND subject_kind = 'node'
+    WHERE graph_id = $1 AND seq > $2 AND seq < $3 AND subject_kind = 'node'
       AND payload->'kinds' ?| ARRAY['claim.refuted','node.superseded','field.set']
-    ORDER BY seq`;
+    ORDER BY seq DESC
+    LIMIT $4`;
+
+// The descending cursor's opening upper bound. DELIBERATELY NOT head_seq: an
+// event committing between HEAD_SQL and this read is inside the old read's
+// answer, and narrowing to the head would quietly drop it. This bound only ever
+// says "no upper bound yet".
+const SEQ_UNBOUNDED = Number.MAX_SAFE_INTEGER;
+
+// The page ladder. A page must be at least `maxTriggers + 1` rows — one more
+// than the cap — because that is what lets `truncated` stay EXACTLY the old
+// `allSeeds.length > maxTriggers`: we page until a (maxTriggers + 1)-th seed
+// proves truncation, or until the log is exhausted and there is none. Pages
+// grow geometrically so a graph whose weakenings are sparse among its field.set
+// events converges in a handful of round trips rather than one per trigger.
+const SEED_PAGE_GROWTH = 4;
+const SEED_PAGE_CAP = 4096;
+
+// THE PREFILTER IS NOT THE PREDICATE, AND THAT IS WHY THIS PAGES INSTEAD OF
+// TAKING ONE `LIMIT 32`. `payload->'kinds' ? 'field.set'` matches every title
+// edit in the graph; weakening() then keeps only the ones whose
+// `changes['meta.confidence']` actually went DOWN. A bare `ORDER BY seq DESC
+// LIMIT 32` therefore returns THE NEWEST 32 CANDIDATES, not the newest 32
+// weakenings — reproduced: 40 confidence drops under 100 later title edits
+// yielded 0 seeds where the unbounded read yields 32. So: read newest-first in
+// pages, run the ONE definition of a weakening (seedsFromEvents) over each, and
+// stop only when the seeds we have settle the answer.
+//
+// Returns the same `{seeds, truncated}` the unbounded read produced, for every
+// input — `seeds` newest-`maxTriggers`, ascending by seq.
+async function fetchSeeds(gid, since, maxTriggers) {
+  const want = maxTriggers + 1;
+  const collected = [];
+  let before = SEQ_UNBOUNDED;
+  let page = want;
+  for (;;) {
+    const { rows } = await pool.query(SEEDS_SQL, [gid, since, before, page]);
+    for (const seed of seedsFromEvents(rows)) collected.push(seed);
+    // Fewer rows than asked for means the range is exhausted: there is nothing
+    // older left to find, so what we hold is the complete set.
+    if (rows.length < page) break;
+    if (collected.length >= want) break;
+    before = Number(rows[rows.length - 1].seq);
+    page = Math.min(page * SEED_PAGE_GROWTH, SEED_PAGE_CAP);
+  }
+  // Pages arrive newest-first and seedsFromEvents sorts WITHIN a page, so the
+  // concatenation is only piecewise ordered. One sort restores the ascending
+  // order the walk's tie-break relies on.
+  collected.sort((a, b) => a.seq - b.seq);
+  const truncated = collected.length > maxTriggers;
+  return {
+    seeds: truncated ? collected.slice(collected.length - maxTriggers) : collected,
+    truncated,
+  };
+}
 
 // The edge slice: ONE indexed range scan over the two load-bearing purposes.
 // This is the part the house's recursive-CTE idiom is genuinely good at, and it
@@ -286,20 +350,13 @@ router.post('/', async (req, res, next) => {
     const headRows = await pool.query(HEAD_SQL, [gid]);
     const headSeq = Number(headRows.rows[0].head_seq);
 
-    // The seeds are NOT cached: the query is ~1 ms and its `since` varies per
-    // caller.
-    const seedRows = await pool.query(SEEDS_SQL, [gid, p.since]);
-    const allSeeds = seedsFromEvents(seedRows.rows);
-
+    // The seeds are NOT cached: `since` varies per caller.
+    //
     // Newest first when the cap bites: a caller who asks for 32 triggers on a
     // graph with 200 weakenings wants the 32 most recently LEARNED, and the
-    // truncation is reported rather than implied.
-    let seeds = allSeeds;
-    let triggerTruncated = false;
-    if (allSeeds.length > p.maxTriggers) {
-      seeds = allSeeds.slice(allSeeds.length - p.maxTriggers);
-      triggerTruncated = true;
-    }
+    // truncation is reported rather than implied. fetchSeeds reads newest-first
+    // so that preference is the READ's shape and not a slice of everything.
+    const { seeds, truncated: triggerTruncated } = await fetchSeeds(gid, p.since, p.maxTriggers);
 
     const edgeKey = `doubt-edges:${headSeq}`;
     let edgeRows = getDerived(gid, edgeKey);
@@ -460,7 +517,14 @@ router.post('/', async (req, res, next) => {
       },
       model: {
         head_seq: headSeq,
-        trigger_count: allSeeds.length,
+        // THE TRIGGERS THIS ANSWER IS BUILT FROM — always `triggers.length`.
+        // It USED to be "every weakening in the graph since `since`", which
+        // only a full read of the log can know; the bounded read cannot, and
+        // counting the SQL prefilter's rows instead would count title edits as
+        // triggers, which is a worse kind of wrong than a smaller number. The
+        // two values differ ONLY when the cap bit, and that case is already
+        // announced by `truncated` and `stopped_by: ['trigger_cap']`.
+        trigger_count: seeds.length,
         edge_slice_cached: edgeSliceCached,
         anchor_kinds: [...ANCHOR_KINDS],
       },
