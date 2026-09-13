@@ -383,6 +383,39 @@ Each edge carries a `purpose` (the relationship it encodes, directed source → 
 - **Nothing is stored on the node.** There is no `meta.superseded_at` and you must not invent one: "is this superseded?" is derived from the EDGE SET, which is what makes `GET /graph?asOf=…` answer it correctly for any point in time. `GET /api/graphs/:gid/tasks/:id/worldline` returns the fact's generations with their `[valid_from, valid_to)` intervals.
 
 
+#### The two clocks — `happened_at` and `learned_at` (E18.1)
+
+Every change to a graph is recorded as an append-only EVENT carrying **two** timestamps, and the rest of this section's machinery is built on the distinction. They are not fields on a node; there is one row per recorded change.
+
+| field | means | who sets it |
+|---|---|---|
+| `happened_at` | when it was true **in the world** | you — a `happened_at` field in the JSON body, or an `X-Happened-At` header on the body-less DELETE routes. **Backdatable.** |
+| `learned_at` | when **we were told** | the database, always, at commit. A caller cannot influence it; a direct INSERT with a forged value is overwritten. |
+
+**Backdate freely — that is what `happened_at` is for.** A correction almost always describes a world earlier than the moment you learn of it ("the terms actually changed in March"). Set `happened_at` to March and the log records both March and today, so neither question is lost. When the two differ by more than a second the event is stamped `payload.backdated: true`, so backdating is always visible and never disguisable. That asymmetry is the point: world time is a claim you make, belief time is a fact about the system.
+
+**Reading the past — `GET /api/graphs/:gid/graph` with a time knob.** With no query parameters it is the ordinary snapshot and costs exactly what it always did. Add a knob and the same `{nodes, links}` payload is reconstructed from the log, plus an `as_of` envelope:
+
+```bash
+# by belief time (the default): what we knew then
+curl "$GT_BASE/api/graphs/$GT_GID/graph?asOf=2026-03-01T00:00:00Z"
+curl "$GT_BASE/api/graphs/$GT_GID/graph?asOfSeq=1400"          # pinned to an event; immutable, cacheable
+
+# by world time: how things actually stood then, corrections included
+curl "$GT_BASE/api/graphs/$GT_GID/graph?axis=happened&asOf=2026-03-01T00:00:00Z"
+
+# both: what we would have said in June about how March looked
+curl "$GT_BASE/api/graphs/$GT_GID/graph?axis=happened&asOf=2026-03-01T00:00:00Z&known=2026-06-01T00:00:00Z"
+```
+
+**The two axes are allowed to disagree, and the fold deliberately does not reconcile them.** A correction learned late applies LAST on the belief axis (that is when you found out) and IN PLACE on the world axis (that is when it was true). If they disagree, that IS the signal — do not average it away or pick one silently. `axis=happened` requires `asOf`; a seq is a belief-time handle.
+
+The envelope reports its own limits and you should read them before quoting a reconstruction: `truncated` marks an `asOf` before this graph's log begins (you get the starting state, not a 404), `pre_history_approximation` marks a graph with no recorded starting point at all, and `anomalies` lists events the requested ordering could not place cleanly. `history_starts_at` is the left edge.
+
+**`GET /api/graphs/:gid/events?since=<seq>`** is the raw feed — `{events, head_seq, next_since, truncated}`, oldest first, filterable by `kind`/`subject_kind`/`subject_id`. Poll it with the previous `next_since`; `seq` is gapless and commit-ordered, so a poller can never skip. Opened with no query the same path is the live SSE stream instead.
+
+**`verified_at` and `decided_at` still exist on nodes** and still mean what they did. They are now caches of the latest event of their kind, which is why nothing that read them had to change.
+
 #### The doubt front — `POST /api/graphs/:gid/doubt` (E18.3)
 
 The TRANSITIVE version of `/decisions/at-risk`: what rests, at any distance, on something a weakening EVENT has since undermined and that nobody has re-checked since. `/decisions/at-risk` is unchanged and still answers the one-hop question; `scope: 'decisions'` here is its strict transitive superset, so migrating is a URL change.
@@ -399,6 +432,25 @@ The TRANSITIVE version of `/decisions/at-risk`: what rests, at any distance, on 
 `GET /changes` is the personal wrapper over `GET /events?since=`. First visit reports `unseen: 0` (`source: 'head'`) rather than replaying the whole history — `?since=0` is the explicit way to ask for everything. It also returns `doubt_triggers` for the same window, so "what changed" and "what that broke" are one answer.
 
 **Reading never moves the cursor.** `PUT /changes/seen {seq}` does, under `GREATEST`, so two tabs can only move it forward and a retry is idempotent. Marking the FEED read does **not** resolve DOUBT, and re-verifying does not mark the feed read — they are two different cursors and the UI copy has to say so.
+
+#### Decision branch points and the retrace view (E18.5)
+
+Record the options a decision weighed, keep the ones it rejected, and later set the decision against what has happened since.
+
+**Tagging options.** A decision's options are ordinary `related to` edges from the decision to each option node, carrying `meta.branch.role` of `chosen` or `alternative`. That is the whole vocabulary — no new node type, no copies of the graph.
+
+```bash
+curl -sS -X POST "$GT_BASE/api/graphs/$GT_GID/edges" "${WRITE_HEADERS[@]}" \
+  -d '{"source_id": 42, "target_id": 57, "purpose": "related to", "meta": {"branch": {"role": "chosen"}}}'
+```
+
+**Rejected options stay in the graph and go DORMANT.** Their downstream work is kept but hidden from `/tasks/ready`, so it is not offered as something to do. Dormancy is DERIVED, never stored: it means "in an un-chosen option's closure, in no chosen option's closure, under a currently-committed decision". Shared requirements fan INTO the options, so they appear in no option's closure and stay live automatically. Reopen the decision and the dormant work comes straight back. Pass `?includeDormant=1` to `/ready` to see it anyway.
+
+**`GET /api/graphs/:gid/decisions/:id/branches`** returns the options with their branches, the dormant set, and the CONTINGENCY closure — everything that rests on the decision, i.e. what is in play if you change your mind — each item with the chain of reasoning that reaches it.
+
+**`POST /api/graphs/:gid/decisions/:id/confrontation`** is the retrace. It reconstructs the graph as it stood when the decision was committed (anchored on the SEQ of the commitment event, not the backdatable `decided_at` scalar), sets the grounds that were on record then against what the log has recorded since, and points at any re-runnable benchmark without running it.
+
+**What it refuses to do, and you must not paper over it.** It does not imagine how the road not taken would have gone. An option nobody worked on returns `empty: true` with a reason, never a plausible story. Every response carries a machine-readable `limits` block — `counterfactual: false`, `benchmark_run: false`, `verdict: false`, `silence_is_not_vindication: true` — and a `context_complete` flag that goes false when it cannot locate the commitment. **A ground with no outcomes means nobody checked, NOT that the decision was vindicated**; when a cap stopped the search the response says so in `truncation` rather than letting the silence read as a clean bill of health. Quote the limits when you report a retrace to a human.
 
 - Set `purpose` on every edge write (`POST /edges`, `/edges/bulk`, `/batch`, `PATCH /edges/:id`) — it's the only edge *relationship* field you send (the server also accepts `meta` for edge `color`/`curve`). The server stores the derived `type` and emits BOTH on reads, so the canvas and every dependency query are unchanged. A legacy `type` is no longer accepted as input. `POST /edges`, `/edges/bulk`, and `/batch` reject a write with no `purpose`; `PATCH /edges/:id` treats an omitted `purpose` as "keep the existing relationship".
 - ONLY `required for` is cycle-checked and traversed by §5's status queries. `supports`/`contradicts` are directed SIGNED relations read by the inconsistency scan; `related to` is undirected association; `supersedes` is a directed succession relation read by the worldline route and the three queues — deliberately NOT cycle-checked, because a revert (B supersedes A, then later A' supersedes B) is legitimate history. Use `supports`/`contradicts` for genuine evidence relations (a `reference` --supports--> a claim; a finding --contradicts--> another); reserve `required for` for real prerequisites.
@@ -1370,12 +1422,14 @@ All paths below are `:gid`-scoped (substitute `$GT_GID`). Base URL is `$GT_BASE`
 | GET | `/api/graphs/:gid/tasks/:id/worldline[?axis=&asOf=&known=]` | **E18.4** — the fact's generations along its `supersedes` chain: `{node, as_of, generations:[{generation, id, title, valid_from, approximate_from, created_at, valid_to, open, interval_inverted, closed_by}], roots, branches, merges, truncated}`. Intervals are half-open `[valid_from, valid_to)` and DERIVED from the log, never stored; same `asOf`/`axis`/`known` knobs (and the same errors) as `GET /graph`. A worldline is **not always a line**: `roots` names every chain head (a MERGE — two facts, one replacement — has two, and both are reported at generation 0), `branches` the nodes that fan out and `merges` the nodes where lines join. `interval_inverted` marks a generation whose `valid_to` precedes its `valid_from` — a supersession backdated to before the fact it ends began. The timestamps are reported as recorded and never clamped: the two axes are allowed to disagree. `truncated` marks a walk that hit a cap; the window is centred on the queried node, which is never cut out of its own worldline. **Read-gated.** |
 | GET | `/api/graphs/:gid/tasks/:id/unblocks` | Direct parents that would become ready if this task were done |
 | GET | `/api/graphs/:gid/edges` | List edges |
+| GET | `/api/graphs/:gid/decisions/:id/branches` | **E18.5** — a decision's options, their branches, the DORMANT set, and the contingency closure (what is in play if the decision is reopened), each with its reasoning chain. Same `asOf`/`axis`/`known` knobs as `GET /graph`. Options are `related to` edges carrying `meta.branch.role` ∈ `chosen | alternative`. **Read-gated.** |
+| POST | `/api/graphs/:gid/decisions/:id/confrontation` | **E18.5** — retrace a decision: the graph as it stood when it was committed (anchored on the commitment EVENT's seq, not the backdatable `decided_at`), the grounds then set against what the log recorded since, and a pointer to any re-runnable benchmark. **It never invents a counterfactual**: a branch nobody worked on returns `empty: true`, and the `limits` block states `counterfactual: false`, `benchmark_run: false`, `verdict: false`, `silence_is_not_vindication: true`. A ground with no outcomes means NOBODY CHECKED, not that the decision was vindicated; `truncation` says when a cap stopped the search. **Read-gated.** |
 | POST | `/api/graphs/:gid/edges` | `{source_id, target_id, purpose, meta?}` — `purpose` ∈ `required for | supports | contradicts | related to | supersedes`, **required** (server derives + stores `type`; legacy `type` no longer accepted). See [The universal schema (E15)](#the-universal-schema-e15). |
 | POST | `/api/graphs/:gid/edges/bulk` | `{edges: [...]}` — transactional, all-or-nothing; ≤500 edges per call; each edge takes `purpose` (required) |
 | POST | `/api/graphs/:gid/batch` | `{run_id?, nodes:[{external_id, content, base_content?}], edges:[{source, target, purpose, meta?, external_id?}]}` — transactional UPSERT of nodes + edges in one call. Caps: ≤500 nodes / ≤1000 edges per call; `external_id`/`run_id` ≤200 chars. Idempotent per node via `external_id` (re-run → upsert, not duplicate); edges idempotent on their endpoints; every row stamped with `run_id`. Edge `source`/`target` is a numeric task id OR an in-batch/existing `external_id` string; `purpose` is required (one of `required for | supports | contradicts | related to | supersedes`) and the server derives + stores `type`. Returns `{run_id, nodes, edges, created, updated, unchanged}`. The dynamic-workflow write-back path — see [Using graphtask with dynamic workflows](#using-graphtask-with-dynamic-workflows). |
 | PATCH | `/api/graphs/:gid/edges/:id` | Partial update |
 | DELETE | `/api/graphs/:gid/edges/:id` | Delete |
-| GET | `/api/graphs/:gid/graph` | `{nodes, links}` snapshot |
+| GET | `/api/graphs/:gid/graph[?asOf=&asOfSeq=&axis=&known=]` | `{nodes, links}` snapshot. **Bare, this is the hot path** and touches only `tasks`/`edges`. **E18.1 time travel** (opt-in, adds an `as_of` envelope): `?asOf=<iso>` or `?asOfSeq=<n>` reconstructs the same payload from the event log; `?axis=learned` (default) orders by when we were TOLD, `?axis=happened` by when it was TRUE and requires `asOf`; `?known=<iso>` adds the belief-time ceiling that makes the pair a bitemporal rectangle. Envelope: `{axis, requested, known, seq, head_seq, base, events_replayed, history_starts_at, pre_history_approximation, truncated, anomalies}` — READ `truncated` and `pre_history_approximation` before quoting a reconstruction. The two axes may legitimately disagree and the fold does not reconcile them. `no-store`, except a pinned `?asOfSeq=` which is immutable. See [The two clocks](#the-two-clocks--happened_at-and-learned_at-e181). |
 | GET | `/api/graphs/:gid/graph/shortest-path?from=&to=` | BFS over dependency edges (undirected); returns `{path, cost, tasks}` or empty if disconnected |
 | GET | `/api/graphs/:gid/diagram?kind=&node=[&to=][&maxNodes=]` | Server-derived relationship diagram for report bodies: `kind` ∈ `fan\|chain\|cluster` → `{markdown, stats}` — a finished `.gt-fig` figure (theme-token inline SVG, aria-labelled, clickable node titles) built deterministically from the live edge list; paste it VERBATIM into a report (see § Document form). `fan` = supports/contradicts around `node`; `chain` = required-for path through `node` (or `node`→`to`); `cluster` = a decision's incoming grounds. 404 = no such diagram (missing seed or no qualifying edges) — skip, don't retry. **Read-gated.** |
 | POST | `/api/graphs/:gid/search` | Hybrid (BM25 + dense → RRF, +1-hop expand) search over the graph's nodes; **read-gated** (viewers can run it; never mutates). Body `{query, config?, filter?}` → `{query, results, timings}`; `results` is the ranked list `[{taskId, score, source, snippet, meta}]`. Optional `filter` (E15) post-filters by node `meta` without changing ranking — see [Read-side queries (E15)](#read-side-queries-e15-filters-frontier-inconsistency). For content questions, prefer this over grep — see [§6](#6-search-the-graph-find--what-does-the-graph-say-about-x). |
