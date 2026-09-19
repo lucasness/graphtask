@@ -217,9 +217,10 @@ describe('E18.4 schema — the widenings are IN PLACE, and that is testable', ()
     expect(byName.events_kind_valid).toContain("'node.superseded'");
   });
 
-  it('EVENT_KINDS is the 17-value vocabulary and node.superseded is in it', () => {
+  it('EVENT_KINDS is the 18-value vocabulary and node.superseded is in it', () => {
     expect(EVENT_KINDS).toContain('node.superseded');
-    expect(EVENT_KINDS).toHaveLength(17);
+    // 17 through E18.5; E18.6 added node.excised (tests/e18-excision.test.js).
+    expect(EVENT_KINDS).toHaveLength(18);
   });
 
   it('applySchema runs twice cleanly on a database that ALREADY HOLDS the new rows', async () => {

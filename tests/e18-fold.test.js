@@ -337,6 +337,22 @@ describe('E18.1 fold — applyEvent is idempotent for every kind', () => {
           superseded_by: 2, edge_id: 1, via: 'edge.added',
         },
       })],
+      // E18.6 — the excision RECORD for a node the seeded state HOLDS. With
+      // `after` present it re-declares the node (meta/version/content_sha, no
+      // body); re-applying re-declares the same thing, byte for byte.
+      'node.excised': [state, evt({
+        kind: 'node.excised',
+        subject_kind: 'node',
+        subject_id: 1,
+        payload: {
+          v: 1, op: 'EXCISE', table: 'events',
+          kinds: ['node.excised'], node_kind: 'finding',
+          reason: 'legal request', node_present: true,
+          excised_count: 2, excised_seq_min: 1, excised_seq_max: 2,
+          after: { meta: { title: 'A', status: 'todo' }, version: 3, external_id: null,
+                   content_sha: 'abc', created_at: '2026-01-01T09:00:00.000Z' },
+        },
+      })],
       'edge.added': [state, edgeAdded({ id: 1, source: 1, target: 2, purpose: 'supports', type: 'related', version: 4 })],
       'edge.removed': [state, edgeRemoved({ id: 1 })],
       'edge.retyped': [state, edgeUpdated({ id: 1, changes: { purpose: { from: 'required for', to: 'contradicts' }, type: { from: 'dependency', to: 'related' } } })],

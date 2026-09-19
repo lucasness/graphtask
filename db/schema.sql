@@ -772,6 +772,15 @@ CREATE TABLE IF NOT EXISTS events (
     CHECK (subject_kind IS NULL OR subject_kind IN ('node','edge','graph'))
 );
 
+-- E18.6 — a salted COMMITMENT to the payload, stamped at insert by
+-- gt_events_stamp. Excision blanks `payload` and `payload_salt` and KEEPS
+-- `payload_hash`, so an external anchor over (envelope + hash) stays valid
+-- across excisions, while the erased bytes cannot be brute-forced back from
+-- the hash because the salt went with them. Nullable only because rows
+-- predate the column; the backfill after gt_events_append_only fills them.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS payload_salt TEXT;
+
 -- kind is TEXT + CHECK, never an enum: ALTER TYPE ... ADD VALUE plus any use of
 -- the new literal later in the same file fails 55P04 and rolls back the whole
 -- boot apply. Migrated with the house drop/re-add DO block (schema.sql:460) so
@@ -780,12 +789,13 @@ CREATE TABLE IF NOT EXISTS events (
 -- edges_purpose_valid above: an APPENDED widening runs after this block and
 -- this block then fails on the feature's own rows (reproduced verbatim:
 -- `check constraint "events_kind_valid" ... is violated by some row`).
+-- E18.6 added 'node.excised' the same way.
 DO $$ BEGIN
   ALTER TABLE events DROP CONSTRAINT IF EXISTS events_kind_valid;
   ALTER TABLE events ADD CONSTRAINT events_kind_valid CHECK (kind IN (
     'node.created','node.patched','node.removed',
     'status.changed','field.set','claim.verified','claim.refuted',
-    'decision.made','decision.reopened','node.superseded',
+    'decision.made','decision.reopened','node.superseded','node.excised',
     'edge.added','edge.removed','edge.retyped','edge.rewired','edge.patched',
     'graph.id_rotated','graph.deleted'));
 END $$;
@@ -836,6 +846,12 @@ BEGIN
       NULL;
     END;
   END IF;
+  -- E18.6 — the payload commitment, taken LAST so it covers `backdated` and
+  -- `weight` as stamped above. gen_random_uuid() is core since PG13 and
+  -- sha256() since PG11: no extension. jsonb text is canonical (keys sorted,
+  -- whitespace fixed), so the digest is reproducible from the stored row.
+  NEW.payload_salt := replace(gen_random_uuid()::text, '-', '');
+  NEW.payload_hash := encode(sha256(convert_to(NEW.payload_salt || NEW.payload::text, 'UTF8')), 'hex');
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS gt_events_stamp_t ON events;
@@ -851,6 +867,53 @@ BEGIN
      AND NEW.graph_id IS DISTINCT FROM OLD.graph_id
      AND (to_jsonb(NEW) - 'graph_id') = (to_jsonb(OLD) - 'graph_id')
   THEN RETURN NEW; END IF;
+
+  -- E18.6 (i) — the one-time backfill of the payload commitment on rows that
+  -- predate the column: hash goes from NULL to set, and NOTHING else may move.
+  IF TG_OP = 'UPDATE'
+     AND OLD.payload_hash IS NULL AND NEW.payload_hash IS NOT NULL
+     AND (to_jsonb(NEW) - 'payload_hash' - 'payload_salt')
+       = (to_jsonb(OLD) - 'payload_hash' - 'payload_salt')
+  THEN RETURN NEW; END IF;
+
+  -- E18.6 (ii) — EXCISION. The ONLY way a payload's bytes ever leave this
+  -- table, and it is shaped as narrowly as the rotate-id exception above:
+  --   * only `payload` (to the marker) and `payload_salt` (to NULL) change —
+  --     seq, kind, both clocks, actor, cause_id, request_id, txid and
+  --     `payload_hash` are byte-for-byte what they were;
+  --   * the marker IS the old payload minus its content keys (`after`,
+  --     `before`, `changes`, `reason`, `intent`) plus `excised: true` and
+  --     `excised_by_seq` — so `kinds`, `node_kind`, `version`, `op`, `table`,
+  --     `node_present`, `backdated`, `weight` all survive: history keeps its
+  --     SHAPE, only the bytes go;
+  --   * `excised_by_seq` must name a `node.excised` event for the SAME subject
+  --     LATER in the log — every blanking is tied to a logged, dated, actored
+  --     excision record, and that record can never itself be blanked past
+  --     its envelope (its `after` and `reason` are content; its seq, kind,
+  --     clocks, actor and counts are not);
+  --   * `gt.excising` must name this graph — gt_excise_node sets it for the
+  --     duration of its UPDATE and clears it, so no other code path matches
+  --     even by accident. The GUC is belt; the shape checks are braces.
+  -- Only node events carry bodies (edge payloads hold ids, purpose and canvas
+  -- meta), so `subject_kind = 'node'` is a floor, not a gap.
+  IF TG_OP = 'UPDATE'
+     AND gt_ctx('gt.excising') = OLD.graph_id
+     AND OLD.subject_kind = 'node'
+     AND NEW.payload_salt IS NULL
+     AND (to_jsonb(NEW) - 'payload' - 'payload_salt')
+       = (to_jsonb(OLD) - 'payload' - 'payload_salt')
+     AND NEW.payload = (OLD.payload - 'after' - 'before' - 'changes' - 'reason' - 'intent')
+                       || jsonb_build_object('excised', true,
+                                             'excised_by_seq', (NEW.payload ->> 'excised_by_seq')::bigint)
+     AND (NEW.payload ->> 'excised_by_seq')::bigint > OLD.seq
+     AND EXISTS (SELECT 1 FROM events x
+                  WHERE x.graph_id = OLD.graph_id
+                    AND x.seq = (NEW.payload ->> 'excised_by_seq')::bigint
+                    AND x.kind = 'node.excised'
+                    AND x.subject_kind = 'node'
+                    AND x.subject_id = OLD.subject_id)
+  THEN RETURN NEW; END IF;
+
   RAISE EXCEPTION 'events is append-only (attempted % on %/%)',
     TG_OP, COALESCE(OLD.graph_id, NEW.graph_id), COALESCE(OLD.seq, NEW.seq)
     USING ERRCODE = '0A000';
@@ -858,6 +921,18 @@ END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS gt_events_append_only_t ON events;
 CREATE TRIGGER gt_events_append_only_t BEFORE UPDATE OR DELETE ON events
   FOR EACH ROW EXECUTE FUNCTION gt_events_append_only();
+
+-- E18.6 — backfill the commitment on rows that predate payload_hash. Goes
+-- THROUGH the trigger's exception (i), so the append-only guarantee is never
+-- switched off to do it; a later boot finds no NULLs and touches nothing.
+-- The salt is drawn in the subquery because a SET list sees only OLD values,
+-- so `payload_hash` could not otherwise read the salt being assigned.
+UPDATE events e
+   SET payload_salt = s.salt,
+       payload_hash = encode(sha256(convert_to(s.salt || e.payload::text, 'UTF8')), 'hex')
+  FROM (SELECT graph_id, seq, replace(gen_random_uuid()::text, '-', '') AS salt
+          FROM events WHERE payload_hash IS NULL) s
+ WHERE e.graph_id = s.graph_id AND e.seq = s.seq;
 
 -- Per-graph seq, allocated under the graphs row lock. Holding it to commit makes
 -- allocation order == commit order, so seq is GAPLESS and learned_at is MONOTONE
@@ -1140,6 +1215,97 @@ BEGIN
             'node_kind', nk,
             'superseded_by', src, 'edge_id', edge_id, 'via', via,
             'reason', gt_ctx('gt.reason'), 'intent', gt_ctx('gt.intent')));
+END $$ LANGUAGE plpgsql;
+
+-- ---- E18.6 excision ----------------------------------------------------------
+-- Two verbs, never one. DELETE is an event and keeps its pre-image: history is
+-- the product. EXCISION is the rare, owner-only, reason-required act for bytes
+-- that must not exist (a pasted key, a person's email, a defamatory claim) —
+-- and, as Datomic puts it, unsuitable for corrections: a mistake is superseded.
+--
+-- One transaction, two effects, both enforced HERE rather than in a route:
+--   1. append ONE `node.excised` event — subject = the node, actor = whoever
+--      set gt.actor_*, reason recorded, counts and seq range of what is about
+--      to be blanked, `node_present`, and when the node still exists `after` =
+--      its current meta/version/content_sha (NEVER a body) so HEAD still folds
+--      to the live row. A later excision of the same node blanks THIS event's
+--      `after` and `reason` too; its seq, kind, clocks, actor and counts are
+--      the audit and are not removable by anything.
+--   2. blank every earlier event of that subject to the marker the append-only
+--      trigger's exception (ii) admits, and nothing else. Rows already marked
+--      are skipped; the event just written is excluded by `seq < s`.
+-- Then drop the periodic snapshots (a cache of the log; they rebuild from the
+-- marked rows). The GENESIS snapshot is the one non-derivable row and carries
+-- `meta`, so a node born before the log keeps a pre-log title there — the
+-- route rewrites that entry to the placeholder in the same transaction
+-- (src/events/snapshot.js exciseNodeFromGenesis), because state_sha is a JS
+-- canonical-JSON digest this function cannot reproduce.
+--
+-- Why this is cheap here and global in git: `(graph_id, seq)` is not derived
+-- from content, so blanking a payload changes no identifier — cause_id
+-- pointers, seq-keyed caches and asOf all keep working untouched.
+CREATE OR REPLACE FUNCTION gt_excise_node(gid TEXT, nid BIGINT, why TEXT) RETURNS jsonb AS $$
+DECLARE
+  s BIGINT; n BIGINT; lo BIGINT; hi BIGINT;
+  present BOOLEAN; after_j JSONB; nk TEXT;
+BEGIN
+  IF why IS NULL OR btrim(why) = '' THEN
+    RAISE EXCEPTION 'excision requires a reason' USING ERRCODE = '22023';
+  END IF;
+  -- Same lock every writer takes first (see the lock-order notes in the
+  -- routes): the graphs row, FOR NO KEY UPDATE so it does not fight the FK.
+  PERFORM 1 FROM graphs WHERE id = gid FOR NO KEY UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'graph % not found', gid USING ERRCODE = 'P0002';
+  END IF;
+
+  SELECT jsonb_build_object(
+           'meta', meta, 'version', version, 'external_id', external_id,
+           'created_at', created_at,
+           'content_sha', encode(sha256(convert_to(COALESCE(content, ''), 'UTF8')), 'hex')),
+         meta ->> 'type'
+    INTO after_j, nk
+    FROM tasks WHERE id = nid AND graph_id = gid;
+  present := FOUND;
+
+  SELECT count(*), min(seq), max(seq) INTO n, lo, hi
+    FROM events
+   WHERE graph_id = gid AND subject_kind = 'node' AND subject_id = nid
+     AND NOT COALESCE((payload ->> 'excised')::boolean, false);
+  IF NOT present AND n = 0 THEN
+    RAISE EXCEPTION 'node % is not known to graph %', nid, gid USING ERRCODE = 'P0002';
+  END IF;
+
+  s := gt_next_seq(gid);
+  INSERT INTO events (graph_id, seq, happened_at, learned_at, actor, kind,
+                      subject_kind, subject_id, cause_id, request_id, txid, payload)
+  VALUES (gid, s, gt_happened_at(), clock_timestamp(), gt_actor(), 'node.excised',
+          'node', nid, NULLIF(gt_ctx('gt.cause_id'),'')::bigint, gt_ctx('gt.request_id'), 0,
+          jsonb_build_object('v',1,'op','EXCISE','table','events',
+            'kinds', jsonb_build_array('node.excised'),
+            'node_kind', nk,
+            'reason', why,
+            'node_present', present,
+            'excised_count', n,
+            'excised_seq_min', lo,
+            'excised_seq_max', hi,
+            'after', COALESCE(after_j, 'null'::jsonb)));
+
+  PERFORM set_config('gt.excising', gid, true);
+  UPDATE events
+     SET payload = (payload - 'after' - 'before' - 'changes' - 'reason' - 'intent')
+                   || jsonb_build_object('excised', true, 'excised_by_seq', s),
+         payload_salt = NULL
+   WHERE graph_id = gid AND subject_kind = 'node' AND subject_id = nid
+     AND seq < s
+     AND NOT COALESCE((payload ->> 'excised')::boolean, false);
+  PERFORM set_config('gt.excising', '', true);
+
+  DELETE FROM graph_snapshots
+   WHERE graph_id = gid AND axis = 'learned' AND kind = 'periodic';
+
+  RETURN jsonb_build_object('seq', s, 'node_present', present, 'excised_count', n,
+                            'excised_seq_min', lo, 'excised_seq_max', hi);
 END $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION gt_log_edge() RETURNS TRIGGER AS $$

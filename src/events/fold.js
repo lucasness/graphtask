@@ -326,11 +326,46 @@ function toPresent(change) {
   return change.to_present;
 }
 
+// E18.6 — what an excised node looks like at any seq its bytes are gone from.
+// A fresh object every call: fold state is never shared between snapshots.
+function excisedMeta() {
+  return { title: '[excised]', excised: true };
+}
+
 function applyToIndex(ix, event, anomalies) {
   const kind = event?.kind ?? null;
   if (GRAPH_KINDS.has(kind) || ANNOTATION_KINDS.has(kind)) return;
 
   const payload = plainObject(event?.payload);
+
+  // E18.6 — the excision record. `node_present` says whether the node existed
+  // when its history was blanked. `after` is the re-declared present and is
+  // itself content: a LATER excision of the same node strips it, leaving
+  // `node_present: true` with no `after` — the node existed and its state is
+  // unrecoverable, which is the placeholder, never a delete.
+  if (kind === 'node.excised') {
+    const id = numOrNull(event?.subject_id ?? payload.id);
+    if (id === null) {
+      note(anomalies, event, 'unrecognised_event');
+      return;
+    }
+    if (payload.node_present !== true) {
+      ix.nodes.delete(id);
+      return;
+    }
+    const hasAfter = payload.after !== null && typeof payload.after === 'object';
+    const after = plainObject(payload.after);
+    const prev = ix.nodes.get(id);
+    ix.nodes.set(id, {
+      id,
+      meta: hasAfter ? { ...plainObject(after.meta) } : excisedMeta(),
+      version: numOrNull(after.version ?? prev?.version ?? null),
+      external_id: hasAfter ? (after.external_id ?? null) : null,
+      content_sha: hasAfter ? (after.content_sha ?? null) : null,
+      created_at: isoOrNull(after.created_at) ?? prev?.created_at ?? null,
+    });
+    return;
+  }
   const table =
     payload.table ??
     (event?.subject_kind === 'node' ? 'tasks' : event?.subject_kind === 'edge' ? 'edges' : null);
@@ -351,7 +386,10 @@ function applyToIndex(ix, event, anomalies) {
       // is exactly what makes re-applying a create a no-op.
       ix.nodes.set(id, {
         id,
-        meta: { ...plainObject(after.meta) },
+        // E18.6 — a blanked create has no `after`; the node existed, its
+        // bytes do not. Every later blanked patch folds as a version bump
+        // over this placeholder, because `changes` is gone too.
+        meta: payload.excised === true ? excisedMeta() : { ...plainObject(after.meta) },
         version: numOrNull(payload.version ?? after.version),
         external_id: after.external_id ?? null,
         content_sha:

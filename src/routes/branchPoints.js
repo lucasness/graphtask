@@ -193,7 +193,8 @@ const CREATED_DECIDED_SQL = `SELECT seq FROM events
 // change at all.
 const RATIONALE_SQL = `SELECT seq, kind,
                               payload -> 'changes' -> 'content' AS content_change,
-                              payload -> 'after' ->> 'content'  AS created_content
+                              payload -> 'after' ->> 'content'  AS created_content,
+                              COALESCE((payload ->> 'excised')::boolean, false) AS excised
                          FROM events
                         WHERE graph_id = $1 AND subject_kind = 'node' AND subject_id = $2
                           AND seq <= $3
@@ -918,23 +919,32 @@ router.post('/:id/confrontation', validateId, async (req, res, next) => {
         const recoverable = change
           ? change.to !== null && change.to !== undefined && change.truncated !== true
           : createdBody !== null && createdBody !== undefined;
+        // E18.6 — an excised rationale is a THIRD case, and it must not be
+        // read as the second: the bytes were removed on purpose, not capped,
+        // and the digest of the empty string the marker would hash to is not
+        // "the content at decision time". Say excised; hash nothing.
+        const excised = row.excised === true;
         rationale = {
           event_seq: decisionSeq,
-          content_sha_at_decision: shaAt,
+          content_sha_at_decision: excised ? null : shaAt,
           content_sha_now: current.content_sha ?? null,
-          unchanged_since_decision: shaAt === null
+          unchanged_since_decision: excised || shaAt === null
             ? null
             : shaAt === (current.content_sha ?? null),
-          text_recoverable: recoverable === true,
+          text_recoverable: !excised && recoverable === true,
           text_source_event_seq: Number(row.seq),
-          reason: recoverable === true ? null : 'content_truncated',
+          reason: excised ? 'content_excised' : recoverable === true ? null : 'content_truncated',
         };
       }
     }
     // A node born with its rationale emits `node.created`, whose `after.content`
     // the fold hashes but whose payload carries no `to_sha`. Hash it here rather
     // than reporting "unknown" for the commonest shape there is.
-    if (rationale.content_sha_at_decision === null && rationale.text_source_event_seq !== null) {
+    if (
+      rationale.content_sha_at_decision === null
+      && rationale.text_source_event_seq !== null
+      && rationale.reason !== 'content_excised'
+    ) {
       const { rows } = await pool.query(
         `SELECT encode(sha256(convert_to(COALESCE(payload -> 'after' ->> 'content', ''), 'UTF8')), 'hex') AS sha
            FROM events WHERE graph_id = $1 AND seq = $2`,

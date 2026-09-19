@@ -700,6 +700,50 @@ export async function verifySnapshot(pool, graphId, seq) {
   };
 }
 
+// E18.6 — excision reaches the genesis snapshot. Genesis is the one
+// non-derivable row and it carries `meta` (a title is meta), so a node born
+// before the log would keep its pre-log title there after every event of it
+// had been blanked. gt_excise_node drops the periodic snapshots itself (a cache
+// of the marked log); this rewrites the genesis entry to the same placeholder
+// the fold emits, and re-digests, because state_sha is canonicalJson-based and
+// SQL cannot reproduce it. Runs on the route's transaction client, so the
+// event, the blanking and this rewrite commit or roll back together.
+export async function exciseNodeFromGenesis(db, graphId, nodeId) {
+  const { rows } = await db.query(
+    `SELECT seq, state FROM graph_snapshots
+      WHERE graph_id = $1 AND axis = 'learned' AND kind = 'genesis'
+      FOR UPDATE`,
+    [graphId],
+  );
+  const row = rows[0];
+  if (!row) return { rewritten: false, reason: 'no_genesis' };
+  const id = Number(nodeId);
+  const nodes = Array.isArray(row.state?.nodes) ? row.state.nodes : [];
+  const idx = nodes.findIndex((n) => Number(n?.id) === id);
+  if (idx < 0) return { rewritten: false, reason: 'not_in_genesis' };
+  const next = {
+    ...row.state,
+    nodes: nodes.map((n, i) =>
+      i === idx
+        ? {
+            id,
+            meta: { title: '[excised]', excised: true },
+            version: numOrNull(n.version),
+            external_id: null,
+            content_sha: null,
+            created_at: isoOrNull(n.created_at),
+          }
+        : n,
+    ),
+  };
+  await db.query(
+    `UPDATE graph_snapshots SET state = $3::jsonb, state_sha = $4
+      WHERE graph_id = $1 AND axis = 'learned' AND kind = 'genesis' AND seq = $2`,
+    [graphId, row.seq, canonicalJson(next), stateSha(next)],
+  );
+  return { rewritten: true, reason: null };
+}
+
 // Drop every periodic snapshot for a graph and rebuild the chain from genesis.
 // Safe by definition — periodic snapshots are a cache of a pure function of the
 // log — and the only repair this system needs, because the one non-derivable

@@ -36,6 +36,13 @@ export const EVENT_KINDS = Object.freeze([
   // `kinds` array and never enters gt_classify_edge's output, so the classifier
   // parity test is untouched by it.
   'node.superseded',
+  // E18.6. The excision RECORD. Subject = the node whose history was blanked;
+  // payload = reason, count and seq range of the blanked rows, `node_present`,
+  // and — while the node exists — `after` (meta/version/content_sha, never a
+  // body) so HEAD still folds to the live row. Emitted by gt_excise_node with
+  // a literal `kinds` array, like node.superseded, and never classified. The
+  // rows it blanked keep their own kinds and gain `excised: true`.
+  'node.excised',
   'edge.added',
   'edge.removed',
   'edge.retyped',

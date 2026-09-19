@@ -13,6 +13,9 @@ import { requireIntegerParam } from './_validate.js';
 import { notSupersededSql } from '../supersession.js';
 import { notDormantSql } from '../branches.js';
 import { worldlineHandler } from './worldline.js';
+import { requireGraph } from '../auth/require.js';
+import { exciseNodeFromGenesis } from '../events/snapshot.js';
+import { dropDerivedForGraph } from '../derivedCache.js';
 
 // Tasks store frontmatter (meta) + body in a single markdown blob. To do
 // field-level three-way merge, we flatten {meta, body} into one object.
@@ -333,6 +336,65 @@ router.patch('/:id', validateId, async (req, res) => {
     return res.status(410).json({ error: 'task no longer exists' });
   }
   res.json(result.rows[0]);
+});
+
+// E18.6 — EXCISION. The rare, owner-only, reason-required act that removes
+// bytes from the log. Not deletion (DELETE /:id keeps its pre-image; that is
+// the product) and not a correction (a mistake is superseded, E18.4). The
+// mechanics — one `node.excised` event, every earlier event of the subject
+// blanked to a marker the append-only trigger admits and nothing else, the
+// periodic snapshots dropped — are gt_excise_node in db/schema.sql, so no
+// route can do a wider rewrite; the genesis rewrite rides the same transaction.
+//
+// Works on a node that no longer exists (the common case: delete first, then
+// excise its history) and on a live one (its present is re-declared in the
+// event's `after` — meta and content_sha, never a body — so clean the present
+// FIRST; the excision record is not itself excisable past its envelope).
+//
+// `manage` = the graph owner, the same gate as sharing, rotate-id and delete.
+// `X-Writer-Type: agent` is refused: attribution-based, so it stops an honest
+// agent following the skill; the manage gate is the hard floor.
+router.post('/:id/excise', validateId, requireGraph('manage'), async (req, res, next) => {
+  const { gid, id } = req.params;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (!reason) return res.status(400).json({ error: 'reason is required' });
+  if (reason.length > 2000) {
+    return res.status(400).json({ error: 'reason must be 2000 characters or less' });
+  }
+  if (req.writerType === 'agent') {
+    return res.status(403).json({ error: 'excision is a human act; agents cannot excise' });
+  }
+  if (rejectBadHappenedAt(req, res)) return;
+  if (await rejectBadCauseId(req, res, gid)) return;
+
+  try {
+    const out = await withEventTx(
+      req,
+      async (client) => {
+        const r = await client.query('SELECT gt_excise_node($1, $2, $3) AS out', [gid, id, reason]);
+        const genesis = await exciseNodeFromGenesis(client, gid, id);
+        // The derived cache (src/derivedCache.js) holds reconstructions keyed
+        // by (graph, seq) on the premise that a pinned prefix is immutable —
+        // and the frontier and doubt caches under the same graph key hold meta
+        // too. Excision is the one write that changes what a settled prefix
+        // says, so every entry for the graph goes: once here, so nothing
+        // repopulates from a pre-commit read that raced us, and once after
+        // COMMIT, so a read between the two cannot pin the old bytes.
+        dropDerivedForGraph(gid);
+        return { ...r.rows[0].out, genesis };
+      },
+      { reason },
+    );
+    dropDerivedForGraph(gid);
+    return res.json(out);
+  } catch (err) {
+    // P0002 (no_data_found) is what gt_excise_node raises for a node with no
+    // live row AND no history in this graph — nothing to excise.
+    if (err?.code === 'P0002') {
+      return res.status(404).json({ error: 'node is not known to this graph' });
+    }
+    return next(err);
+  }
 });
 
 router.delete('/:id', validateId, async (req, res) => {
