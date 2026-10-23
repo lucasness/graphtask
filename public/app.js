@@ -1613,6 +1613,9 @@ function destroyReaderViewer() {
   // Tear down the TOC + scroll-spy alongside the Viewer so a re-render rebuilds
   // exactly one (E16.17).
   if (readerTocObserver) { try { readerTocObserver.disconnect(); } catch {} readerTocObserver = null; }
+  readerTocLinks = new Map();
+  if (readerTocPinTimer) { clearTimeout(readerTocPinTimer); readerTocPinTimer = null; }
+  readerTocPinnedId = null;
   const toc = document.getElementById('reader-toc');
   if (toc) { toc.innerHTML = ''; toc.classList.add('hidden'); }
   // Tear down citations too (E16 footnotes): clear the References list + tooltip.
@@ -1653,24 +1656,81 @@ function buildReaderToc(markdown) {
     a.appendChild(document.createTextNode(it.text)); // textContent — XSS-safe
     a.addEventListener('click', (e) => {
       e.preventDefault();
-      h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // A Contents click is a navigation: push the section into the bar so the
+      // link is shareable and Back returns to the previous section.
+      history.pushState(history.state, '', readerSectionUrl(it.id));
+      focusReaderSection(it.id, { smooth: true });
     });
     toc.appendChild(a);
-    links.set(it.id, a);
+    links.set(it.id, { a, h });
   }
+  readerTocLinks = links;
   toc.classList.remove('hidden');
   // Scroll-spy: mark the entry for the heading currently nearest the top of the
-  // reader scroll container.
+  // reader scroll container, and keep the bar's #hash on it (replaceState, so
+  // reading never piles up history). While a section is pinned — just clicked
+  // or deep-linked, scroll still settling — the spy neither re-highlights nor
+  // rewrites the hash, so the last section (which may never reach the top of
+  // the viewport) keeps the hash the user asked for.
   readerTocObserver = new IntersectionObserver((entries) => {
+    if (readerTocPinnedId != null) {
+      for (const [id, { a: link }] of links) link.classList.toggle('active', id === readerTocPinnedId);
+      return;
+    }
     const visible = entries
       .filter((en) => en.isIntersecting)
       .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
     if (!visible[0]) return;
     const activeId = visible[0].target.id;
-    for (const [id, link] of links) link.classList.toggle('active', id === activeId);
+    for (const [id, { a: link }] of links) link.classList.toggle('active', id === activeId);
+    if (window.ReaderToc?.sectionIdFromHash?.(location.hash) !== activeId) {
+      history.replaceState(history.state, '', readerSectionUrl(activeId));
+    }
   }, { root: document.getElementById('reader'), rootMargin: '0px 0px -75% 0px', threshold: 0 });
   for (let i = 0; i < n; i++) readerTocObserver.observe(headings[i]);
+  // Deep link: a shared /g/<gid>?view=reader#<section> lands on that section
+  // once the report has rendered. An unknown hash is left alone (the bar keeps
+  // it; nothing scrolls) rather than guessed at.
+  const wanted = window.ReaderToc?.sectionIdFromHash?.(location.hash);
+  if (wanted && links.has(wanted)) focusReaderSection(wanted, { smooth: false });
 }
+
+// The section currently shown in the Contents rail: id -> { a: link, h: heading }.
+// Set by buildReaderToc, cleared with the Viewer, read by focusReaderSection and
+// the hashchange handler.
+let readerTocLinks = new Map();
+// A section the user just navigated to (click, deep link, Back/Forward), held
+// while its scroll settles so the scroll-spy cannot overwrite the hash with a
+// heading that merely passed by. Cleared by a timer; scrollend is not relied on
+// (not universally fired).
+let readerTocPinnedId = null;
+let readerTocPinTimer = null;
+
+// The bar URL for a reader section: current pathname + search, hash = the id.
+function readerSectionUrl(id) {
+  return window.ReaderToc?.withSectionHash?.(location.pathname, location.search, id)
+    ?? `${location.pathname}${location.search}${id ? `#${id}` : ''}`;
+}
+
+// Scroll the reader to a section and mark it active, pinning it until the
+// scroll settles. No-op when the section is not in the current rail.
+function focusReaderSection(id, { smooth } = {}) {
+  const entry = readerTocLinks.get(id);
+  if (!entry) return;
+  readerTocPinnedId = id;
+  if (readerTocPinTimer) clearTimeout(readerTocPinTimer);
+  readerTocPinTimer = setTimeout(() => { readerTocPinnedId = null; readerTocPinTimer = null; }, smooth ? 1200 : 600);
+  for (const [sid, { a: link }] of readerTocLinks) link.classList.toggle('active', sid === id);
+  entry.h.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+}
+
+// Back/Forward between sections (and a hand-edited hash) change only the hash,
+// which fires hashchange rather than popstate; follow it while the reader shows.
+window.addEventListener('hashchange', () => {
+  if (currentView !== 'reader') return;
+  const id = window.ReaderToc?.sectionIdFromHash?.(location.hash);
+  if (id) focusReaderSection(id, { smooth: true });
+});
 
 // --- Reader citations (E16 footnotes) ------------------------------------
 // The generator emits [[cite:<id>]] markers; we turn each into a small numbered
@@ -9189,7 +9249,8 @@ async function bootSidebar() {
   // last-active graph (the /graph/<id> silent-misdirection fix).
   const route = window.RouteParse?.resolveRoute?.(location.pathname) ?? { kind: 'root' };
   if (route.kind === 'graph' && route.canonical !== location.pathname) {
-    history.replaceState(history.state, '', route.canonical + location.search);
+    // Keep the hash: a reader section deep link (#<section>) survives the alias fix.
+    history.replaceState(history.state, '', route.canonical + location.search + location.hash);
   } else if (route.kind === 'unknown') {
     history.replaceState(history.state, '', '/');
   }

@@ -54,3 +54,28 @@ export function extractToc(markdown) {
   }
   return items;
 }
+
+// --- Section deep links (#<heading-id>) --------------------------------------
+// The reader keeps the section being read in the URL hash — `/g/<gid>?view=reader
+// #references` — so a copied link lands the receiver on that section, and Back
+// /Forward step between sections. The hash holds a heading id as assigned by
+// extractToc above (slugify output: [A-Za-z0-9_-] only), so anything else is
+// treated as no section rather than scrolled to.
+const SECTION_ID_RE = /^[A-Za-z0-9][\w-]*$/;
+
+// The heading id named by a location.hash ('#references' → 'references'), or
+// null when the hash is empty or not a valid heading id.
+export function sectionIdFromHash(hash) {
+  const raw = String(hash || '').replace(/^#/, '');
+  if (!raw) return null;
+  let id = raw;
+  try { id = decodeURIComponent(raw); } catch { return null; }
+  return SECTION_ID_RE.test(id) ? id : null;
+}
+
+// The URL to write to the bar for a section: pathname + search (both kept as
+// they are) + '#<id>'; with a null/empty id the hash is dropped entirely.
+export function withSectionHash(pathname, search, id) {
+  const base = `${pathname || ''}${search || ''}`;
+  return id ? `${base}#${encodeURIComponent(id)}` : base;
+}

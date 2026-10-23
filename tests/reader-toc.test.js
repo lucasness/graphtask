@@ -49,3 +49,56 @@ describe('slugify (E16.17)', () => {
     expect(slugify('')).toBe('section');
   });
 });
+
+// Section deep links: the hash <-> heading-id plumbing behind
+// /g/<gid>?view=reader#<section>. The scroll/pin behaviour is DOM and is
+// verified in the running app; this covers the pure parse/format halves.
+import { sectionIdFromHash, withSectionHash } from '../public/reader-toc.js';
+
+describe('sectionIdFromHash (reader section deep links)', () => {
+  it('reads a heading id out of a location.hash', () => {
+    expect(sectionIdFromHash('#references')).toBe('references');
+    expect(sectionIdFromHash('#the-history-of-the-idea')).toBe('the-history-of-the-idea');
+    expect(sectionIdFromHash('#intro-2')).toBe('intro-2');
+  });
+
+  it('accepts the hash with or without its leading # and decodes percent-encoding', () => {
+    expect(sectionIdFromHash('references')).toBe('references');
+    expect(sectionIdFromHash('#part%5F1')).toBe('part_1');
+  });
+
+  it('returns null for an empty, missing or malformed hash', () => {
+    expect(sectionIdFromHash('')).toBeNull();
+    expect(sectionIdFromHash('#')).toBeNull();
+    expect(sectionIdFromHash(null)).toBeNull();
+    expect(sectionIdFromHash(undefined)).toBeNull();
+    expect(sectionIdFromHash('#-leading-dash')).toBeNull();
+    expect(sectionIdFromHash('#has space')).toBeNull();
+    expect(sectionIdFromHash('#<script>')).toBeNull();
+    expect(sectionIdFromHash('#%E0%A4%A')).toBeNull(); // bad percent-encoding
+  });
+
+  it('round-trips every id slugify can produce', () => {
+    for (const text of ['References', 'Part 1 — how we got here', '**Bold** and `code`', 'Q&A: what next?']) {
+      const id = slugify(text);
+      expect(sectionIdFromHash(`#${id}`)).toBe(id);
+    }
+  });
+});
+
+describe('withSectionHash (reader section deep links)', () => {
+  it('appends the section as the hash, keeping pathname and search as they are', () => {
+    expect(withSectionHash('/g/abc123', '?view=reader', 'references'))
+      .toBe('/g/abc123?view=reader#references');
+    expect(withSectionHash('/g/abc123', '', 'intro')).toBe('/g/abc123#intro');
+  });
+
+  it('drops the hash entirely for a null or empty section', () => {
+    expect(withSectionHash('/g/abc123', '?view=reader', null)).toBe('/g/abc123?view=reader');
+    expect(withSectionHash('/g/abc123', '?view=reader', '')).toBe('/g/abc123?view=reader');
+  });
+
+  it('percent-encodes an id so the bar never holds a raw unsafe character', () => {
+    expect(withSectionHash('/g/x', '', 'a b')).toBe('/g/x#a%20b');
+  });
+});

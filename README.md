@@ -1336,6 +1336,8 @@ and benchmarks have their own design doc: [design/SEARCH.md](design/SEARCH.md).
   view with a cross-graph KB browser and staleness banner — zero graph writes
   on toggle or read (`src/routes/reports.js`, `reportsAll.js`; reader mode in
   `public/app.js`; design in [design/DESIGN.md](design/DESIGN.md#reader-mode-e16)).
+  The section being read is in the URL (`/g/<gid>?view=reader#references`), so a
+  copied link opens on that section and Back/Forward step between sections.
   Report generation is gated on a faithfulness eval — citation validity,
   high-significance coverage, and LLM-judged grounding / status-fidelity /
   contradiction-surfacing, run against both generation paths
