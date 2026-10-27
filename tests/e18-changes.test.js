@@ -222,6 +222,23 @@ describe('E18.3 the diff itself', () => {
     expect(res.body.doubt_triggers[0]).toMatchObject({ kind: 'refutation', subject_id: a, weight: 1 });
   });
 
+  it('by_actor keeps a whole name, spaces and all, and an absent name as null', async () => {
+    const mark = (await get('?since=0')).body.head_seq;
+    for (let i = 0; i < 2; i++) {
+      await asOwner(request(app).post(`/api/graphs/${gid}/tasks`))
+        .set('X-Writer-Name', 'Kevin Joo')
+        .send({ content: node({ title: `named ${i}`, status: 'review' }) });
+    }
+    await pool.query(
+      "INSERT INTO tasks (graph_id, content, meta) VALUES ($1, 'x', '{\"title\":\"by the system\"}'::jsonb)", [gid]);
+
+    const res = await get(`?since=${mark}`);
+    const actors = res.body.summary.by_actor;
+    expect(actors[0]).toEqual({ type: 'human', name: 'Kevin Joo', count: 2 });
+    expect(actors.some((a) => a.name === 'Kevin')).toBe(false);
+    expect(actors).toContainEqual({ type: 'system', name: null, count: 1 });
+  });
+
   it('events are shapeEvent() verbatim — the same reader, not a second one', async () => {
     await mkNode('A');
     const viaChanges = (await get('?since=0')).body.events;
