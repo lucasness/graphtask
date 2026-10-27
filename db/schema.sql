@@ -634,7 +634,7 @@ BEGIN
       CREATE TABLE IF NOT EXISTS task_chunks (
         id              SERIAL PRIMARY KEY,
         task_id         INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        graph_id        TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
+        graph_id        TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE,
         chunk_index     INTEGER NOT NULL,
         chunk_text      TEXT NOT NULL,
         -- sha256 of the whole node content: re-chunk only when this changes,
@@ -657,6 +657,20 @@ BEGIN
     -- nothing to set now and matter once a graph grows.
     EXECUTE 'CREATE INDEX IF NOT EXISTS task_chunks_embedding_idx ON task_chunks '
          || 'USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)';
+    -- Renaming a graph (POST /api/graphs/:id/rotate-id) changes graphs.id, and
+    -- the chunks must follow it as tasks and edges do (their keys got
+    -- ON UPDATE CASCADE above). The table was first created with ON DELETE
+    -- CASCADE only, so a rename failed on any graph that had been indexed.
+    -- Correct an existing database once: only when the rule is missing, so a
+    -- normal boot does not re-validate every chunk.
+    IF EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'task_chunks'::regclass
+                  AND conname = 'task_chunks_graph_id_fkey'
+                  AND confupdtype <> 'c') THEN
+      EXECUTE 'ALTER TABLE task_chunks DROP CONSTRAINT task_chunks_graph_id_fkey';
+      EXECUTE 'ALTER TABLE task_chunks ADD CONSTRAINT task_chunks_graph_id_fkey '
+           || 'FOREIGN KEY (graph_id) REFERENCES graphs(id) ON DELETE CASCADE ON UPDATE CASCADE';
+    END IF;
   ELSE
     RAISE NOTICE 'pgvector not available — skipping task_chunks (dense store deferred; eval runs in-memory)';
   END IF;
